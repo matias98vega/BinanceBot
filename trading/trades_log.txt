@@ -1,11 +1,10 @@
 # Trading Log — Auto Bot
-# Formato: # | Par | Resultado | PnL | Capital acumulado | Fecha y hora (UTC)
+# Formato: # | Par | Resultado | PnL | Capital total cuenta | Fecha y hora (UTC)
+# ============================================================
+# Capital inicial registrado: $10.0755 (2026-05-26 20:55 UTC)
+# Composición: USDT $0.69 + TON $9.10 (en OCO) + residuales $0.28
+# ============================================================
+# Los trades anteriores (1-4) no se cuentan por datos inconsistentes.
+# A partir del trade 5 (TON activo) se lleva registro preciso.
 # ============================================================
 
-1  | RENDER/USDT  | TP ✅    | +$0.3588     | $9.7146      | 2026-05-26 (hora no registrada)
-2  | NEAR/USDT    | TP ✅    | +$0.7958     | $10.5104     | 2026-05-26 (hora no registrada)
-3  | NEAR/USDT    | TP ✅    | +$0.8913     | $11.4017     | 2026-05-26 (hora no registrada)
-
-# ============================================================
-# PnL realizado total: +$2.0459
-# Trades cerrados: 3
