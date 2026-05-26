@@ -243,11 +243,19 @@ def place_market_buy(symbol, usdt_amount):
 
 def check_oco_status(order_list_id):
     """order_list_id puede ser int o str; acepta ambos."""
-    try:
-        d = signed_request('GET', '/api/v3/orderList', {'orderListId': int(order_list_id)})
-        return d.get('listOrderStatus', 'UNKNOWN')
-    except Exception:
-        return 'UNKNOWN'
+    for attempt in range(3):
+        try:
+            d = signed_request('GET', '/api/v3/orderList', {'orderListId': int(order_list_id)})
+            return d.get('listOrderStatus', 'UNKNOWN')
+        except urllib.error.HTTPError as e:
+            if e.code == 400:
+                return 'NOT_FOUND'  # OCO no existe
+            if attempt < 2:
+                time.sleep(2)
+        except Exception:
+            if attempt < 2:
+                time.sleep(2)
+    return 'UNKNOWN'
 
 def analyze_market():
     candidates = ['WLDUSDT','NEARUSDT','RENDERUSDT','TONUSDT','SOLUSDT',
