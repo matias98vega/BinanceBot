@@ -27,7 +27,7 @@ OCO_MAX_RETRIES = 3  # intentos para colocar OCO antes de vender en mercado
 def log_trade(trade_num, symbol, result, pnl, capital_after):
     """Agrega una línea al log de trades cerrados."""
     pair    = symbol.replace('USDT', '/USDT')
-    date    = time.strftime('%Y-%m-%d', time.gmtime())
+    date    = time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())
     pnl_str = f"+${pnl:.4f}" if pnl >= 0 else f"-${abs(pnl):.4f}"
     line    = f"{trade_num:<3}| {pair:<12}| {result:<8}| {pnl_str:<12}| ${capital_after:<10.4f}| {date}\n"
     with open(TRADES_LOG, 'a') as f:
