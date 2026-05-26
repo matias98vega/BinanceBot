@@ -9,10 +9,11 @@ SAFETY RULES:
   3. Si oco_order_list_id sigue vacío después de retry → MARKET SELL de emergencia y alertar
   4. Nunca crashear por ValueError en oco_order_list_id vacío
 """
-import json, urllib.request, urllib.parse, hmac, hashlib, time, math, os, sys
+import json, urllib.request, urllib.parse, urllib.error, hmac, hashlib, time, math, os, sys
 
 # ── Config ──────────────────────────────────────────────────────────────────
 STATE_FILE = '/root/.openclaw/workspace/trading/state.json'
+LOCK_FILE  = '/tmp/auto_loop.lock'
 TOOLS_KEY  = '0DwLCZ1RnGhfnWygp3PUxPrLGLjLByukBFvjEo06p5fVQpsICjdcKBLBRwXzOnVr'
 TOOLS_SEC  = 'VCMhz7vCQZGgwAIV4PDY74bpRGOxDY0gT4rh6a5cLJmh2mCfcJF1uQu3qhzcQWmM'
 BASE       = 'https://api.binance.com'
@@ -148,26 +149,34 @@ def place_oco(symbol, qty, tp, sl):
     step, _ = get_step_size(symbol)
     tick = get_tick_size(symbol)
     qty_floored = floor_qty(qty, step)
-    # Format qty string with right precision
     if step >= 0.1:
         qty_str = f"{qty_floored:.1f}"
     elif step >= 0.01:
         qty_str = f"{qty_floored:.2f}"
     else:
         qty_str = f"{qty_floored:.4f}"
-    tp_r  = round_price(tp, tick)
-    sl_r  = round_price(sl, tick)
-    sl_limit = round_price(sl - tick, tick)  # 1 tick por debajo del stop
-    tp_str = f"{tp_r:.8f}".rstrip('0').rstrip('.')
-    sl_str = f"{sl_r:.8f}".rstrip('0').rstrip('.')
+    tp_r     = round_price(tp, tick)
+    sl_r     = round_price(sl, tick)
+    sl_limit = round_price(sl - tick, tick)
+    tp_str       = f"{tp_r:.8f}".rstrip('0').rstrip('.')
+    sl_str       = f"{sl_r:.8f}".rstrip('0').rstrip('.')
     sl_limit_str = f"{sl_limit:.8f}".rstrip('0').rstrip('.')
+
+    # Validar contra precio actual antes de enviar
+    current = get_price(symbol)
+    if tp_r <= current:
+        raise ValueError(f"TP {tp_r} <= precio actual {current}")
+    if sl_r >= current:
+        raise ValueError(f"SL {sl_r} >= precio actual {current}")
+    if sl_limit >= sl_r:
+        raise ValueError(f"SL limit {sl_limit} >= SL stop {sl_r}")
 
     d = signed_request('POST', '/api/v3/order/oco', {
         'symbol': symbol, 'side': 'SELL',
         'quantity': qty_str,
-        'price': tp_str,                  # take profit (limit)
-        'stopPrice': sl_str,              # stop trigger
-        'stopLimitPrice': sl_limit_str,   # stop limit
+        'price': tp_str,
+        'stopPrice': sl_str,
+        'stopLimitPrice': sl_limit_str,
         'stopLimitTimeInForce': 'GTC',
     })
     return d
@@ -182,10 +191,17 @@ def place_oco_with_retry(symbol, qty, tp, sl, max_retries=OCO_MAX_RETRIES):
             oco_oids = [str(o['orderId']) for o in oco.get('orders', [])]
             if oco_id:
                 return oco_id, oco_oids, None
+        except urllib.error.HTTPError as ex:
+            body = ex.read().decode()
+            last_err = Exception(f'HTTP {ex.code}: {body}')
+            sys.stderr.write(f'[OCO attempt {attempt}] {last_err}\n')
+            if attempt < max_retries:
+                time.sleep(2 ** attempt)
         except Exception as ex:
             last_err = ex
+            sys.stderr.write(f'[OCO attempt {attempt}] {ex}\n')
             if attempt < max_retries:
-                time.sleep(2 ** attempt)  # 2s, 4s, 8s
+                time.sleep(2 ** attempt)
     return '', [], last_err
 
 def market_sell_all(symbol):
@@ -405,4 +421,16 @@ def main():
     print('\n'.join(output))
 
 if __name__ == '__main__':
-    main()
+    # Lock para evitar ejecuciones solapadas
+    import fcntl
+    lock_fd = open(LOCK_FILE, 'w')
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print('⚠️ Ya hay una instancia corriendo. Saliendo.')
+        sys.exit(0)
+    try:
+        main()
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
