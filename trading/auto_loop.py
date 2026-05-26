@@ -26,7 +26,8 @@ TRAIL_STEP_PCT   = 1.0   # subir SL cada vez que el precio sube 1% desde la entr
 RSI_MAX_ENTRY    = 65    # no entrar si RSI > 65 (sobrecomprado)
 ATR_MIN_PCT      = 0.5   # no entrar si ATR < 0.5% del precio (mercado muy plano)
 DAILY_LOSS_LIMIT = 3.0   # pausar si PnL del dia cae mas de $3 USDT
-COOLDOWN_AFTER_SL = True # no reentrar en el mismo par inmediatamente despues de un SL
+COOLDOWN_AFTER_SL  = True  # no reentrar en el mismo par inmediatamente despues de un SL
+PARTIAL_TAKE_PCT   = 0.5   # tomar ganancia parcial cuando el precio llega al 50% del recorrido TP
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def log_trade(trade_num, symbol, result, pnl, capital_after):
@@ -262,6 +263,77 @@ def market_sell_all(symbol):
     except Exception as ex:
         return None, str(ex)
 
+def take_partial_profit(state, current_price, output):
+    """
+    Si el precio llega al 50% del recorrido hacia el TP:
+    - Vende la mitad en mercado
+    - Recoloca OCO con la mitad restante y SL en breakeven
+    Retorna True si se ejecuto la parcial, False si no.
+    """
+    if state.get('partial_taken'):
+        return False  # ya se tomo parcial en este trade
+
+    entry = state['entry_price']
+    tp    = state['tp']
+    sl    = state['sl']
+    sym   = state['symbol']
+    qty   = state['quantity']
+
+    recorrido  = tp - entry
+    umbral     = entry + recorrido * PARTIAL_TAKE_PCT
+    if current_price < umbral:
+        return False  # aun no llego al 50%
+
+    # Cancelar OCO actual
+    if not cancel_oco(sym, state['oco_order_list_id']):
+        output.append("⚠️ Parcial: no se pudo cancelar OCO. Manteniendo posicion completa.")
+        return False
+
+    # Vender la mitad en mercado
+    step, min_qty = get_step_size(sym)
+    qty_half = floor_qty(qty / 2, step)
+    if qty_half < min_qty:
+        # La mitad es demasiado chica — restaurar OCO original y salir
+        place_oco_with_retry(sym, qty, tp, sl)
+        output.append("⚠️ Parcial: cantidad minima no alcanzada. Manteniendo posicion completa.")
+        return False
+
+    try:
+        signed_request('POST', '/api/v3/order', {
+            'symbol': sym, 'side': 'SELL', 'type': 'MARKET', 'quantity': f"{qty_half}"
+        })
+    except Exception as ex:
+        # Fallo la venta parcial — restaurar OCO original
+        place_oco_with_retry(sym, qty, tp, sl)
+        output.append(f"⚠️ Parcial: venta fallida ({ex}). OCO restaurado.")
+        return False
+
+    # Calcular PnL de la mitad vendida
+    pnl_half = (current_price - entry) * qty_half
+    output.append(f"💸 Ganancia parcial tomada: vendidas {qty_half} {sym.replace('USDT','')} a ${current_price:.4f} | PnL parcial: +${pnl_half:.4f}")
+
+    # Nueva cantidad restante
+    qty_rest = floor_qty(qty - qty_half, step)
+
+    # Nuevo SL = breakeven (precio de entrada)
+    tick = get_tick_size(sym)
+    new_sl = round_price(entry, tick)
+
+    # Colocar nuevo OCO con la mitad restante y SL en breakeven
+    oco_id, oco_oids, err = place_oco_with_retry(sym, qty_rest, tp, new_sl)
+    if not oco_id:
+        output.append(f"🚨 Parcial: OCO restante fallo ({err}). MARKET SELL de emergencia...")
+        market_sell_all(sym)
+        return False
+
+    state['quantity']          = qty_rest
+    state['sl']                = new_sl
+    state['oco_order_list_id'] = oco_id
+    state['oco_order_ids']     = oco_oids
+    state['partial_taken']     = True
+    output.append(f"🔒 OCO actualizado: {qty_rest} {sym.replace('USDT','')} restantes | SL en breakeven ${new_sl:.4f} | TP ${tp:.4f}")
+    return True
+
 def cancel_oco(symbol, order_list_id):
     """Cancela un OCO existente. Retorna True si OK."""
     try:
@@ -448,6 +520,7 @@ def main():
             state['status']         = 'scanning'
             state['oco_order_list_id'] = ''
             state['oco_order_ids']     = []
+            state['partial_taken']     = False  # reset para el proximo trade
             # Cooldown: si fue SL, recordar el par para no reentrar enseguida
             if pnl <= 0 and COOLDOWN_AFTER_SL:
                 state['cooldown_symbol'] = sym
@@ -457,7 +530,8 @@ def main():
             output.append(f"{result} — {sym} cerrado | PnL: {'+' if pnl>=0 else ''}{pnl:.4f} USDT | Acumulado: {state['total_pnl_usdt']:+.4f} USDT")
             output.append(f"Capital disponible: ${usdt_now:.4f} | Analizando mercado para próxima entrada...")
         else:
-            # Sigue activa — intentar trailing stop, luego reportar
+            # Sigue activa — 1) ganancia parcial, 2) trailing stop, 3) reportar
+            take_partial_profit(state, current_price, output)
             new_sl, trail_msg = update_trailing_stop(state, current_price)
             if trail_msg:
                 output.append(trail_msg)
