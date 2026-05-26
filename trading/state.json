@@ -1,17 +1,17 @@
 {
   "status": "in_position",
   "symbol": "TONUSDT",
-  "entry_price": 2.003,
-  "quantity": 4.52,
-  "sl": 1.9556,
-  "tp": 2.0947,
-  "oco_order_list_id": "22383592231",
+  "entry_price": 1.972,
+  "quantity": 4.47,
+  "sl": 1.9164,
+  "tp": 2.0831,
+  "oco_order_list_id": "22384995320",
   "oco_order_ids": [
-    "1319732064",
-    "1319732065"
+    "1320119809",
+    "1320119810"
   ],
-  "capital_usdt": 10.0755,
-  "trade_count": 5,
-  "total_pnl_usdt": 0.0,
-  "last_update": "2026-05-26T20:56:47Z"
+  "capital_usdt": 9.497,
+  "trade_count": 6,
+  "total_pnl_usdt": -0.5785,
+  "last_update": "2026-05-26T22:09:19Z"
 }

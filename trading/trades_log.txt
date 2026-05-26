@@ -8,3 +8,4 @@
 # A partir del trade 5 (TON activo) se lleva registro preciso.
 # ============================================================
 
+5  | TON/USDT    | SL 🛑    | -$0.5785    | $9.4970    | 2026-05-26 22:07 UTC

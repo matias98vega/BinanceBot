@@ -22,6 +22,7 @@ RISK_PCT   = 0.93    # usar 93% del capital disponible por trade
 SL_ATR_MULT = 1.0
 TP_ATR_MULT = 2.0
 OCO_MAX_RETRIES = 3  # intentos para colocar OCO antes de vender en mercado
+TRAIL_STEP_PCT  = 1.0  # subir SL cada vez que el precio sube 1% desde la entrada
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def log_trade(trade_num, symbol, result, pnl, capital_after):
@@ -47,8 +48,14 @@ def signed_request(method, path, params=None):
     params['timestamp'] = int(time.time() * 1000)
     qs = urllib.parse.urlencode(params)
     sig = hmac.new(TOOLS_SEC.encode(), qs.encode(), hashlib.sha256).hexdigest()
-    url = f"{BASE}{path}?{qs}&signature={sig}"
-    req = urllib.request.Request(url, method=method,
+    full_qs = f"{qs}&signature={sig}"
+    if method in ('GET', 'DELETE'):
+        url  = f"{BASE}{path}?{full_qs}"
+        data = None
+    else:
+        url  = f"{BASE}{path}"
+        data = full_qs.encode()
+    req = urllib.request.Request(url, data=data, method=method,
           headers={'X-MBX-APIKEY': TOOLS_KEY, 'Content-Type': 'application/x-www-form-urlencoded'})
     with urllib.request.urlopen(req, timeout=10) as r:
         return json.loads(r.read())
@@ -230,7 +237,65 @@ def market_sell_all(symbol):
     except Exception as ex:
         return None, str(ex)
 
-def place_market_buy(symbol, usdt_amount):
+def cancel_oco(symbol, order_list_id):
+    """Cancela un OCO existente. Retorna True si OK."""
+    try:
+        signed_request('DELETE', '/api/v3/orderList', {
+            'symbol': symbol,
+            'orderListId': int(order_list_id)
+        })
+        return True
+    except Exception as ex:
+        sys.stderr.write(f'[cancel_oco] {ex}\n')
+        return False
+
+def update_trailing_stop(state, current_price):
+    """
+    Si el precio subió TRAIL_STEP_PCT% o más desde la entrada,
+    sube el SL para asegurar ganancia. Cancela el OCO viejo y pone uno nuevo.
+    Retorna (nuevo_sl, mensaje) o (None, None) si no hay que actualizar.
+    """
+    entry   = state['entry_price']
+    sl      = state['sl']
+    tp      = state['tp']
+    sym     = state['symbol']
+    qty     = state['quantity']
+    gain_pct = (current_price - entry) / entry * 100
+
+    # Calcular cuántos steps de TRAIL_STEP_PCT llevamos
+    steps = int(gain_pct / TRAIL_STEP_PCT)
+    if steps < 1:
+        return None, None  # aún no llegó al primer step
+
+    # Nuevo SL: entrada + (steps - 1) * TRAIL_STEP_PCT %
+    # Con steps=1 (precio subió 1-2%): SL sube a breakeven
+    # Con steps=2 (precio subió 2-3%): SL asegura 1% de ganancia
+    new_sl_pct = (steps - 1) * TRAIL_STEP_PCT / 100
+    new_sl = round(entry * (1 + new_sl_pct), 8)
+    tick   = get_tick_size(sym)
+    new_sl = round_price(new_sl, tick)
+
+    if new_sl <= sl:
+        return None, None  # el SL ya está en ese nivel o más alto
+
+    # Cancelar OCO viejo
+    if not cancel_oco(sym, state['oco_order_list_id']):
+        return None, None  # si no se puede cancelar, no tocar nada
+
+    # Colocar nuevo OCO con SL actualizado
+    oco_id, oco_oids, err = place_oco_with_retry(sym, qty, tp, new_sl)
+    if not oco_id:
+        # Falló — intentar restaurar el OCO original
+        place_oco_with_retry(sym, qty, tp, sl)
+        return None, f'Trail falló ({err}), OCO restaurado'
+
+    state['sl']                = new_sl
+    state['oco_order_list_id'] = oco_id
+    state['oco_order_ids']     = oco_oids
+    msg = f'📈 Trailing stop actualizado: SL ${sl:.4f} → ${new_sl:.4f} | Ganancia asegurada: {new_sl_pct*100:.1f}%'
+    return new_sl, msg
+
+
     step, min_qty = get_step_size(symbol)
     price = get_price(symbol)
     qty = floor_qty((usdt_amount / price) * 0.999, step)  # 0.1% margen comisión
@@ -352,8 +417,11 @@ def main():
             output.append(f"{result} — {sym} cerrado | PnL: {'+' if pnl>=0 else ''}{pnl:.4f} USDT | Acumulado: {state['total_pnl_usdt']:+.4f} USDT")
             output.append(f"Capital disponible: ${usdt_now:.4f} | Analizando mercado para próxima entrada...")
         else:
-            # Sigue activa — solo reportar
-            output.append(f"📊 {sym} = ${current_price:.4f} | {pnl_pct:+.2f}% desde entrada | OCO activa ({oco_status}) | {time.strftime('%H:%M UTC', time.gmtime())}")
+            # Sigue activa — intentar trailing stop, luego reportar
+            new_sl, trail_msg = update_trailing_stop(state, current_price)
+            if trail_msg:
+                output.append(trail_msg)
+            output.append(f"📊 {sym} = ${current_price:.4f} | {pnl_pct:+.2f}% desde entrada | SL ${state['sl']:.4f} | TP ${state['tp']:.4f} | {time.strftime('%H:%M UTC', time.gmtime())}")
             save_state(state)
             print('\n'.join(output))
             return
