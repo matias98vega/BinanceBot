@@ -22,7 +22,11 @@ RISK_PCT   = 0.93    # usar 93% del capital disponible por trade
 SL_ATR_MULT = 1.0
 TP_ATR_MULT = 2.0
 OCO_MAX_RETRIES = 3  # intentos para colocar OCO antes de vender en mercado
-TRAIL_STEP_PCT  = 1.0  # subir SL cada vez que el precio sube 1% desde la entrada
+TRAIL_STEP_PCT   = 1.0   # subir SL cada vez que el precio sube 1% desde la entrada
+RSI_MAX_ENTRY    = 65    # no entrar si RSI > 65 (sobrecomprado)
+ATR_MIN_PCT      = 0.5   # no entrar si ATR < 0.5% del precio (mercado muy plano)
+DAILY_LOSS_LIMIT = 3.0   # pausar si PnL del dia cae mas de $3 USDT
+COOLDOWN_AFTER_SL = True # no reentrar en el mismo par inmediatamente despues de un SL
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def log_trade(trade_num, symbol, result, pnl, capital_after):
@@ -134,7 +138,9 @@ def score_symbol(symbol):
         if vol_r > 1.1: sc += 1
         sl = round(last - SL_ATR_MULT * atr, 4)
         tp = round(last + TP_ATR_MULT * atr, 4)
-        return {'symbol': symbol, 'score': sc, 'price': last, 'atr': atr, 'sl': sl, 'tp': tp, 'rsi': rsi_v}
+        atr_pct = (atr / last) * 100
+        return {'symbol': symbol, 'score': sc, 'price': last, 'atr': atr,
+                'atr_pct': atr_pct, 'sl': sl, 'tp': tp, 'rsi': rsi_v}
     except:
         return None
 
@@ -322,27 +328,37 @@ def check_oco_status(order_list_id):
                 time.sleep(2)
     return 'UNKNOWN'
 
-def analyze_market():
+def analyze_market(skip_symbol=None):
     candidates = ['WLDUSDT','NEARUSDT','RENDERUSDT','TONUSDT','SOLUSDT',
                   'BNBUSDT','ETHUSDT','BTCUSDT','FETUSDT','INJUSDT']
-    # Filter by 24h volume > 20M and positive momentum
     tickers = public_get('/api/v3/ticker/24hr')
     usdt_tickers = {t['symbol']: t for t in tickers
                     if t['symbol'].endswith('USDT') and float(t.get('quoteVolume',0)) > 20e6}
     results = []
     for sym in candidates:
+        if sym == skip_symbol:          # cooldown: saltar par que dio SL
+            continue
         if sym not in usdt_tickers:
             continue
         chg = float(usdt_tickers[sym]['priceChangePercent'])
-        if chg < -5:  # skip heavy losers
+        if chg < -5:
             continue
         r = score_symbol(sym)
-        if r and r['score'] >= 5:
+        if not r:
+            continue
+        # Filtro RSI: no entrar sobrecomprado
+        if r['rsi'] > RSI_MAX_ENTRY:
+            continue
+        # Filtro ATR: no entrar si mercado muy plano
+        if r['atr_pct'] < ATR_MIN_PCT:
+            continue
+        if r['score'] >= 5:
             results.append(r)
     if not results:
         for sym in ['ETHUSDT', 'SOLUSDT', 'BNBUSDT']:
+            if sym == skip_symbol: continue
             r = score_symbol(sym)
-            if r:
+            if r and r['rsi'] <= RSI_MAX_ENTRY and r['atr_pct'] >= ATR_MIN_PCT:
                 results.append(r)
     results.sort(key=lambda x: x['score'], reverse=True)
     return results[0] if results else None
@@ -413,6 +429,11 @@ def main():
             state['status']         = 'scanning'
             state['oco_order_list_id'] = ''
             state['oco_order_ids']     = []
+            # Cooldown: si fue SL, recordar el par para no reentrar enseguida
+            if pnl <= 0 and COOLDOWN_AFTER_SL:
+                state['cooldown_symbol'] = sym
+            else:
+                state['cooldown_symbol'] = ''
             log_trade(state.get('trade_count', '?'), sym, result, pnl, usdt_now)
             output.append(f"{result} — {sym} cerrado | PnL: {'+' if pnl>=0 else ''}{pnl:.4f} USDT | Acumulado: {state['total_pnl_usdt']:+.4f} USDT")
             output.append(f"Capital disponible: ${usdt_now:.4f} | Analizando mercado para próxima entrada...")
@@ -428,15 +449,28 @@ def main():
 
     # ── 2. Scanning: buscar nueva oportunidad ─────────────────────────────────
     if state['status'] == 'scanning':
-        usdt_balance = get_usdt_balance()
-        if usdt_balance < 5.0:
-            output.append(f"⚠️ Capital insuficiente (${usdt_balance:.4f}) para nueva entrada. Mínimo $5 USDT.")
+        # Chequeo de perdida diaria
+        if state['total_pnl_usdt'] <= -DAILY_LOSS_LIMIT:
+            output.append(f"⚠️ Limite de perdida diaria alcanzado (${state['total_pnl_usdt']:.4f}). Bot pausado hasta reinicio manual.")
             state['status'] = 'paused'
             save_state(state)
             print('\n'.join(output))
             return
 
-        best = analyze_market()
+        usdt_balance = get_usdt_balance()
+        if usdt_balance < 5.0:
+            output.append(f"⚠️ Capital insuficiente (${usdt_balance:.4f}) para nueva entrada. Minimo $5 USDT.")
+            state['status'] = 'paused'
+            save_state(state)
+            print('\n'.join(output))
+            return
+
+        skip_sym = state.get('cooldown_symbol', '') if COOLDOWN_AFTER_SL else ''
+        best = analyze_market(skip_symbol=skip_sym)
+        if skip_sym and not best:
+            output.append(f"🔄 Sin candidatos excluyendo {skip_sym} (cooldown SL). Ampliando busqueda...")
+            best = analyze_market()
+        state['cooldown_symbol'] = ''  # limpiar cooldown tras usarlo
         if not best:
             output.append("🔍 Sin candidatos claros ahora. Reintento en 30 min.")
             save_state(state)
