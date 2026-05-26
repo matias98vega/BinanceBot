@@ -345,7 +345,7 @@ def main():
             output.append(f"Capital disponible: ${usdt_now:.4f} | Analizando mercado para próxima entrada...")
         else:
             # Sigue activa — solo reportar
-            output.append(f"📊 {sym} = ${current_price:.4f} | {pnl_pct:+.2f}% desde entrada | OCO activa ({oco_status})")
+            output.append(f"📊 {sym} = ${current_price:.4f} | {pnl_pct:+.2f}% desde entrada | OCO activa ({oco_status}) | {time.strftime('%H:%M UTC', time.gmtime())}")
             save_state(state)
             print('\n'.join(output))
             return
