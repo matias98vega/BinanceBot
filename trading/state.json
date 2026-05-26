@@ -1,0 +1,17 @@
+{
+  "status": "in_position",
+  "symbol": "RENDERUSDT",
+  "entry_price": 2.306,
+  "quantity": 4.17,
+  "sl": 2.2463,
+  "tp": 2.4194,
+  "oco_order_list_id": "22370819422",
+  "oco_order_ids": [
+    1397015497,
+    1397015498
+  ],
+  "capital_usdt": 10.3588,
+  "trade_count": 2,
+  "total_pnl_usdt": 0.3588,
+  "last_update": "2026-05-26T10:25:49Z"
+}
