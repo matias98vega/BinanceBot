@@ -117,7 +117,8 @@ def macd_hist(prices):
 
 def score_symbol(symbol):
     try:
-        klines = get_klines(symbol)
+        # Timeframe 1h (entrada)
+        klines = get_klines(symbol, interval='1h', limit=48)
         closes = [float(k[4]) for k in klines]
         highs  = [float(k[2]) for k in klines]
         lows   = [float(k[3]) for k in klines]
@@ -129,6 +130,17 @@ def score_symbol(symbol):
         mh     = macd_hist(closes)
         atr    = sum(h-l for h,l in zip(highs[-14:], lows[-14:])) / 14
         vol_r  = vols[-1] / (sum(vols[-10:])/10)
+
+        # Confirmacion 4h: tendencia mayor
+        klines_4h = get_klines(symbol, interval='4h', limit=24)
+        closes_4h = [float(k[4]) for k in klines_4h]
+        highs_4h  = [float(k[2]) for k in klines_4h]
+        lows_4h   = [float(k[3]) for k in klines_4h]
+        e20_4h    = ema(closes_4h, 20)[-1]
+        atr_4h    = sum(h-l for h,l in zip(highs_4h[-14:], lows_4h[-14:])) / 14
+        trend_ok  = last > e20_4h  # precio por encima de EMA20 en 4h
+
+        # Score base
         sc = 0
         if last > e20:  sc += 2
         if last > e50:  sc += 1
@@ -136,11 +148,18 @@ def score_symbol(symbol):
         elif rsi_v < 38:    sc += 1
         if mh > 0:      sc += 2
         if vol_r > 1.1: sc += 1
+        if trend_ok:    sc += 1  # bonus confirmacion 4h
+
+        # Score minimo dinamico: si mercado muy volatil (ATR 4h alto), exigir mas
+        atr_4h_pct = (atr_4h / last) * 100
+        min_score = 6 if atr_4h_pct > 3.0 else 5  # mercado volatil = mas selectivo
+
         sl = round(last - SL_ATR_MULT * atr, 4)
         tp = round(last + TP_ATR_MULT * atr, 4)
         atr_pct = (atr / last) * 100
         return {'symbol': symbol, 'score': sc, 'price': last, 'atr': atr,
-                'atr_pct': atr_pct, 'sl': sl, 'tp': tp, 'rsi': rsi_v}
+                'atr_pct': atr_pct, 'sl': sl, 'tp': tp, 'rsi': rsi_v,
+                'trend_4h': trend_ok, 'min_score': min_score}
     except:
         return None
 
@@ -301,7 +320,7 @@ def update_trailing_stop(state, current_price):
     msg = f'📈 Trailing stop actualizado: SL ${sl:.4f} → ${new_sl:.4f} | Ganancia asegurada: {new_sl_pct*100:.1f}%'
     return new_sl, msg
 
-
+def place_market_buy(symbol, usdt_amount):
     step, min_qty = get_step_size(symbol)
     price = get_price(symbol)
     qty = floor_qty((usdt_amount / price) * 0.999, step)  # 0.1% margen comisión
@@ -352,7 +371,7 @@ def analyze_market(skip_symbol=None):
         # Filtro ATR: no entrar si mercado muy plano
         if r['atr_pct'] < ATR_MIN_PCT:
             continue
-        if r['score'] >= 5:
+        if r['score'] >= r.get('min_score', 5):
             results.append(r)
     if not results:
         for sym in ['ETHUSDT', 'SOLUSDT', 'BNBUSDT']:
