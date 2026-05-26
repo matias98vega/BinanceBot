@@ -1,0 +1,12 @@
+# Trading Log — Auto Bot
+# Formato: # | Par | Resultado | PnL | Capital acumulado | Fecha
+# ============================================================
+
+1 | RENDER/USDT | TP ✅  | +$0.3588 | $9.7146  | 2026-05-26
+2 | NEAR/USDT   | TP ✅  | +$0.7958 | $10.5104 | 2026-05-26
+3 | NEAR/USDT   | TP ✅  | +$0.8913 | $11.4017 | 2026-05-26
+
+# ============================================================
+# PnL realizado total: +$2.0459
+# Trades cerrados: 3
+# Capital disponible: $10.0106 (neto post market sell ajustes)

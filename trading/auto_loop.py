@@ -14,6 +14,7 @@ import json, urllib.request, urllib.parse, urllib.error, hmac, hashlib, time, ma
 # ── Config ──────────────────────────────────────────────────────────────────
 STATE_FILE = '/root/.openclaw/workspace/trading/state.json'
 LOCK_FILE  = '/tmp/auto_loop.lock'
+TRADES_LOG = '/root/.openclaw/workspace/trading/trades_log.txt'
 TOOLS_KEY  = '0DwLCZ1RnGhfnWygp3PUxPrLGLjLByukBFvjEo06p5fVQpsICjdcKBLBRwXzOnVr'
 TOOLS_SEC  = 'VCMhz7vCQZGgwAIV4PDY74bpRGOxDY0gT4rh6a5cLJmh2mCfcJF1uQu3qhzcQWmM'
 BASE       = 'https://api.binance.com'
@@ -23,6 +24,15 @@ TP_ATR_MULT = 2.0
 OCO_MAX_RETRIES = 3  # intentos para colocar OCO antes de vender en mercado
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+def log_trade(trade_num, symbol, result, pnl, capital_after):
+    """Agrega una línea al log de trades cerrados."""
+    pair    = symbol.replace('USDT', '/USDT')
+    date    = time.strftime('%Y-%m-%d', time.gmtime())
+    pnl_str = f"+${pnl:.4f}" if pnl >= 0 else f"-${abs(pnl):.4f}"
+    line    = f"{trade_num:<3}| {pair:<12}| {result:<8}| {pnl_str:<12}| ${capital_after:<10.4f}| {date}\n"
+    with open(TRADES_LOG, 'a') as f:
+        f.write(line)
+
 def load_state():
     with open(STATE_FILE) as f:
         return json.load(f)
@@ -330,6 +340,7 @@ def main():
             state['status']         = 'scanning'
             state['oco_order_list_id'] = ''
             state['oco_order_ids']     = []
+            log_trade(state.get('trade_count', '?'), sym, result, pnl, usdt_now)
             output.append(f"{result} — {sym} cerrado | PnL: {'+' if pnl>=0 else ''}{pnl:.4f} USDT | Acumulado: {state['total_pnl_usdt']:+.4f} USDT")
             output.append(f"Capital disponible: ${usdt_now:.4f} | Analizando mercado para próxima entrada...")
         else:
@@ -383,6 +394,8 @@ def main():
             sell_order, sell_err = market_sell_all(sym)
             if sell_order:
                 usdt_now = get_usdt_balance()
+                pnl_emg  = usdt_now - (state['capital_usdt'] - state['total_pnl_usdt'])
+                log_trade(state.get('trade_count', '?'), sym, 'SELL🚨', pnl_emg, usdt_now)
                 output.append(f"💰 Posición cerrada en mercado. Capital recuperado: ${usdt_now:.4f}")
                 state['capital_usdt'] = round(usdt_now, 4)
             else:
