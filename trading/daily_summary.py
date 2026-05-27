@@ -26,7 +26,7 @@ def get_price(symbol):
 
 def main():
     state = json.load(open(STATE_FILE))
-    today = time.strftime('%Y-%m-%d', time.gmtime())
+    today = time.strftime('%Y-%m-%d', time.gmtime(time.time() - 3*3600))
 
     # Leer trades del dia de hoy en el log
     trades_hoy = []

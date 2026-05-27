@@ -41,7 +41,7 @@ MAX_CONSEC_SL      = 2       # cantidad de SL seguidos antes de reducir riesgo
 def log_trade(trade_num, symbol, result, pnl, capital_after):
     """Agrega una línea al log de trades cerrados."""
     pair    = symbol.replace('USDT', '/USDT')
-    date    = time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())
+    date    = time.strftime('%Y-%m-%d %H:%M UY', time.gmtime(time.time() - 3*3600))
     pnl_str = f"+${pnl:.4f}" if pnl >= 0 else f"-${abs(pnl):.4f}"
     line    = f"{trade_num:<3}| {pair:<12}| {result:<8}| {pnl_str:<12}| ${capital_after:<10.4f}| {date}\n"
     with open(TRADES_LOG, 'a') as f:
@@ -49,7 +49,7 @@ def log_trade(trade_num, symbol, result, pnl, capital_after):
 
 def log_analysis(chosen, descarte):
     """Guarda un registro de cada escaneo de mercado."""
-    now = time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())
+    now = time.strftime('%Y-%m-%d %H:%M UY', time.gmtime(time.time() - 3*3600))
     try:
         with open(ANALYSIS_LOG, 'a') as f:
             if chosen:
@@ -691,7 +691,7 @@ def main():
             new_sl, trail_msg = update_trailing_stop(state, current_price)
             if trail_msg:
                 output.append(trail_msg)
-            output.append(f"📊 {sym} = ${current_price:.4f} | {pnl_pct:+.2f}% desde entrada | {hours_open:.1f}h abierto | SL ${state['sl']:.4f} | TP ${state['tp']:.4f} | {time.strftime('%H:%M UTC', time.gmtime())}")
+            output.append(f"📊 {sym} = ${current_price:.4f} | {pnl_pct:+.2f}% desde entrada | {hours_open:.1f}h abierto | SL ${state['sl']:.4f} | TP ${state['tp']:.4f} | {time.strftime('%H:%M UY', time.gmtime(time.time() - 3*3600))}")
             save_state(state)
             print('\n'.join(output))
             return
