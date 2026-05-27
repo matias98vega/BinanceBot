@@ -26,6 +26,7 @@ OCO_MAX_RETRIES = 3  # intentos para colocar OCO antes de vender en mercado
 TRAIL_STEP_PCT   = 1.0   # subir SL cada vez que el precio sube 1% desde la entrada
 RSI_MAX_ENTRY    = 65    # no entrar si RSI > 65 (sobrecomprado)
 ATR_MIN_PCT      = 0.5   # no entrar si ATR < 0.5% del precio (mercado muy plano)
+SL_MIN_DIST_PCT  = 1.0   # distancia minima del SL desde entrada (1%)
 DAILY_LOSS_LIMIT = 3.0   # pausar si PnL del dia cae mas de $3 USDT
 COOLDOWN_AFTER_SL  = True  # no reentrar en el mismo par inmediatamente despues de un SL
 PARTIAL_TAKE_PCT   = 0.5   # tomar ganancia parcial cuando el precio llega al 50% del recorrido TP
@@ -198,15 +199,22 @@ def score_symbol(symbol):
     except:
         return None
 
+_exchange_info_cache = {}
+
+def get_exchange_info(symbol):
+    if symbol not in _exchange_info_cache:
+        _exchange_info_cache[symbol] = public_get('/api/v3/exchangeInfo', {'symbol': symbol})
+    return _exchange_info_cache[symbol]
+
 def get_step_size(symbol):
-    info = public_get('/api/v3/exchangeInfo', {'symbol': symbol})
+    info = get_exchange_info(symbol)
     for f in info['symbols'][0]['filters']:
         if f['filterType'] == 'LOT_SIZE':
             return float(f['stepSize']), float(f['minQty'])
     return 1.0, 1.0
 
 def get_tick_size(symbol):
-    info = public_get('/api/v3/exchangeInfo', {'symbol': symbol})
+    info = get_exchange_info(symbol)
     for f in info['symbols'][0]['filters']:
         if f['filterType'] == 'PRICE_FILTER':
             return float(f['tickSize'])
@@ -247,6 +255,9 @@ def place_oco(symbol, qty, tp, sl):
         raise ValueError(f"SL {sl_r} >= precio actual {current}")
     if sl_limit >= sl_r:
         raise ValueError(f"SL limit {sl_limit} >= SL stop {sl_r}")
+    sl_dist_pct = (current - sl_r) / current * 100
+    if sl_dist_pct < SL_MIN_DIST_PCT:
+        raise ValueError(f"SL demasiado cerca: {sl_dist_pct:.2f}% (minimo {SL_MIN_DIST_PCT}%)")
 
     d = signed_request('POST', '/api/v3/order/oco', {
         'symbol': symbol, 'side': 'SELL',
@@ -510,12 +521,18 @@ def analyze_market(skip_symbol=None):
             continue
         results.append(r)
     if not results:
-        for sym in ['ETHUSDT', 'SOLUSDT', 'BNBUSDT']:
-            if sym == skip_symbol: continue
-            r = score_symbol(sym)
+        # Reutilizar resultados ya calculados del loop si existen
+        fallback_syms = ['ETHUSDT', 'SOLUSDT', 'BNBUSDT']
+        scored = {r['symbol']: r for r in [score_symbol(s) for s in fallback_syms
+                  if s not in [x['symbol'] for x in results] and s != skip_symbol
+                  and s not in descarte] if r}
+        # Tambien rescatar los que solo fueron descartados por score bajo
+        for sym_f in fallback_syms:
+            if sym_f == skip_symbol: continue
+            r = scored.get(sym_f) or (score_symbol(sym_f) if sym_f in descarte and 'score bajo' in descarte.get(sym_f,'') else None)
             if r and r['rsi'] <= RSI_MAX_ENTRY and r['atr_pct'] >= ATR_MIN_PCT:
                 results.append(r)
-                descarte.pop(sym, None)
+                descarte.pop(sym_f, None)
     results.sort(key=lambda x: x['score'], reverse=True)
     return (results[0] if results else None), descarte
 
