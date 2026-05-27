@@ -14,7 +14,8 @@ import json, urllib.request, urllib.parse, urllib.error, hmac, hashlib, time, ma
 # ── Config ──────────────────────────────────────────────────────────────────
 STATE_FILE = '/root/.openclaw/workspace/trading/state.json'
 LOCK_FILE  = '/tmp/auto_loop.lock'
-TRADES_LOG = '/root/.openclaw/workspace/trading/trades_log.txt'
+TRADES_LOG   = '/root/.openclaw/workspace/trading/trades_log.txt'
+ANALYSIS_LOG = '/root/.openclaw/workspace/trading/analysis_log.txt'
 TOOLS_KEY  = '0DwLCZ1RnGhfnWygp3PUxPrLGLjLByukBFvjEo06p5fVQpsICjdcKBLBRwXzOnVr'
 TOOLS_SEC  = 'VCMhz7vCQZGgwAIV4PDY74bpRGOxDY0gT4rh6a5cLJmh2mCfcJF1uQu3qhzcQWmM'
 BASE       = 'https://api.binance.com'
@@ -44,6 +45,20 @@ def log_trade(trade_num, symbol, result, pnl, capital_after):
     line    = f"{trade_num:<3}| {pair:<12}| {result:<8}| {pnl_str:<12}| ${capital_after:<10.4f}| {date}\n"
     with open(TRADES_LOG, 'a') as f:
         f.write(line)
+
+def log_analysis(chosen, descarte):
+    """Guarda un registro de cada escaneo de mercado."""
+    now = time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())
+    try:
+        with open(ANALYSIS_LOG, 'a') as f:
+            if chosen:
+                f.write(f"[{now}] ELEGIDO: {chosen['symbol']} score={chosen['score']} RSI={chosen['rsi']:.0f} ATR={chosen['atr_pct']:.2f}%\n")
+            else:
+                f.write(f"[{now}] SIN CANDIDATO\n")
+            for sym, motivo in descarte.items():
+                f.write(f"  ✗ {sym}: {motivo}\n")
+    except Exception:
+        pass
 
 def send_alert(msg):
     """Manda mensaje proactivo via Jarvis. Silencia errores para no crashear el bot."""
@@ -438,12 +453,25 @@ def check_oco_status(order_list_id):
                 time.sleep(2)
     return 'UNKNOWN'
 
+# Pares que nunca queremos operar (stablecoins, wrapped, etc.)
+BLACKLIST = {'USDCUSDT','BUSDUSDT','TUSDUSDT','USDTUSDT','FDUSDUSDT',
+             'WBTCUSDT','STETHUSDT','BETHUSDT','LDOUSDT'}
+
 def analyze_market(skip_symbol=None):
-    candidates = ['WLDUSDT','NEARUSDT','RENDERUSDT','TONUSDT','SOLUSDT',
-                  'BNBUSDT','ETHUSDT','BTCUSDT','FETUSDT','INJUSDT']
     tickers = public_get('/api/v3/ticker/24hr')
     usdt_tickers = {t['symbol']: t for t in tickers
-                    if t['symbol'].endswith('USDT') and float(t.get('quoteVolume',0)) > 20e6}
+                    if t['symbol'].endswith('USDT')
+                    and float(t.get('quoteVolume', 0)) > 20e6
+                    and t['symbol'] not in BLACKLIST}
+
+    # Top 20 por volumen 24h + lista fija como base garantizada
+    base = ['WLDUSDT','NEARUSDT','RENDERUSDT','TONUSDT','SOLUSDT',
+            'BNBUSDT','ETHUSDT','BTCUSDT','FETUSDT','INJUSDT']
+    top20 = sorted(usdt_tickers.keys(),
+                   key=lambda s: float(usdt_tickers[s].get('quoteVolume',0)),
+                   reverse=True)[:20]
+    candidates = list(dict.fromkeys(base + top20))  # union, sin duplicados, base primero
+
     results = []
     descarte = {}
     for sym in candidates:
@@ -675,6 +703,7 @@ def main():
             output.append(f"🔄 Sin candidatos excluyendo {skip_sym} (cooldown SL). Ampliando busqueda...")
             best, descarte = analyze_market()
         state['cooldown_symbol'] = ''  # limpiar cooldown tras usarlo
+        log_analysis(best, descarte)
         if not best:
             output.append("🔍 Sin candidatos claros ahora. Reintento en 30 min.")
             for sym_d, motivo in descarte.items():
