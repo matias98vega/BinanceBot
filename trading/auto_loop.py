@@ -30,6 +30,7 @@ COOLDOWN_AFTER_SL  = True  # no reentrar en el mismo par inmediatamente despues 
 PARTIAL_TAKE_PCT   = 0.5   # tomar ganancia parcial cuando el precio llega al 50% del recorrido TP
 STALE_HOURS        = 8     # salir si el trade lleva +8h y precio está entre -0.5% y +0.5% desde entrada
 STALE_RANGE_PCT    = 0.5   # rango de "estancado" en %
+ALERT_TARGET       = '20313075:thread:019e6042-4a09-7808-a0e4-dea13cade83b'
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def log_trade(trade_num, symbol, result, pnl, capital_after):
@@ -40,6 +41,19 @@ def log_trade(trade_num, symbol, result, pnl, capital_after):
     line    = f"{trade_num:<3}| {pair:<12}| {result:<8}| {pnl_str:<12}| ${capital_after:<10.4f}| {date}\n"
     with open(TRADES_LOG, 'a') as f:
         f.write(line)
+
+def send_alert(msg):
+    """Manda mensaje proactivo via Jarvis. Silencia errores para no crashear el bot."""
+    import subprocess
+    try:
+        subprocess.run([
+            'openclaw', 'message', 'send',
+            '--channel', 'jarvis',
+            '--target', ALERT_TARGET,
+            '--message', msg
+        ], timeout=10, capture_output=True)
+    except Exception:
+        pass  # nunca crashear por fallo de alerta
 
 def load_state():
     with open(STATE_FILE) as f:
@@ -497,12 +511,14 @@ def main():
                     else:
                         output.append(f"🚨🚨 MARKET SELL también falló: {sell_err}. ACCIÓN MANUAL REQUERIDA.")
                         state['status'] = 'ERROR_MANUAL_REQUIRED'
+                        send_alert(f"🚨🚨 BOT EN ERROR — {sym} tiene posicion abierta SIN STOPS. Market sell fallo: {sell_err}. INTERVENCION MANUAL URGENTE.")
                     save_state(state)
                     print('\n'.join(output))
                     return
             else:
                 output.append(f"🚨 Estado incompleto (qty={qty}, sl={sl}, tp={tp}). No puedo recolocar OCO. REVISIÓN MANUAL.")
                 state['status'] = 'ERROR_MANUAL_REQUIRED'
+                send_alert(f"🚨 BOT EN ERROR — {sym} con estado incompleto. No pudo recolocar OCO. REVISION MANUAL urgente.")
                 save_state(state)
                 print('\n'.join(output))
                 return
@@ -628,6 +644,7 @@ def main():
                 state['capital_usdt'] = round(usdt_now, 4)
             else:
                 output.append(f"🚨🚨 MARKET SELL falló: {sell_err}. ACCIÓN MANUAL URGENTE.")
+                send_alert(f"🚨🚨 BOT EN ERROR — {sym} comprado pero OCO y market sell fallaron. Posicion abierta SIN STOPS. INTERVENCION URGENTE.")
                 # Guardar estado con oco vacío para que el próximo ciclo intente recolocar
                 state.update({
                     'status': 'in_position',
