@@ -28,6 +28,8 @@ ATR_MIN_PCT      = 0.5   # no entrar si ATR < 0.5% del precio (mercado muy plano
 DAILY_LOSS_LIMIT = 3.0   # pausar si PnL del dia cae mas de $3 USDT
 COOLDOWN_AFTER_SL  = True  # no reentrar en el mismo par inmediatamente despues de un SL
 PARTIAL_TAKE_PCT   = 0.5   # tomar ganancia parcial cuando el precio llega al 50% del recorrido TP
+STALE_HOURS        = 8     # salir si el trade lleva +8h y precio está entre -0.5% y +0.5% desde entrada
+STALE_RANGE_PCT    = 0.5   # rango de "estancado" en %
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def log_trade(trade_num, symbol, result, pnl, capital_after):
@@ -530,12 +532,35 @@ def main():
             output.append(f"{result} — {sym} cerrado | PnL: {'+' if pnl>=0 else ''}{pnl:.4f} USDT | Acumulado: {state['total_pnl_usdt']:+.4f} USDT")
             output.append(f"Capital disponible: ${usdt_now:.4f} | Analizando mercado para próxima entrada...")
         else:
-            # Sigue activa — 1) ganancia parcial, 2) trailing stop, 3) reportar
+            # Sigue activa — 1) chequeo estancado, 2) ganancia parcial, 3) trailing stop, 4) reportar
+            hours_open = (time.time() - state.get('entry_time', time.time())) / 3600
+            if hours_open >= STALE_HOURS and abs(pnl_pct) <= STALE_RANGE_PCT:
+                output.append(f"⏰ Trade estancado {hours_open:.1f}h | PnL {pnl_pct:+.2f}% — saliendo en mercado...")
+                cancel_oco(sym, state['oco_order_list_id'])
+                sell_order, sell_err = market_sell_all(sym)
+                if sell_order:
+                    usdt_now = get_usdt_balance()
+                    pnl = usdt_now - (state['capital_usdt'] - state['total_pnl_usdt'])
+                    state['total_pnl_usdt'] = round(state['total_pnl_usdt'] + pnl, 4)
+                    state['capital_usdt']   = round(usdt_now, 4)
+                    state['status']         = 'scanning'
+                    state['oco_order_list_id'] = ''
+                    state['oco_order_ids']     = []
+                    state['partial_taken']     = False
+                    state['cooldown_symbol']   = sym  # cooldown tras salida por tiempo
+                    log_trade(state.get('trade_count','?'), sym, 'STALE⏰', pnl, usdt_now)
+                    output.append(f"✅ Salida por estancamiento | PnL: {'+' if pnl>=0 else ''}{pnl:.4f} USDT | Capital: ${usdt_now:.4f}")
+                else:
+                    output.append(f"🚨 Market sell falló: {sell_err}. Manteniendo posicion.")
+                save_state(state)
+                print('\n'.join(output))
+                return
+
             take_partial_profit(state, current_price, output)
             new_sl, trail_msg = update_trailing_stop(state, current_price)
             if trail_msg:
                 output.append(trail_msg)
-            output.append(f"📊 {sym} = ${current_price:.4f} | {pnl_pct:+.2f}% desde entrada | SL ${state['sl']:.4f} | TP ${state['tp']:.4f} | {time.strftime('%H:%M UTC', time.gmtime())}")
+            output.append(f"📊 {sym} = ${current_price:.4f} | {pnl_pct:+.2f}% desde entrada | {hours_open:.1f}h abierto | SL ${state['sl']:.4f} | TP ${state['tp']:.4f} | {time.strftime('%H:%M UTC', time.gmtime())}")
             save_state(state)
             print('\n'.join(output))
             return
@@ -630,6 +655,8 @@ def main():
             'oco_order_list_id': oco_id,
             'oco_order_ids': oco_oids,
             'trade_count': state.get('trade_count', 0) + 1,
+            'entry_time': int(time.time()),
+            'partial_taken': False,
         })
         output.append(f"📈 Trade #{state['trade_count']} activo | Capital total acumulado PnL: {state['total_pnl_usdt']:+.4f} USDT")
 

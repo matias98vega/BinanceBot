@@ -13,5 +13,7 @@
   "capital_usdt": 9.497,
   "trade_count": 6,
   "total_pnl_usdt": -0.5785,
-  "last_update": "2026-05-26T22:09:19Z"
+  "last_update": "2026-05-27T01:16:17Z",
+  "entry_time": 1779833340,
+  "partial_taken": false
 }
