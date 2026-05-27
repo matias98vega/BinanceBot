@@ -529,6 +529,48 @@ def main():
         entry = state['entry_price']
         pnl_pct = (current_price - entry) / entry * 100
 
+        # CASO B1: OCO desaparecio (ejecutado entre ciclos o cancelado externamente)
+        if oco_status == 'NOT_FOUND':
+            output.append(f"⚠️ OCO {oco_id} no encontrado en Binance. Verificando balance...")
+            asset = sym.replace('USDT','')
+            asset_bal = get_asset_balance(asset)
+            usdt_bal  = get_usdt_balance()
+            # Si no queda asset, el OCO se ejecuto (TP o SL)
+            step, min_qty = get_step_size(sym)
+            if asset_bal < min_qty:
+                usdt_now = usdt_bal
+                pnl = usdt_now - (state['capital_usdt'] - state['total_pnl_usdt'])
+                result = 'TP ✅' if pnl > 0 else 'SL 🛑'
+                state['total_pnl_usdt']    = round(state['total_pnl_usdt'] + pnl, 4)
+                state['capital_usdt']      = round(usdt_now, 4)
+                state['status']            = 'scanning'
+                state['oco_order_list_id'] = ''
+                state['oco_order_ids']     = []
+                state['partial_taken']     = False
+                if pnl <= 0 and COOLDOWN_AFTER_SL:
+                    state['cooldown_symbol'] = sym
+                else:
+                    state['cooldown_symbol'] = ''
+                log_trade(state.get('trade_count','?'), sym, result, pnl, usdt_now)
+                output.append(f"{result} — {sym} cerrado (detectado por balance) | PnL: {'+' if pnl>=0 else ''}{pnl:.4f} USDT | Acumulado: {state['total_pnl_usdt']:+.4f} USDT")
+            else:
+                # Todavia tiene el asset — OCO fue cancelado externamente, recolocar
+                output.append(f"🔄 Asset {asset} todavia en cuenta ({asset_bal}). Recolocando OCO...")
+                sl = state.get('sl', 0)
+                tp = state.get('tp', 0)
+                qty = state.get('quantity', asset_bal)
+                oco_id_new, oco_oids, err = place_oco_with_retry(sym, qty, tp, sl)
+                if oco_id_new:
+                    state['oco_order_list_id'] = oco_id_new
+                    state['oco_order_ids']     = oco_oids
+                    output.append(f"✅ OCO recolocado: SL ${sl:.4f} | TP ${tp:.4f}")
+                else:
+                    send_alert(f"🚨 OCO de {sym} desaparecio y no se pudo recolocar: {err}. INTERVENCION MANUAL.")
+                    output.append(f"🚨 No se pudo recolocar OCO: {err}. Alerta enviada.")
+            save_state(state)
+            print('\n'.join(output))
+            return
+
         if oco_status in ('ALL_DONE', 'FILLED'):
             usdt_now = get_usdt_balance()
             pnl = usdt_now - (state['capital_usdt'] - state['total_pnl_usdt'])
