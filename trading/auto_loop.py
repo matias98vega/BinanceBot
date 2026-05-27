@@ -32,6 +32,8 @@ STALE_HOURS        = 8     # salir si el trade lleva +8h y precio está entre -0
 STALE_RANGE_PCT    = 0.5   # rango de "estancado" en %
 ALERT_TARGET       = '20313075:thread:019e6042-4a09-7808-a0e4-dea13cade83b'
 BNB_FEE_RATE       = 0.00075  # 0.075% por lado con BNB (0.1% sin BNB); round-trip ~0.15%
+RISK_PCT_REDUCED   = 0.50    # capital a usar tras 2 SL consecutivos
+MAX_CONSEC_SL      = 2       # cantidad de SL seguidos antes de reducir riesgo
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def log_trade(trade_num, symbol, result, pnl, capital_after):
@@ -602,6 +604,11 @@ def main():
             state['oco_order_list_id'] = ''
             state['oco_order_ids']     = []
             state['partial_taken']     = False  # reset para el proximo trade
+            # Actualizar contador de SL consecutivos
+            if pnl <= 0:
+                state['consec_sl'] = state.get('consec_sl', 0) + 1
+            else:
+                state['consec_sl'] = 0  # reset al primer TP
             # Cooldown: si fue SL, recordar el par para no reentrar enseguida
             if pnl <= 0 and COOLDOWN_AFTER_SL:
                 state['cooldown_symbol'] = sym
@@ -679,8 +686,12 @@ def main():
         sym = best['symbol']
         output.append(f"🎯 Mejor candidato: {sym} | Score {best['score']}/8 | RSI {best['rsi']:.0f} | ${best['price']:.4f}")
 
-        # Comprar
-        invest = round(usdt_balance * RISK_PCT, 4)
+        # Comprar — reducir riesgo si hay SL consecutivos
+        consec_sl = state.get('consec_sl', 0)
+        risk = RISK_PCT_REDUCED if consec_sl >= MAX_CONSEC_SL else RISK_PCT
+        if consec_sl >= MAX_CONSEC_SL:
+            output.append(f"⚠️ {consec_sl} SL consecutivos — operando con {int(risk*100)}% del capital")
+        invest = round(usdt_balance * risk, 4)
         order, qty = place_market_buy(sym, invest)
         if not order or qty == 0:
             output.append(f"❌ Error al comprar {sym}. Reintento en 30 min.")
@@ -749,6 +760,13 @@ def main():
             'partial_taken': False,
         })
         output.append(f"📈 Trade #{state['trade_count']} activo | Capital total acumulado PnL: {state['total_pnl_usdt']:+.4f} USDT")
+        send_alert(
+            f"📈 Trade #{state['trade_count']} abierto\n"
+            f"Par: {sym}\n"
+            f"Entrada: ${actual_price:.4f}\n"
+            f"SL: ${real_sl:.4f} | TP: ${real_tp:.4f}\n"
+            f"Capital: ${usdt_balance:.4f} USDT"
+        )
 
     save_state(state)
     print('\n'.join(output))
