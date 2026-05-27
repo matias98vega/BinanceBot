@@ -6,8 +6,23 @@ import json, urllib.request, urllib.parse, hmac, hashlib, time, math
 
 STATE_FILE = '/root/.openclaw/workspace/trading/state.json'
 TRADES_LOG = '/root/.openclaw/workspace/trading/trades_log.txt'
-TOOLS_KEY  = '0DwLCZ1RnGhfnWygp3PUxPrLGLjLByukBFvjEo06p5fVQpsICjdcKBLBRwXzOnVr'
-TOOLS_SEC  = 'VCMhz7vCQZGgwAIV4PDY74bpRGOxDY0gT4rh6a5cLJmh2mCfcJF1uQu3qhzcQWmM'
+# Credenciales desde .env (nunca hardcodear en el codigo)
+def _load_env():
+    env_path = os.path.join(os.path.dirname(__file__), '.env')
+    env = {}
+    try:
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    k, v = line.split('=', 1)
+                    env[k.strip()] = v.strip()
+    except FileNotFoundError:
+        pass
+    return env
+_env = _load_env()
+TOOLS_KEY  = _env.get('BINANCE_API_KEY', os.environ.get('BINANCE_API_KEY', ''))
+TOOLS_SEC  = _env.get('BINANCE_API_SECRET', os.environ.get('BINANCE_API_SECRET', ''))
 BASE       = 'https://api.binance.com'
 
 def signed_request(path, params=None):
