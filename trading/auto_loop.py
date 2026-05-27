@@ -31,6 +31,7 @@ PARTIAL_TAKE_PCT   = 0.5   # tomar ganancia parcial cuando el precio llega al 50
 STALE_HOURS        = 8     # salir si el trade lleva +8h y precio está entre -0.5% y +0.5% desde entrada
 STALE_RANGE_PCT    = 0.5   # rango de "estancado" en %
 ALERT_TARGET       = '20313075:thread:019e6042-4a09-7808-a0e4-dea13cade83b'
+BNB_FEE_RATE       = 0.00075  # 0.075% por lado con BNB (0.1% sin BNB); round-trip ~0.15%
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def log_trade(trade_num, symbol, result, pnl, capital_after):
@@ -442,33 +443,51 @@ def analyze_market(skip_symbol=None):
     usdt_tickers = {t['symbol']: t for t in tickers
                     if t['symbol'].endswith('USDT') and float(t.get('quoteVolume',0)) > 20e6}
     results = []
+    descarte = {}
     for sym in candidates:
-        if sym == skip_symbol:          # cooldown: saltar par que dio SL
+        if sym == skip_symbol:
+            descarte[sym] = 'cooldown SL'
             continue
         if sym not in usdt_tickers:
+            descarte[sym] = 'volumen insuficiente (<$20M)'
             continue
         chg = float(usdt_tickers[sym]['priceChangePercent'])
         if chg < -5:
+            descarte[sym] = f'caida fuerte 24h ({chg:.1f}%)'
+            continue
+        vol_24h = float(usdt_tickers[sym].get('quoteVolume', 0))
+        try:
+            kd = public_get('/api/v3/klines', {'symbol': sym, 'interval': '1d', 'limit': 4})
+            avg_vol_3d = sum(float(k[7]) for k in kd[:-1]) / 3
+            vol_growing = vol_24h > avg_vol_3d * 0.9
+        except:
+            vol_growing = True
+        if not vol_growing:
+            descarte[sym] = 'volumen decreciente vs 3d'
             continue
         r = score_symbol(sym)
         if not r:
+            descarte[sym] = 'error al analizar'
             continue
-        # Filtro RSI: no entrar sobrecomprado
         if r['rsi'] > RSI_MAX_ENTRY:
+            descarte[sym] = f'RSI alto ({r["rsi"]:.0f})'
             continue
-        # Filtro ATR: no entrar si mercado muy plano
         if r['atr_pct'] < ATR_MIN_PCT:
+            descarte[sym] = f'ATR bajo ({r["atr_pct"]:.2f}%)'
             continue
-        if r['score'] >= r.get('min_score', 5):
-            results.append(r)
+        if r['score'] < r.get('min_score', 5):
+            descarte[sym] = f'score bajo ({r["score"]}/{r.get("min_score",5)})'
+            continue
+        results.append(r)
     if not results:
         for sym in ['ETHUSDT', 'SOLUSDT', 'BNBUSDT']:
             if sym == skip_symbol: continue
             r = score_symbol(sym)
             if r and r['rsi'] <= RSI_MAX_ENTRY and r['atr_pct'] >= ATR_MIN_PCT:
                 results.append(r)
+                descarte.pop(sym, None)
     results.sort(key=lambda x: x['score'], reverse=True)
-    return results[0] if results else None
+    return (results[0] if results else None), descarte
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 def main():
@@ -539,7 +558,8 @@ def main():
             step, min_qty = get_step_size(sym)
             if asset_bal < min_qty:
                 usdt_now = usdt_bal
-                pnl = usdt_now - (state['capital_usdt'] - state['total_pnl_usdt'])
+                fee  = state.get('entry_price', 0) * state.get('quantity', 0) * BNB_FEE_RATE * 2
+                pnl  = usdt_now - (state['capital_usdt'] - state['total_pnl_usdt']) - fee
                 result = 'TP ✅' if pnl > 0 else 'SL 🛑'
                 state['total_pnl_usdt']    = round(state['total_pnl_usdt'] + pnl, 4)
                 state['capital_usdt']      = round(usdt_now, 4)
@@ -573,7 +593,8 @@ def main():
 
         if oco_status in ('ALL_DONE', 'FILLED'):
             usdt_now = get_usdt_balance()
-            pnl = usdt_now - (state['capital_usdt'] - state['total_pnl_usdt'])
+            fee  = state.get('entry_price', 0) * state.get('quantity', 0) * BNB_FEE_RATE * 2
+            pnl  = usdt_now - (state['capital_usdt'] - state['total_pnl_usdt']) - fee
             result = 'TP ✅' if pnl > 0 else 'SL 🛑'
             state['total_pnl_usdt'] = round(state['total_pnl_usdt'] + pnl, 4)
             state['capital_usdt']   = round(usdt_now, 4)
@@ -642,13 +663,15 @@ def main():
             return
 
         skip_sym = state.get('cooldown_symbol', '') if COOLDOWN_AFTER_SL else ''
-        best = analyze_market(skip_symbol=skip_sym)
+        best, descarte = analyze_market(skip_symbol=skip_sym)
         if skip_sym and not best:
             output.append(f"🔄 Sin candidatos excluyendo {skip_sym} (cooldown SL). Ampliando busqueda...")
-            best = analyze_market()
+            best, descarte = analyze_market()
         state['cooldown_symbol'] = ''  # limpiar cooldown tras usarlo
         if not best:
             output.append("🔍 Sin candidatos claros ahora. Reintento en 30 min.")
+            for sym_d, motivo in descarte.items():
+                output.append(f"  ↳ {sym_d}: {motivo}")
             save_state(state)
             print('\n'.join(output))
             return
@@ -668,12 +691,20 @@ def main():
         actual_price = get_price(sym)
         output.append(f"✅ Compra ejecutada: {qty} {sym.replace('USDT','')} a ~${actual_price:.4f}")
 
+        # Recalcular SL/TP con precio real de ejecucion
+        atr = best['atr']
+        real_sl = round(actual_price - SL_ATR_MULT * atr, 4)
+        real_tp = round(actual_price + TP_ATR_MULT * atr, 4)
+        tick = get_tick_size(sym)
+        real_sl = round_price(real_sl, tick)
+        real_tp = round_price(real_tp, tick)
+
         # Colocar OCO con reintentos
         time.sleep(1)
-        oco_id, oco_oids, oco_err = place_oco_with_retry(sym, qty, best['tp'], best['sl'])
+        oco_id, oco_oids, oco_err = place_oco_with_retry(sym, qty, real_tp, real_sl)
 
         if oco_id:
-            output.append(f"🔒 OCO colocada: SL ${best['sl']:.4f} | TP ${best['tp']:.4f}")
+            output.append(f"🔒 OCO colocada: SL ${real_sl:.4f} | TP ${real_tp:.4f}")
         else:
             # OCO falló a pesar de los reintentos → vender en mercado inmediatamente
             output.append(f"🚨 OCO falló tras {OCO_MAX_RETRIES} intentos ({oco_err}). MARKET SELL de emergencia...")
@@ -709,8 +740,8 @@ def main():
             'symbol': sym,
             'entry_price': actual_price,
             'quantity': qty,
-            'sl': best['sl'],
-            'tp': best['tp'],
+            'sl': real_sl,
+            'tp': real_tp,
             'oco_order_list_id': oco_id,
             'oco_order_ids': oco_oids,
             'trade_count': state.get('trade_count', 0) + 1,
