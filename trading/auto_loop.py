@@ -42,7 +42,7 @@ TRAIL_STEP_PCT   = 1.0   # subir SL cada vez que el precio sube 1% desde la entr
 RSI_MAX_ENTRY    = 65    # no entrar si RSI > 65 (sobrecomprado)
 ATR_MIN_PCT      = 0.5   # no entrar si ATR < 0.5% del precio (mercado muy plano)
 SL_MIN_DIST_PCT  = 1.0   # distancia minima del SL desde entrada (1%)
-DAILY_LOSS_LIMIT = 3.0   # pausar si PnL del dia cae mas de $3 USDT
+DAILY_LOSS_LIMIT_PCT = 5.0   # pausar si el PnL del dia cae mas del 5% del capital al inicio del dia
 COOLDOWN_AFTER_SL  = True  # no reentrar en el mismo par inmediatamente despues de un SL
 PARTIAL_TAKE_PCT   = 0.5   # tomar ganancia parcial cuando el precio llega al 50% del recorrido TP
 STALE_HOURS        = 8     # salir si el trade lleva +8h y precio está entre -0.5% y +0.5% desde entrada
@@ -69,6 +69,8 @@ def log_analysis(chosen, descarte):
         with open(ANALYSIS_LOG, 'a') as f:
             if chosen:
                 f.write(f"[{now}] ELEGIDO: {chosen['symbol']} score={chosen['score']} RSI={chosen['rsi']:.0f} ATR={chosen['atr_pct']:.2f}%\n")
+            elif 'MERCADO' in descarte:
+                f.write(f"[{now}] SIN CANDIDATO — {descarte['MERCADO']}\n")
             else:
                 f.write(f"[{now}] SIN CANDIDATO\n")
             for sym, motivo in descarte.items():
@@ -98,9 +100,32 @@ def save_state(s):
     with open(STATE_FILE, 'w') as f:
         json.dump(s, f, indent=2)
 
+NET_RETRIES      = 3     # reintentos ante errores de red transitorios (DNS, timeout)
+NET_RETRY_DELAY  = 2.0   # segundos entre reintentos
+
+def _urlopen_with_retry(req_or_url, timeout=10):
+    """urlopen con reintentos ante errores de red transitorios (DNS, timeout, etc.)."""
+    import socket
+    last_err = None
+    for attempt in range(1, NET_RETRIES + 1):
+        try:
+            with urllib.request.urlopen(req_or_url, timeout=timeout) as r:
+                return json.loads(r.read())
+        except (urllib.error.URLError, socket.timeout, OSError) as e:
+            last_err = e
+            if attempt < NET_RETRIES:
+                time.sleep(NET_RETRY_DELAY * attempt)
+    raise last_err
+
 def signed_request(method, path, params=None):
     params = params or {}
-    params['timestamp'] = int(time.time() * 1000)
+    # Usar server time de Binance para evitar error -1021 (recvWindow)
+    try:
+        srv = public_get('/api/v3/time')
+        params['timestamp'] = srv['serverTime']
+    except Exception:
+        params['timestamp'] = int(time.time() * 1000)
+    params.setdefault('recvWindow', 10000)  # 10s de tolerancia ante latencia de red
     qs = urllib.parse.urlencode(params)
     sig = hmac.new(TOOLS_SEC.encode(), qs.encode(), hashlib.sha256).hexdigest()
     full_qs = f"{qs}&signature={sig}"
@@ -112,14 +137,12 @@ def signed_request(method, path, params=None):
         data = full_qs.encode()
     req = urllib.request.Request(url, data=data, method=method,
           headers={'X-MBX-APIKEY': TOOLS_KEY, 'Content-Type': 'application/x-www-form-urlencoded'})
-    with urllib.request.urlopen(req, timeout=10) as r:
-        return json.loads(r.read())
+    return _urlopen_with_retry(req)
 
 def public_get(path, params=None):
     qs = urllib.parse.urlencode(params or {})
     url = f"{BASE}{path}?{qs}" if qs else f"{BASE}{path}"
-    with urllib.request.urlopen(url, timeout=10) as r:
-        return json.loads(r.read())
+    return _urlopen_with_retry(url)
 
 def get_price(symbol):
     d = public_get('/api/v3/ticker/price', {'symbol': symbol})
@@ -166,6 +189,30 @@ def macd_hist(prices):
     signal = ema(line, 9)
     return line[-1] - signal[-1]
 
+# Umbrales adicionales de calidad de entrada
+BTC_CORR_MAX     = 0.85   # descartar par si correlacion con BTC > 0.85 y BTC debil
+BTC_WEAK_PCT     = -0.5   # BTC se considera debil si cambio 4h < -0.5%
+SPREAD_MAX_PCT   = 0.3    # descartar par si spread bid/ask > 0.3% del precio
+
+def btc_change_4h():
+    """Retorna el cambio % de BTC en las ultimas 4h. Cacheado por ciclo."""
+    try:
+        k = get_klines('BTCUSDT', interval='4h', limit=2)
+        return (float(k[-1][4]) - float(k[-2][1])) / float(k[-2][1]) * 100
+    except Exception:
+        return 0.0
+
+def pearson_corr(a, b):
+    """Correlacion de Pearson entre dos listas de igual longitud."""
+    n = len(a)
+    if n < 2: return 0.0
+    ma, mb = sum(a)/n, sum(b)/n
+    num  = sum((x - ma)*(y - mb) for x, y in zip(a, b))
+    dena = sum((x - ma)**2 for x in a) ** 0.5
+    denb = sum((y - mb)**2 for y in b) ** 0.5
+    if dena == 0 or denb == 0: return 0.0
+    return num / (dena * denb)
+
 def score_symbol(symbol):
     try:
         # Timeframe 1h (entrada)
@@ -208,9 +255,24 @@ def score_symbol(symbol):
         sl = round(last - SL_ATR_MULT * atr, 4)
         tp = round(last + TP_ATR_MULT * atr, 4)
         atr_pct = (atr / last) * 100
+
+        # Correlacion con BTC en 1h (ultimas 48 velas)
+        btc_chg = btc_change_4h()
+        corr_btc = 0.0
+        if btc_chg < BTC_WEAK_PCT and symbol != 'BTCUSDT':
+            try:
+                btc_k   = get_klines('BTCUSDT', interval='1h', limit=48)
+                btc_cls = [float(k[4]) for k in btc_k]
+                # Alinear longitudes por si acaso
+                n = min(len(closes), len(btc_cls))
+                corr_btc = pearson_corr(closes[-n:], btc_cls[-n:])
+            except Exception:
+                corr_btc = 0.0
+
         return {'symbol': symbol, 'score': sc, 'price': last, 'atr': atr,
                 'atr_pct': atr_pct, 'sl': sl, 'tp': tp, 'rsi': rsi_v,
-                'trend_4h': trend_ok, 'min_score': min_score}
+                'trend_4h': trend_ok, 'min_score': min_score,
+                'corr_btc': corr_btc, 'btc_chg_4h': btc_chg}
     except:
         return None
 
@@ -257,7 +319,12 @@ def place_oco(symbol, qty, tp, sl):
         qty_str = f"{qty_floored:.4f}"
     tp_r     = round_price(tp, tick)
     sl_r     = round_price(sl, tick)
-    sl_limit = round_price(sl - tick, tick)
+    # sl_limit debe calcularse desde sl_r ya redondeado; usar 2 ticks de margen para evitar igualdad por floating point
+    sl_limit = round_price(sl_r - 2 * tick, tick)
+    if sl_limit >= sl_r:  # fallback por si el tick es muy pequeño
+        sl_limit = round_price(sl_r - tick, tick)
+    if sl_limit >= sl_r:
+        sl_limit = sl_r - tick  # último recurso sin redondear
     tp_str       = f"{tp_r:.8f}".rstrip('0').rstrip('.')
     sl_str       = f"{sl_r:.8f}".rstrip('0').rstrip('.')
     sl_limit_str = f"{sl_limit:.8f}".rstrip('0').rstrip('.')
@@ -424,10 +491,11 @@ def update_trailing_stop(state, current_price):
     if steps < 1:
         return None, None  # aún no llegó al primer step
 
-    # Nuevo SL: entrada + (steps - 1) * TRAIL_STEP_PCT %
-    # Con steps=1 (precio subió 1-2%): SL sube a breakeven
-    # Con steps=2 (precio subió 2-3%): SL asegura 1% de ganancia
-    new_sl_pct = (steps - 1) * TRAIL_STEP_PCT / 100
+    # Nuevo SL con colchón de 0.1% sobre el nivel calculado para cubrir fees
+    # steps=1 (subio 1-2%): SL a breakeven + 0.1% (cubre fees)
+    # steps=2 (subio 2-3%): SL asegura 1% neto
+    TRAIL_BUFFER_PCT = 0.1
+    new_sl_pct = max(0, (steps - 1) * TRAIL_STEP_PCT + TRAIL_BUFFER_PCT) / 100
     new_sl = round(entry * (1 + new_sl_pct), 8)
     tick   = get_tick_size(sym)
     new_sl = round_price(new_sl, tick)
@@ -443,13 +511,26 @@ def update_trailing_stop(state, current_price):
     oco_id, oco_oids, err = place_oco_with_retry(sym, qty, tp, new_sl)
     if not oco_id:
         # Falló — intentar restaurar el OCO original
-        place_oco_with_retry(sym, qty, tp, sl)
-        return None, f'Trail falló ({err}), OCO restaurado'
+        restore_id, _, _ = place_oco_with_retry(sym, qty, tp, sl)
+        if not restore_id:
+            send_alert(f"🚨🚨 TRAILING STOP FALLÓ y no se pudo restaurar OCO — {sym} SIN STOPS. INTERVENCIóN URGENTE.")
+            state['oco_order_list_id'] = ''
+            state['oco_order_ids']     = []
+        return None, f'Trail falló ({err}), OCO {"restaurado" if restore_id else "PERDIDO 🚨"}'
 
+    old_sl = sl
     state['sl']                = new_sl
     state['oco_order_list_id'] = oco_id
     state['oco_order_ids']     = oco_oids
-    msg = f'📈 Trailing stop actualizado: SL ${sl:.4f} → ${new_sl:.4f} | Ganancia asegurada: {new_sl_pct*100:.1f}%'
+    ganancia_asegurada = new_sl_pct * 100
+    msg = f'📈 Trailing stop: SL ${old_sl:.4f} → ${new_sl:.4f} | Ganancia asegurada: +{ganancia_asegurada:.1f}%'
+    send_alert(
+        f'📈 Trailing stop actualizado\n'
+        f'Par: {sym}\n'
+        f'SL: ${old_sl:.4f} → ${new_sl:.4f}\n'
+        f'Precio actual: ${current_price:.4f}\n'
+        f'Ganancia mínima asegurada: +{ganancia_asegurada:.2f}%'
+    )
     return new_sl, msg
 
 def place_market_buy(symbol, usdt_amount):
@@ -483,6 +564,60 @@ def check_oco_status(order_list_id):
 BLACKLIST = {'USDCUSDT','BUSDUSDT','TUSDUSDT','USDTUSDT','FDUSDUSDT',
              'WBTCUSDT','STETHUSDT','BETHUSDT','LDOUSDT'}
 
+# Umbrales de contexto de mercado global
+BTC_DROP_4H_PCT   = 2.5   # si BTC cae más de 2.5% en 4h → mercado bajista, no entrar
+BTC_BEAR_TREND    = True  # activar filtro EMA50 < EMA200 diario en BTC
+BTC_ATR4H_MAX_PCT = 4.0   # si ATR de BTC en 4h supera este % → pánico, no entrar
+MARKET_RED_PCT    = 60.0  # si >60% de los candidatos están en rojo en 24h → no entrar
+NO_ENTRY_HOURS    = (22, 6)  # no entrar entre 22:00 y 06:00 UTC (baja liquidez)
+
+def market_context_ok(candidates, usdt_tickers):
+    """Devuelve (ok, motivo). Si el mercado global está bajista, retorna False."""
+    # 1. Filtro horario: evitar baja liquidez nocturna (22:00 - 06:00 UTC)
+    utc_hour = int(time.strftime('%H', time.gmtime()))
+    h_start, h_end = NO_ENTRY_HOURS
+    in_quiet = (utc_hour >= h_start) or (utc_hour < h_end)
+    if in_quiet:
+        return False, f'horario de baja liquidez ({utc_hour:02d}:xx UTC, ventana restringida {h_start:02d}h-{h_end:02d}h)'
+
+    # 2. Chequeo BTC 4h: caída rápida (pánico intradiario)
+    try:
+        klines_btc = get_klines('BTCUSDT', interval='4h', limit=14)
+        btc_open  = float(klines_btc[-2][1])  # open de la vela anterior completa
+        btc_close = float(klines_btc[-1][4])  # close de la última vela
+        btc_chg_4h = (btc_close - btc_open) / btc_open * 100
+        if btc_chg_4h <= -BTC_DROP_4H_PCT:
+            return False, f'BTC cayó {btc_chg_4h:.2f}% en 4h (límite -{BTC_DROP_4H_PCT}%)'
+
+        # 3. Volatilidad extrema de BTC: ATR 4h > BTC_ATR4H_MAX_PCT
+        highs_btc = [float(k[2]) for k in klines_btc[-14:]]
+        lows_btc  = [float(k[3]) for k in klines_btc[-14:]]
+        atr_btc   = sum(h - l for h, l in zip(highs_btc, lows_btc)) / len(highs_btc)
+        atr_btc_pct = atr_btc / btc_close * 100
+        if atr_btc_pct >= BTC_ATR4H_MAX_PCT:
+            return False, f'volatilidad extrema BTC ATR4h={atr_btc_pct:.2f}% (límite {BTC_ATR4H_MAX_PCT}%)'
+
+        # 4. Tendencia macro BTC: EMA50 vs EMA200 en 1D
+        if BTC_BEAR_TREND:
+            klines_1d = get_klines('BTCUSDT', interval='1d', limit=210)
+            closes_1d = [float(k[4]) for k in klines_1d]
+            ema50_btc  = ema(closes_1d, 50)[-1]
+            ema200_btc = ema(closes_1d, 200)[-1]
+            if ema50_btc < ema200_btc:
+                return False, f'BTC en tendencia bajista macro (EMA50 ${ema50_btc:.0f} < EMA200 ${ema200_btc:.0f})'
+    except Exception:
+        pass  # si falla cualquier chequeo de BTC, no bloquear
+
+    # 5. Chequeo de amplitud: % de pares en rojo 24h
+    chgs = [float(usdt_tickers[s]['priceChangePercent'])
+            for s in candidates if s in usdt_tickers]
+    if chgs:
+        pct_red = sum(1 for c in chgs if c < 0) / len(chgs) * 100
+        if pct_red >= MARKET_RED_PCT:
+            return False, f'{pct_red:.0f}% de los pares en rojo en 24h (límite {MARKET_RED_PCT:.0f}%)'
+
+    return True, ''
+
 def analyze_market(skip_symbol=None):
     tickers = public_get('/api/v3/ticker/24hr')
     usdt_tickers = {t['symbol']: t for t in tickers
@@ -500,6 +635,12 @@ def analyze_market(skip_symbol=None):
 
     results = []
     descarte = {}
+
+    # Chequeo de contexto global antes de evaluar pares
+    ctx_ok, ctx_reason = market_context_ok(candidates, usdt_tickers)
+    if not ctx_ok:
+        return None, {'MERCADO': f'contexto bajista — {ctx_reason}'}
+
     for sym in candidates:
         if sym == skip_symbol:
             descarte[sym] = 'cooldown SL'
@@ -534,27 +675,103 @@ def analyze_market(skip_symbol=None):
         if r['score'] < r.get('min_score', 5):
             descarte[sym] = f'score bajo ({r["score"]}/{r.get("min_score",5)})'
             continue
+        # Correlacion con BTC: descartar si muy correlacionado y BTC debil
+        corr = r.get('corr_btc', 0.0)
+        if corr > BTC_CORR_MAX:
+            descarte[sym] = f'correlacion BTC {corr:.2f} > {BTC_CORR_MAX} con BTC debil ({r.get("btc_chg_4h",0):.2f}%)'
+            continue
+        # Spread bid/ask: descartar si el spread es muy caro
+        try:
+            book = public_get('/api/v3/ticker/bookTicker', {'symbol': sym})
+            bid  = float(book['bidPrice'])
+            ask  = float(book['askPrice'])
+            spread_pct = (ask - bid) / bid * 100
+            if spread_pct > SPREAD_MAX_PCT:
+                descarte[sym] = f'spread {spread_pct:.3f}% > {SPREAD_MAX_PCT}%'
+                continue
+        except Exception:
+            pass  # si falla el check de spread, no bloquear
         results.append(r)
-    if not results:
-        # Reutilizar resultados ya calculados del loop si existen
-        fallback_syms = ['ETHUSDT', 'SOLUSDT', 'BNBUSDT']
-        scored = {r['symbol']: r for r in [score_symbol(s) for s in fallback_syms
-                  if s not in [x['symbol'] for x in results] and s != skip_symbol
-                  and s not in descarte] if r}
-        # Tambien rescatar los que solo fueron descartados por score bajo
-        for sym_f in fallback_syms:
-            if sym_f == skip_symbol: continue
-            r = scored.get(sym_f) or (score_symbol(sym_f) if sym_f in descarte and 'score bajo' in descarte.get(sym_f,'') else None)
-            if r and r['rsi'] <= RSI_MAX_ENTRY and r['atr_pct'] >= ATR_MIN_PCT:
-                results.append(r)
-                descarte.pop(sym_f, None)
     results.sort(key=lambda x: x['score'], reverse=True)
     return (results[0] if results else None), descarte
 
+def calc_trade_pnl(entry_price, exit_price, qty, fee_rate=BNB_FEE_RATE):
+    """PnL neto de un trade: (salida - entrada) * qty - fees de ambos lados."""
+    gross = (exit_price - entry_price) * qty
+    fees  = (entry_price + exit_price) * qty * fee_rate
+    return round(gross - fees, 6)
+
 # ── Main ─────────────────────────────────────────────────────────────────────
+def check_orphan_orders(state, output):
+    """
+    Detecta órdenes/OCOs abiertas en Binance que no están registradas en state.
+    Si las encuentra las cancela, vende el asset y libera el capital.
+    """
+    try:
+        open_orders = signed_request('GET', '/api/v3/openOrders', {})
+    except Exception as e:
+        output.append(f"⚠️ No se pudo verificar órdenes huérfanas: {e}")
+        return
+
+    if not open_orders:
+        return
+
+    # Agrupar por symbol
+    by_symbol = {}
+    for o in open_orders:
+        by_symbol.setdefault(o['symbol'], []).append(o)
+
+    registered_oco = str(state.get('oco_order_list_id', '')).strip()
+    registered_sym = state.get('symbol', '')
+
+    for sym, orders in by_symbol.items():
+        for o in orders:
+            order_list_id = str(o.get('orderListId', -1))
+            # Es huérfana si: no está en nuestro estado, o el bot no está in_position en ese par
+            is_known = (
+                state['status'] == 'in_position'
+                and sym == registered_sym
+                and registered_oco
+                and order_list_id == registered_oco
+            )
+            if not is_known:
+                output.append(f"🔍 Orden huérfana detectada: {sym} orderId={o['orderId']} tipo={o['type']} — cancelando...")
+                # Cancelar OCO o orden simple
+                try:
+                    if o.get('orderListId', -1) != -1:
+                        signed_request('DELETE', '/api/v3/orderList',
+                                       {'symbol': sym, 'orderListId': o['orderListId']})
+                    else:
+                        signed_request('DELETE', '/api/v3/order',
+                                       {'symbol': sym, 'orderId': o['orderId']})
+                    output.append(f"  ✅ Cancelada")
+                except Exception as e:
+                    output.append(f"  ⚠️ Error cancelando: {e}")
+                    continue
+
+                # Verificar si quedó asset libre para vender
+                time.sleep(0.5)
+                asset = sym.replace('USDT', '')
+                step, min_qty = get_step_size(sym)
+                bal = get_asset_balance(asset)
+                qty_sell = floor_qty(bal, step)
+                if qty_sell >= min_qty:
+                    sell_order, sell_err = market_sell_all(sym)
+                    if sell_order:
+                        usdt_now = get_usdt_balance()
+                        output.append(f"  💰 {asset} vendido — USDT liberado: ${usdt_now:.4f}")
+                        state['capital_usdt'] = round(usdt_now, 4)
+                        save_state(state)
+                    else:
+                        output.append(f"  ⚠️ No se pudo vender {asset}: {sell_err}")
+                break  # una orden por symbol alcanza para cancelar el OCO completo
+
 def main():
     state = load_state()
     output = []
+
+    # ── 0. Chequeo de órdenes huérfanas ───────────────────────────────
+    check_orphan_orders(state, output)
 
     # ── 1. Posición abierta ───────────────────────────────────────────────────
     if state['status'] == 'in_position':
@@ -582,9 +799,11 @@ def main():
                     output.append(f"🚨 OCO falló {OCO_MAX_RETRIES} veces ({err}). Ejecutando MARKET SELL de emergencia...")
                     sell_order, sell_err = market_sell_all(sym)
                     if sell_order:
-                        usdt_now = get_usdt_balance()
-                        pnl = usdt_now - (state['capital_usdt'] - state['total_pnl_usdt'])
+                        usdt_now  = get_usdt_balance()
+                        exit_price = get_price(sym)
+                        pnl = calc_trade_pnl(state['entry_price'], exit_price, state.get('quantity', 0))
                         state['total_pnl_usdt'] = round(state['total_pnl_usdt'] + pnl, 4)
+                        state['daily_pnl_usdt'] = round(state.get('daily_pnl_usdt', 0.0) + pnl, 4)
                         state['capital_usdt']   = round(usdt_now, 4)
                         state['status']         = 'scanning'
                         state['oco_order_list_id'] = ''
@@ -620,10 +839,17 @@ def main():
             step, min_qty = get_step_size(sym)
             if asset_bal < min_qty:
                 usdt_now = usdt_bal
-                fee  = state.get('entry_price', 0) * state.get('quantity', 0) * BNB_FEE_RATE * 2
-                pnl  = usdt_now - (state['capital_usdt'] - state['total_pnl_usdt']) - fee
-                result = 'TP ✅' if pnl > 0 else 'SL 🛑'
+                # Obtener precio real de ejecucion desde historial de Binance
+                try:
+                    trades = signed_request('GET', '/api/v3/myTrades',
+                                            {'symbol': sym, 'limit': 5})
+                    exit_price = float(trades[-1]['price']) if trades else get_price(sym)
+                except Exception:
+                    exit_price = get_price(sym)
+                pnl    = calc_trade_pnl(state['entry_price'], exit_price, state.get('quantity', 0))
+                result = 'TP ✅' if exit_price >= state.get('tp', exit_price) else 'SL 🛑'
                 state['total_pnl_usdt']    = round(state['total_pnl_usdt'] + pnl, 4)
+                state['daily_pnl_usdt']    = round(state.get('daily_pnl_usdt', 0.0) + pnl, 4)
                 state['capital_usdt']      = round(usdt_now, 4)
                 state['status']            = 'scanning'
                 state['oco_order_list_id'] = ''
@@ -655,10 +881,17 @@ def main():
 
         if oco_status in ('ALL_DONE', 'FILLED'):
             usdt_now = get_usdt_balance()
-            fee  = state.get('entry_price', 0) * state.get('quantity', 0) * BNB_FEE_RATE * 2
-            pnl  = usdt_now - (state['capital_usdt'] - state['total_pnl_usdt']) - fee
-            result = 'TP ✅' if pnl > 0 else 'SL 🛑'
+            # Obtener precio real de ejecucion desde historial de Binance
+            try:
+                trades = signed_request('GET', '/api/v3/myTrades',
+                                        {'symbol': sym, 'limit': 5})
+                exit_price = float(trades[-1]['price']) if trades else get_price(sym)
+            except Exception:
+                exit_price = get_price(sym)
+            pnl    = calc_trade_pnl(state['entry_price'], exit_price, state.get('quantity', 0))
+            result = 'TP ✅' if exit_price >= state.get('tp', exit_price) else 'SL 🛑'
             state['total_pnl_usdt'] = round(state['total_pnl_usdt'] + pnl, 4)
+            state['daily_pnl_usdt'] = round(state.get('daily_pnl_usdt', 0.0) + pnl, 4)
             state['capital_usdt']   = round(usdt_now, 4)
             state['status']         = 'scanning'
             state['oco_order_list_id'] = ''
@@ -685,15 +918,17 @@ def main():
                 cancel_oco(sym, state['oco_order_list_id'])
                 sell_order, sell_err = market_sell_all(sym)
                 if sell_order:
-                    usdt_now = get_usdt_balance()
-                    pnl = usdt_now - (state['capital_usdt'] - state['total_pnl_usdt'])
+                    usdt_now   = get_usdt_balance()
+                    exit_price = get_price(sym)
+                    pnl = calc_trade_pnl(state['entry_price'], exit_price, state.get('quantity', 0))
                     state['total_pnl_usdt'] = round(state['total_pnl_usdt'] + pnl, 4)
+                    state['daily_pnl_usdt'] = round(state.get('daily_pnl_usdt', 0.0) + pnl, 4)
                     state['capital_usdt']   = round(usdt_now, 4)
                     state['status']         = 'scanning'
                     state['oco_order_list_id'] = ''
                     state['oco_order_ids']     = []
                     state['partial_taken']     = False
-                    state['cooldown_symbol']   = sym  # cooldown tras salida por tiempo
+                    state['cooldown_symbol']   = sym
                     log_trade(state.get('trade_count','?'), sym, 'STALE⏰', pnl, usdt_now)
                     output.append(f"✅ Salida por estancamiento | PnL: {'+' if pnl>=0 else ''}{pnl:.4f} USDT | Capital: ${usdt_now:.4f}")
                 else:
@@ -713,9 +948,19 @@ def main():
 
     # ── 2. Scanning: buscar nueva oportunidad ─────────────────────────────────
     if state['status'] == 'scanning':
-        # Chequeo de perdida diaria
-        if state['total_pnl_usdt'] <= -DAILY_LOSS_LIMIT:
-            output.append(f"⚠️ Limite de perdida diaria alcanzado (${state['total_pnl_usdt']:.4f}). Bot pausado hasta reinicio manual.")
+        # Reset diario del PnL: si cambió el día UTC, reiniciar contador
+        today = time.strftime('%Y-%m-%d', time.gmtime())
+        if state.get('pnl_date') != today:
+            state['pnl_date']           = today
+            state['daily_pnl_usdt']     = 0.0
+            state['daily_start_capital'] = get_usdt_balance()  # capital al inicio del nuevo dia
+
+        # Chequeo de pérdida diaria en % sobre capital al inicio del día
+        daily_pnl   = state.get('daily_pnl_usdt', 0.0)
+        start_cap   = state.get('daily_start_capital', state['capital_usdt'])
+        daily_limit = start_cap * DAILY_LOSS_LIMIT_PCT / 100
+        if daily_pnl <= -daily_limit:
+            output.append(f"⚠️ Límite de pérdida diaria alcanzado ({daily_pnl:.4f} / -{daily_limit:.4f} USDT = -{DAILY_LOSS_LIMIT_PCT}%). Bot pausado hasta mañana.")
             state['status'] = 'paused'
             save_state(state)
             print('\n'.join(output))
@@ -737,15 +982,37 @@ def main():
         state['cooldown_symbol'] = ''  # limpiar cooldown tras usarlo
         log_analysis(best, descarte)
         if not best:
-            output.append("🔍 Sin candidatos claros ahora. Reintento en 30 min.")
-            for sym_d, motivo in descarte.items():
-                output.append(f"  ↳ {sym_d}: {motivo}")
+            if 'MERCADO' in descarte:
+                motivo = descarte['MERCADO']
+                output.append(f"🚫 Mercado bajista — sin entrada. {motivo}")
+                # Notificar solo si cambió el motivo o pasaron >4h desde la última alerta
+                last_ctx_alert = state.get('last_ctx_alert_time', 0)
+                last_ctx_reason = state.get('last_ctx_alert_reason', '')
+                now_ts = int(__import__('time').time())
+                if motivo != last_ctx_reason or (now_ts - last_ctx_alert) > 4 * 3600:
+                    send_alert(f"🚫 Mercado bajista detectado\n{motivo}\nBot en espera. Capital: ${state['capital_usdt']:.4f} USDT")
+                    state['last_ctx_alert_time']   = now_ts
+                    state['last_ctx_alert_reason'] = motivo
+            else:
+                output.append("🔍 Sin candidatos claros ahora. Reintento en 30 min.")
+                for sym_d, motivo in list(descarte.items())[:5]:
+                    output.append(f"  ↳ {sym_d}: {motivo}")
             save_state(state)
             print('\n'.join(output))
             return
 
         sym = best['symbol']
         output.append(f"🎯 Mejor candidato: {sym} | Score {best['score']}/8 | RSI {best['rsi']:.0f} | ${best['price']:.4f}")
+
+        # Pre-flight: verificar que el SL tenga distancia mínima ANTES de comprar
+        tentative_sl_pct = (best['price'] - best['sl']) / best['price'] * 100
+        SL_MIN_WITH_BUFFER = SL_MIN_DIST_PCT + 0.05  # +0.05% buffer para absorber redondeo de tick
+        if tentative_sl_pct < SL_MIN_WITH_BUFFER:
+            forced_dist = best['price'] * SL_MIN_WITH_BUFFER / 100
+            best['sl']  = round(best['price'] - forced_dist, 8)
+            best['tp']  = round(best['price'] + forced_dist * TP_ATR_MULT, 8)
+            best['atr'] = forced_dist
+            output.append(f"⚠️ ATR demasiado bajo ({tentative_sl_pct:.2f}%) — SL ajustado al mínimo {SL_MIN_WITH_BUFFER}%: ${best['sl']:.4f} | TP: ${best['tp']:.4f}")
 
         # Comprar — reducir riesgo si hay SL consecutivos
         consec_sl = state.get('consec_sl', 0)
@@ -770,10 +1037,24 @@ def main():
         tick = get_tick_size(sym)
         real_sl = round_price(real_sl, tick)
         real_tp = round_price(real_tp, tick)
+        # Garantizar distancia mínima post-compra (precio puede diferir levemente del pre-flight)
+        post_sl_pct = (actual_price - real_sl) / actual_price * 100
+        SL_MIN_WITH_BUFFER = SL_MIN_DIST_PCT + 0.05  # +0.05% buffer para absorber redondeo de tick
+        if post_sl_pct < SL_MIN_WITH_BUFFER:
+            forced_dist = actual_price * SL_MIN_WITH_BUFFER / 100
+            real_sl = round_price(actual_price - forced_dist, tick)
+            real_tp = round_price(actual_price + forced_dist * TP_ATR_MULT, tick)
+            output.append(f"⚠️ SL post-compra ajustado al mínimo {SL_MIN_WITH_BUFFER}%: ${real_sl:.4f} | TP: ${real_tp:.4f}")
 
-        # Colocar OCO con reintentos
+        # Colocar OCO con reintentos — usar balance real del asset para evitar -2010
         time.sleep(1)
-        oco_id, oco_oids, oco_err = place_oco_with_retry(sym, qty, real_tp, real_sl)
+        asset = sym.replace('USDT', '')
+        real_qty = get_asset_balance(asset)
+        step, min_qty = get_step_size(sym)
+        qty_for_oco = floor_qty(real_qty, step)
+        if qty_for_oco < min_qty:
+            qty_for_oco = qty  # fallback a qty comprado si el balance real es menor
+        oco_id, oco_oids, oco_err = place_oco_with_retry(sym, qty_for_oco, real_tp, real_sl)
 
         if oco_id:
             output.append(f"🔒 OCO colocada: SL ${real_sl:.4f} | TP ${real_tp:.4f}")
@@ -782,9 +1063,11 @@ def main():
             output.append(f"🚨 OCO falló tras {OCO_MAX_RETRIES} intentos ({oco_err}). MARKET SELL de emergencia...")
             sell_order, sell_err = market_sell_all(sym)
             if sell_order:
-                usdt_now = get_usdt_balance()
-                pnl_emg  = usdt_now - (state['capital_usdt'] - state['total_pnl_usdt'])
-                log_trade(state.get('trade_count', '?'), sym, 'SELL🚨', pnl_emg, usdt_now)
+                usdt_now   = get_usdt_balance()
+                exit_price = get_price(sym)
+                # SELL🚨 de emergencia: calcular pérdida real (solo fees del round-trip)
+                fee_emg = calc_trade_pnl(actual_price, exit_price, qty_for_oco)
+                log_trade(state.get('trade_count', '?'), sym, 'SELL🚨', fee_emg, usdt_now)
                 output.append(f"💰 Posición cerrada en mercado. Capital recuperado: ${usdt_now:.4f}")
                 state['capital_usdt'] = round(usdt_now, 4)
             else:
@@ -811,7 +1094,7 @@ def main():
             'status': 'in_position',
             'symbol': sym,
             'entry_price': actual_price,
-            'quantity': qty,
+            'quantity': qty_for_oco,
             'sl': real_sl,
             'tp': real_tp,
             'oco_order_list_id': oco_id,
@@ -820,14 +1103,37 @@ def main():
             'entry_time': int(time.time()),
             'partial_taken': False,
         })
+        pnl_tp = round((real_tp - actual_price) * qty * (1 - BNB_FEE_RATE), 4)
+        pnl_sl = round((real_sl - actual_price) * qty * (1 - BNB_FEE_RATE), 4)
         output.append(f"📈 Trade #{state['trade_count']} activo | Capital total acumulado PnL: {state['total_pnl_usdt']:+.4f} USDT")
+        output.append(f"   💰 Si TP: +${pnl_tp:.4f} | Si SL: -${abs(pnl_sl):.4f}")
         send_alert(
             f"📈 Trade #{state['trade_count']} abierto\n"
             f"Par: {sym}\n"
             f"Entrada: ${actual_price:.4f}\n"
             f"SL: ${real_sl:.4f} | TP: ${real_tp:.4f}\n"
+            f"Si TP: +${pnl_tp:.4f} USDT | Si SL: -${abs(pnl_sl):.4f} USDT\n"
             f"Capital: ${usdt_balance:.4f} USDT"
         )
+
+    # ── 3. Estado pausado ─────────────────────────────────
+    if state['status'] == 'paused':
+        # Auto-reactivar si cambió el día UTC
+        today = time.strftime('%Y-%m-%d', time.gmtime())
+        if state.get('pnl_date') != today:
+            state['status']              = 'scanning'
+            state['pnl_date']            = today
+            state['daily_pnl_usdt']      = 0.0
+            state['daily_start_capital'] = get_usdt_balance()
+            state['consec_sl']           = 0
+            output.append('✅ Nuevo día — bot reactivado automáticamente.')
+            save_state(state)
+            # Continuar al bloque scanning en la misma corrida
+        else:
+            output.append(f'⏸️ Bot pausado (límite diario). Reanudará mañana UTC. PnL hoy: {state.get("daily_pnl_usdt", 0):+.4f} USDT')
+            save_state(state)
+            print('\n'.join(output))
+            return
 
     save_state(state)
     print('\n'.join(output))
