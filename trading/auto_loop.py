@@ -985,16 +985,23 @@ def main():
         if not best:
             if 'MERCADO' in descarte:
                 motivo = descarte['MERCADO']
-                output.append(f"🚫 Mercado bajista — sin entrada. {motivo}")
-                # No alertar por horario nocturno — es esperado y ocurre cada noche
                 es_horario = 'horario de baja liquidez' in motivo
-                last_ctx_alert = state.get('last_ctx_alert_time', 0)
+                last_ctx_alert  = state.get('last_ctx_alert_time', 0)
                 last_ctx_reason = state.get('last_ctx_alert_reason', '')
-                now_ts = int(__import__('time').time())
-                if not es_horario and (motivo != last_ctx_reason or (now_ts - last_ctx_alert) > 4 * 3600):
-                    send_alert(f"🚫 Mercado bajista detectado\n{motivo}\nBot en espera. Capital: ${state['capital_usdt']:.4f} USDT")
-                    state['last_ctx_alert_time']   = now_ts
-                    state['last_ctx_alert_reason'] = motivo
+                now_ts          = int(time.time())
+                misma_razon     = motivo == last_ctx_reason
+                dentro_throttle = (now_ts - last_ctx_alert) <= 4 * 3600
+
+                if es_horario or (misma_razon and dentro_throttle):
+                    # Salida silenciosa — no molestar hasta que cambie el evento o pasen 4h
+                    save_state(state)
+                    return
+
+                # Primera vez o nuevo motivo — notificar
+                output.append(f"🚫 Mercado bajista — sin entrada. {motivo}")
+                send_alert(f"🚫 Mercado bajista detectado\n{motivo}\nBot en espera. Capital: ${state['capital_usdt']:.4f} USDT")
+                state['last_ctx_alert_time']   = now_ts
+                state['last_ctx_alert_reason'] = motivo
             else:
                 output.append("🔍 Sin candidatos claros ahora. Reintento en 30 min.")
                 for sym_d, motivo in list(descarte.items())[:5]:
