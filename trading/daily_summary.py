@@ -2,7 +2,7 @@
 """
 Resumen diario del bot de trading. Corre via cron a medianoche UTC.
 """
-import json, urllib.request, urllib.parse, hmac, hashlib, time, math
+import json, os, urllib.request, urllib.parse, hmac, hashlib, time, math
 
 STATE_FILE = '/root/.openclaw/workspace/trading/state.json'
 TRADES_LOG = '/root/.openclaw/workspace/trading/trades_log.txt'
@@ -69,17 +69,29 @@ def main():
         except:
             pass
 
-    # PnL del dia (desde el estado)
-    pnl_total = state.get('total_pnl_usdt', 0)
+    # PnL del dia (usar daily_pnl_usdt, no el acumulado historico)
+    pnl_dia   = state.get('daily_pnl_usdt', 0.0)
+    pnl_total = state.get('total_pnl_usdt', 0.0)
     capital   = state.get('capital_usdt', 0)
     status    = state.get('status', '?')
     sym       = state.get('symbol', '-')
+
+    # Evaluacion del dia
+    if not trades_hoy:
+        eval_dia = 'Sin trades hoy.'
+    elif pnl_dia >= 0:
+        eval_dia = f'✅ Buen día — PnL del día: +${pnl_dia:.4f} USDT'
+    elif pnl_dia >= -0.10:
+        eval_dia = f'⚠️ Día neutro — pérdida mínima: ${pnl_dia:.4f} USDT'
+    else:
+        eval_dia = f'🔴 Día difícil — {len(trades_hoy)} trades, PnL: ${pnl_dia:.4f} USDT'
 
     lines = [
         f"📊 Resumen diario — {today}",
         f"{'─'*35}",
         f"💰 Balance real cuenta: ${total_usdt:.4f} USDT",
-        f"📈 PnL acumulado (desde reset): {'+' if pnl_total>=0 else ''}{pnl_total:.4f} USDT",
+        f"📈 PnL hoy: {'+' if pnl_dia>=0 else ''}{pnl_dia:.4f} USDT",
+        f"📉 PnL acumulado total: {'+' if pnl_total>=0 else ''}{pnl_total:.4f} USDT",
         f"🤖 Estado bot: {status}" + (f" | Par: {sym}" if status == 'in_position' else ""),
     ]
 
@@ -87,11 +99,17 @@ def main():
         lines.append(f"{'─'*35}")
         lines.append(f"Trades cerrados hoy ({len(trades_hoy)}):")
         for t in trades_hoy:
-            lines.append(f"  {t}")
+            parts = [p.strip() for p in t.split('|')]
+            if len(parts) >= 5:
+                par, res, pnl, cap, hora = parts[1], parts[2], parts[3], parts[4], parts[5] if len(parts) > 5 else ''
+                lines.append(f"  • {par} | {res} | {pnl} | {cap} | {hora}")
+            else:
+                lines.append(f"  • {t}")
     else:
         lines.append("Sin trades cerrados hoy.")
 
     lines.append(f"{'─'*35}")
+    lines.append(eval_dia)
     print('\n'.join(lines))
 
 if __name__ == '__main__':

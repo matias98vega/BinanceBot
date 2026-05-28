@@ -10,14 +10,14 @@
   "capital_usdt": 9.0354,
   "trade_count": 9,
   "total_pnl_usdt": -1.0401,
-  "last_update": "2026-05-27T21:32:03Z",
+  "last_update": "2026-05-28T00:22:46Z",
   "entry_time": 1779903124,
   "partial_taken": false,
   "consec_sl": 1,
   "cooldown_symbol": "",
-  "daily_pnl_usdt": -0.117,
-  "pnl_date": "2026-05-27",
-  "daily_start_capital": 9.1042,
-  "last_ctx_alert_time": 1779917519,
-  "last_ctx_alert_reason": "contexto bajista \u2014 BTC en tendencia bajista macro (EMA50 $76689 < EMA200 $81382)"
+  "daily_pnl_usdt": -0.5698,
+  "pnl_date": "2026-05-28",
+  "daily_start_capital": 9.0353662,
+  "last_ctx_alert_time": 1779926520,
+  "last_ctx_alert_reason": "contexto bajista \u2014 horario de baja liquidez (00:xx UTC, ventana restringida 22h-06h)"
 }
