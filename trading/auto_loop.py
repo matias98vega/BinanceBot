@@ -575,10 +575,11 @@ def market_context_ok(candidates, usdt_tickers):
     """Devuelve (ok, motivo). Si el mercado global está bajista, retorna False."""
     # 1. Filtro horario: evitar baja liquidez nocturna (22:00 - 06:00 UTC)
     utc_hour = int(time.strftime('%H', time.gmtime()))
+    utc_time = time.strftime('%H:%M', time.gmtime())
     h_start, h_end = NO_ENTRY_HOURS
     in_quiet = (utc_hour >= h_start) or (utc_hour < h_end)
     if in_quiet:
-        return False, f'horario de baja liquidez ({utc_hour:02d}:xx UTC, ventana restringida {h_start:02d}h-{h_end:02d}h)'
+        return False, f'horario de baja liquidez ({utc_time} UTC, ventana restringida {h_start:02d}h-{h_end:02d}h)'
 
     # 2. Chequeo BTC 4h: caída rápida (pánico intradiario)
     try:
@@ -985,11 +986,12 @@ def main():
             if 'MERCADO' in descarte:
                 motivo = descarte['MERCADO']
                 output.append(f"🚫 Mercado bajista — sin entrada. {motivo}")
-                # Notificar solo si cambió el motivo o pasaron >4h desde la última alerta
+                # No alertar por horario nocturno — es esperado y ocurre cada noche
+                es_horario = 'horario de baja liquidez' in motivo
                 last_ctx_alert = state.get('last_ctx_alert_time', 0)
                 last_ctx_reason = state.get('last_ctx_alert_reason', '')
                 now_ts = int(__import__('time').time())
-                if motivo != last_ctx_reason or (now_ts - last_ctx_alert) > 4 * 3600:
+                if not es_horario and (motivo != last_ctx_reason or (now_ts - last_ctx_alert) > 4 * 3600):
                     send_alert(f"🚫 Mercado bajista detectado\n{motivo}\nBot en espera. Capital: ${state['capital_usdt']:.4f} USDT")
                     state['last_ctx_alert_time']   = now_ts
                     state['last_ctx_alert_reason'] = motivo
