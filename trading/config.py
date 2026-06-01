@@ -83,7 +83,7 @@ TRAIL_STEP_PCT       = 1.0    # actualizar SL cada 1% de movimiento favorable
 
 # ── Protecciones ─────────────────────────────────────────────────────────────
 DAILY_LOSS_LIMIT_PCT = 5.0    # pausar si PnL del día cae >5% del capital inicial
-STALE_HOURS          = 8      # salir si trade lleva +8h sin moverse
+STALE_HOURS          = 5      # salir si trade lleva +5h sin moverse
 STALE_RANGE_PCT      = 0.5    # rango de "estancado" en %
 COOLDOWN_AFTER_SL    = True   # no reentrar en el mismo par tras un SL
 COOLDOWN_HOURS       = 4      # horas que dura el cooldown tras un SL
