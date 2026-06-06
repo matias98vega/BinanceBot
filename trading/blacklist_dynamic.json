@@ -13,7 +13,8 @@
     "SOXLUSDT",
     "ALLOUSDT",
     "HEIUSDT",
-    "BLUAIUSDT"
+    "BLUAIUSDT",
+    "VELVETUSDT"
   ],
   "log": [
     {
@@ -105,6 +106,11 @@
       "symbol": "BLUAIUSDT",
       "reason": "volatilidad extrema 7.1%/h",
       "added": "2026-06-06 19:14 UTC"
+    },
+    {
+      "symbol": "VELVETUSDT",
+      "reason": "rango 48h 73%",
+      "added": "2026-06-06 22:34 UTC"
     }
   ],
   "rehabilitated": [

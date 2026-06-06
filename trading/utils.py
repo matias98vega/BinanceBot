@@ -154,7 +154,24 @@ def get_total_futures():
 
 def get_futures_summary():
     """Retorna (wallet_total, disponible, en_margen) de la cuenta futures."""
-    d = fut_signed('GET', '/fapi/v2/account')
+    import urllib.error, time
+    
+    d = None
+    last_err = None
+    for _attempt in range(3):
+        try:
+            d = fut_signed('GET', '/fapi/v2/account', {})
+            break
+        except urllib.error.HTTPError as e:
+            last_err = e
+            if _attempt < 2:
+                _delay = 5 * (_attempt + 1)  # 5s, 10s
+                import logging
+                logging.warning(f'Futures summary: intento {_attempt+1} fallido ({e}), reintentando en {_delay}s')
+                time.sleep(_delay)
+    if d is None:
+        raise last_err
+    
     total     = float(d.get('totalWalletBalance', 0))
     available = float(d.get('availableBalance', 0))
     in_margin = float(d.get('totalInitialMargin', 0))
