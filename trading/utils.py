@@ -405,7 +405,7 @@ def get_futures_capital_per_position(state):
     Siempre se reserva al menos 20% del wallet como colchón de mantenimiento.
     """
     total, available, _ = get_futures_summary()
-    max_shorts = get_max_short_positions(available)
+    max_shorts = get_max_short_positions(total)  # ← Usar total, no disponible
     # Reservar 20% como colchón de mantenimiento ante fluctuaciones
     usable = total * 0.80
     capital = usable / max_shorts if max_shorts > 0 else usable

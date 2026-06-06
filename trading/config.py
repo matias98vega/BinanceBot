@@ -50,7 +50,7 @@ MAX_CONSEC_SL        = 2      # SL consecutivos antes de reducir riesgo
 
 # ── Diversificación dinámica por capital ─────────────────────────────────────────
 DIVERSIFY_THRESHOLD_1 = 30.0  # por encima de este capital libre: hasta 2 posiciones
-DIVERSIFY_THRESHOLD_2 = 80.0  # por encima de este capital libre: hasta 3 posiciones
+DIVERSIFY_THRESHOLD_2 = 50.0  # por encima de este capital total: hasta 3 posiciones
 DIVERSIFY_RISK_2      = 0.45  # % por posición cuando hay 2 simultáneas
 DIVERSIFY_RISK_3      = 0.30  # % por posición cuando hay 3 simultáneas
 

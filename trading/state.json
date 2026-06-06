@@ -68,7 +68,7 @@
   "status": "active",
   "last_ctx_alert_time": 1780264701,
   "last_ctx_alert_reason": "contexto bajista \u2014 BTC bajo EMA50_4h ($73888 < $74811, -1.2%)",
-  "last_update": "2026-06-06T21:54:09Z",
+  "last_update": "2026-06-06T22:24:02Z",
   "last_dust_clean": 1780292768,
   "dust_in_progress": false,
   "last_dust_conversion": 1780288570,
