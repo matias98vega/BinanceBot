@@ -27,6 +27,12 @@ def open_long(candidate, state):
     )
     spot_total = usdt + spot_in_pos
     risk_pct = utils.get_spot_risk_pct(spot_total, state.get('consec_sl', 0))
+    # Reducir riesgo si contexto macro es bajista
+    if candidate.get('bearish_context'):
+        risk_pct = min(risk_pct, config.SPOT_RISK_BEARISH)
+    # Reducir riesgo si el token es volátil/riesgoso
+    if candidate.get('risky'):
+        risk_pct = min(risk_pct, config.RISKY_RISK_FACTOR)
     capital  = usdt * risk_pct
 
     # Dry-run: simular sin ejecutar
@@ -68,16 +74,27 @@ def open_long(candidate, state):
     sl = utils.round_tick(sl, tick)
     tp = utils.round_tick(tp, tick)
 
-    # Compra MARKET
-    try:
-        buy = utils.spot_signed('POST', '/api/v3/order', {
-            'symbol':   sym,
-            'side':     'BUY',
-            'type':     'MARKET',
-            'quantity': str(qty),
-        })
-    except Exception as e:
-        return None, f'Error al comprar {sym}: {e}'
+    # Compra MARKET (con backoff ante errores transitorios de API)
+    buy = None
+    last_err = None
+    for _attempt in range(4):
+        try:
+            buy = utils.spot_signed('POST', '/api/v3/order', {
+                'symbol':   sym,
+                'side':     'BUY',
+                'type':     'MARKET',
+                'quantity': str(qty),
+            })
+            break  # éxito
+        except Exception as e:
+            last_err = e
+            if _attempt < 3:
+                _delay = 10 * (2 ** _attempt)  # 10s, 20s, 40s
+                import logging
+                logging.warning(f'LONG {sym}: intento {_attempt+1} fallido ({e}), reintentando en {_delay}s')
+                time.sleep(_delay)
+    if buy is None:
+        return None, f'Error al comprar {sym} tras 4 intentos: {last_err}'
 
     # Precio real de fill
     exec_qty = float(buy.get('executedQty', qty))

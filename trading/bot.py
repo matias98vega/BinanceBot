@@ -5,7 +5,7 @@ Corre cada 10 min via cron. Gestiona longs (spot) y shorts (futures) simultánea
 """
 import sys, os, time, json
 sys.path.insert(0, os.path.dirname(__file__))
-import config, utils, market, longs, shorts
+import config, utils, market, longs, shorts, rebalance
 
 OUTPUT = []
 
@@ -49,17 +49,61 @@ def _run():
             out('✅ Nuevo día — bot reactivado.')
         state['pnl_date']            = today
         state['daily_pnl_usdt']      = 0.0
-        state['daily_start_capital'] = utils.get_usdt_spot() + utils.get_total_futures()
+        spot_free = utils.get_usdt_spot()
+        spot_in_pos = sum(
+            p['entry_price'] * p['quantity']
+            for p in state.get('positions', []) if p['direction'] == 'long'
+        )
+        state['daily_start_capital'] = spot_free + spot_in_pos + utils.get_total_futures()
         state['consec_sl']           = 0
 
     # ── Auditoría: activos huérfanos ─────────────────────────────────────────
     _audit_orphans(state)
+
+    # ── Revisión blacklist dinámica (cada 6h) ────────────────────────────────
+    last_bl_review = state.get('last_bl_review', 0)
+    if time.time() - last_bl_review > 21600:  # 6 horas
+        rehabilitated = market.review_dynamic_blacklist()
+        if rehabilitated:
+            out(f'✅ Rehabilitados desde blacklist: {", ".join(rehabilitated)}')
+        state['last_bl_review'] = int(time.time())
 
     # ── Pausa global ─────────────────────────────────────────────────────────
     if state.get('status') == 'paused':
         out(f'⏸️ Bot pausado (límite diario). PnL hoy: {state.get("daily_pnl_usdt", 0):+.4f} USDT')
         utils.save_state(state)
         return
+
+    # ── Circuit breaker: pausa 24h si ≥4 SLs consecutivos ─────────────────────
+    if state.get('consec_sl', 0) >= 4:
+        state['status'] = 'paused'
+        state['pause_until'] = int(time.time()) + 86400  # 24h
+        out('⛔ Circuit breaker: 4 SLs consecutivos → bot pausado por 24h')
+        utils.send_alert('⛔ Bot pausado por circuit breaker: 4 SLs consecutivos')
+        utils.save_state(state)
+        return
+
+    # ── Verificar si pausa por circuit breaker ya expiró ───────────────────────
+    pause_until = state.get('pause_until', 0)
+    if pause_until > 0 and int(time.time()) < pause_until:
+        remaining_h = (pause_until - int(time.time())) / 3600
+        out(f'⏸️ Bot pausado (circuit breaker). Restan {remaining_h:.1f}h')
+        utils.save_state(state)
+        return
+    elif pause_until > 0 and int(time.time()) >= pause_until:
+        # Pausa expiró, reactivar
+        state['status'] = 'active'
+        state['pause_until'] = 0
+        state['consec_sl'] = 0
+        out('✅ Circuit breaker expirado → bot reactivado')
+        utils.save_state(state)
+
+    # ── Máximo de posiciones abiertas simultáneas ──────────────────────────────
+    MAX_OPEN_POSITIONS = 3  # con capital ~$50, no diversificar en exceso
+    active_positions = state.get('positions', [])
+    if len(active_positions) >= MAX_OPEN_POSITIONS:
+        out(f'⏸️ Máximo de posiciones abiertas ({MAX_OPEN_POSITIONS}). Esperando cierres.')
+        # No retornar — igual gestionar posiciones existentes
 
     # ── Contexto de mercado (una sola vez) ───────────────────────────────────
     btc_ctx = market.get_btc_context()
@@ -71,6 +115,12 @@ def _run():
     out(f'{ctx_emoji} Contexto BTC: {trend.upper()} | Precio: ${btc_ctx["btc_price"]:.0f} | 4h: {chg4h:+.2f}%')
     if force:
         out(f'⚡ Modo forzado: {force}')
+
+    # ── Rebalanceo de capital según contexto ─────────────────────────────────
+    rb_ok, rb_msg = rebalance.rebalance(state, btc_ctx)
+    if rb_ok:
+        out(rb_msg)
+        utils.send_alert(rb_msg)
 
     # ── 1. GESTIONAR posiciones activas ──────────────────────────────────────
     active_positions  = state.get('positions', [])
@@ -89,7 +139,7 @@ def _run():
             action, price_close, pnl = shorts.manage_short(pos, state)
 
         if action in ('closed_tp', 'closed_sl', 'closed_manual'):
-            _handle_close(state, pos, action, price_close, pnl)
+            _handle_close(state, pos, action, price_close, pnl, btc_ctx)
         elif action == 'updated':
             out(f'🔄 {direction.upper()} {sym} actualizado (trailing stop)')
             positions_to_keep.append(pos)
@@ -137,8 +187,18 @@ def _run():
             cd_strs.append(f'{sym}({rem_h:.1f}h)')
         out(f'⏳ Cooldown: {", ".join(cd_strs)}')
 
+    # ── Pausa post-SL: saltar entradas por 2 ciclos ───────────────────────────
+    skip_cycles = state.get('skip_next_cycles', 0)
+    if skip_cycles > 0:
+        state['skip_next_cycles'] = skip_cycles - 1
+        out(f'⏸️ Pausa post-SL: saltando ciclo de entradas ({skip_cycles} restantes)')
+        # No retornar — igual gestionar posiciones existentes, solo no abrir nuevas
+        skip_new_entries = True
+    else:
+        skip_new_entries = False
+
     # ── 2a. LONGS ─────────────────────────────────────────────────────────────
-    if long_count < max_longs and force != 'short_only':
+    if long_count < max_longs and force != 'short_only' and not skip_new_entries:
         best_long, descarte_long = market.scan_longs(btc_ctx, excluded_symbols=excluded)
         utils.log_analysis('long', best_long, descarte_long)
 
@@ -151,12 +211,18 @@ def _run():
                 utils.send_alert(msg)
             else:
                 out(f'⚠️ LONG no abierto: {msg}')
+                utils.send_alert(f'⚠️ FALLÓ apertura LONG {best_long["symbol"]}: {msg}')
+                # Log detallado para debugging
+                import logging
+                logging.error(f'LONG fallido {best_long["symbol"]}: {msg}')
         else:
             motivo = descarte_long.get('MERCADO', 'sin candidatos válidos')
-            out(f'🔍 LONG: sin entrada ({motivo})')
+            # No mostrar en consola si es por modo direccional (ya está en config)
+            if 'modo direccional' not in motivo:
+                out(f'🔍 LONG: sin entrada ({motivo})')
 
     # ── 2b. SHORTS ────────────────────────────────────────────────────────────
-    if short_count < max_shorts and force != 'long_only':
+    if short_count < max_shorts and force != 'long_only' and not skip_new_entries:
         excl_short = {p['symbol'] for p in state['positions']} | cooldowns
         best_short, descarte_short = market.scan_shorts(btc_ctx, excluded_symbols=excl_short)
         utils.log_analysis('short', best_short, descarte_short)
@@ -170,22 +236,35 @@ def _run():
                 utils.send_alert(msg)
             else:
                 out(f'⚠️ SHORT no abierto: {msg}')
+                utils.send_alert(f'⚠️ FALLÓ apertura SHORT {best_short["symbol"]}: {msg}')
+                # Log detallado para debugging
+                import logging
+                logging.error(f'SHORT fallido {best_short["symbol"]}: {msg}')
         else:
             motivo = descarte_short.get('MERCADO', 'sin candidatos válidos')
-            out(f'🔍 SHORT: sin entrada ({motivo})')
+            # No mostrar en consola si es por modo direccional (ya está en config)
+            if 'modo direccional' not in motivo:
+                out(f'🔍 SHORT: sin entrada ({motivo})')
 
     # ── Resumen ───────────────────────────────────────────────────────────────
-    n_pos    = len(state['positions'])
+    # Recalcular contadores reales (pueden haber cambiado si se abrio nueva posicion)
+    long_count_final  = sum(1 for p in state['positions'] if p['direction'] == 'long')
+    short_count_final = sum(1 for p in state['positions'] if p['direction'] == 'short')
     spot_bal  = utils.get_usdt_spot()
     # Total spot = USDT libre + valor de longs abiertos
     spot_in_positions = sum(
         p['entry_price'] * p['quantity']
-        for p in positions_to_keep if p['direction'] == 'long'
+        for p in state['positions'] if p['direction'] == 'long'
     )
     spot_total = round(spot_bal + spot_in_positions, 2)
     spot_used  = round(spot_in_positions, 2)
     fut_total, fut_avail, fut_margin = utils.get_futures_summary()
-    out(f'\n💼 Longs: {long_count}/{max_longs} | Shorts: {short_count}/{max_shorts} | Spot: ${spot_used:.2f}/${spot_total:.2f} | Futures: ${fut_margin:.2f}/${fut_total:.2f}')
+    # Valor nocional de posiciones short activas
+    short_notional = sum(
+        p['entry_price'] * p['quantity'] / p.get('leverage', config.FUTURES_LEVERAGE)
+        for p in state['positions'] if p['direction'] == 'short'
+    )
+    out(f'\n💼 Longs: {long_count_final}/{max_longs} | Shorts: {short_count_final}/{max_shorts} | Spot: ${spot_used:.2f}/${spot_total:.2f} | Futures: ${short_notional:.2f}/${fut_total:.2f}')
     out(f'📊 PnL total: {state["total_pnl_usdt"]:+.4f} USDT | Hoy: {state["daily_pnl_usdt"]:+.4f} USDT')
 
     # ── Limpieza semanal de polvo ─────────────────────────────────────────────────────
@@ -196,7 +275,35 @@ def _run():
 
 # ── Helpers internos ──────────────────────────────────────────────────────────
 
-def _handle_close(state, pos, action, price_close, pnl):
+def _recolocar_oco_long(pos, sym, qty_total, step, price, tp, entry):
+    """Recoloca OCO de emergencia cuando el parcial falla pero el OCO ya fue cancelado."""
+    import urllib.error as _ue
+    try:
+        tick     = utils.get_spot_filters(sym).get('tick_size', 0.0001)
+        qty      = utils.round_step(qty_total, step)
+        new_sl   = utils.round_tick(entry * (1 - config.SL_MIN_DIST_PCT / 100), tick)
+        new_sl_l = utils.round_tick(new_sl * 0.999, tick)
+        new_tp   = utils.round_tick(tp, tick)
+        if qty * price < 5.0:
+            utils.send_alert(f'🚨 {sym}: no pude recolocar OCO (qty insuficiente). Revisión manual requerida.')
+            return
+        oco = utils.spot_signed('POST', '/api/v3/order/oco', {
+            'symbol': sym, 'side': 'SELL', 'quantity': str(qty),
+            'price': str(new_tp), 'stopPrice': str(new_sl),
+            'stopLimitPrice': str(new_sl_l), 'stopLimitTimeInForce': 'GTC',
+        })
+        pos['oco_order_list_id'] = str(oco.get('orderListId', ''))
+        pos['oco_order_ids']     = [str(o['orderId']) for o in oco.get('orders', [])]
+        pos['quantity']          = qty
+        out(f'✅ OCO recolocado para {sym} tras fallo de parcial')
+    except _ue.HTTPError as e:
+        err = utils._binance_error_msg(e)
+        utils.send_alert(f'🚨 {sym}: no pude recolocar OCO ({err}). Revisión manual requerida.')
+    except Exception as e:
+        utils.send_alert(f'🚨 {sym}: no pude recolocar OCO ({e}). Revisión manual requerida.')
+
+
+def _handle_close(state, pos, action, price_close, pnl, btc_ctx=None):
     """Procesa el cierre de una posición: actualiza estado, alerta, log."""
     sym       = pos['symbol']
     direction = pos['direction']
@@ -204,22 +311,69 @@ def _handle_close(state, pos, action, price_close, pnl):
     state['trade_count']    = state.get('trade_count', 0) + 1
     state['total_pnl_usdt'] = round(state.get('total_pnl_usdt', 0) + pnl, 4)
     state['daily_pnl_usdt'] = round(state.get('daily_pnl_usdt', 0) + pnl, 4)
-    capital_now = utils.get_usdt_spot() + utils.get_total_futures()
-
-    label     = {'closed_tp': 'TP ✅', 'closed_sl': 'SL 🔴', 'closed_manual': 'SALIDA MANUAL ⏱️'}[action]
-    dir_emoji = '📈' if direction == 'long' else '📉'
-    msg = (
-        f'{dir_emoji} {direction.upper()} {sym} cerrado: {label}\n'
-        f'PnL: {pnl:+.4f} USDT | Acumulado: {state["total_pnl_usdt"]:+.4f} USDT'
+    spot_free_now = utils.get_usdt_spot()
+    spot_in_pos_now = sum(
+        p['entry_price'] * p['quantity']
+        for p in state.get('positions', []) if p['direction'] == 'long'
     )
+    capital_now = spot_free_now + spot_in_pos_now + utils.get_total_futures()
+
+    label     = {'closed_tp': 'TP ✅', 'closed_sl': 'SL 🔴', 'closed_manual': 'STALE ⏱️ (sin movimiento)'}[action]
+    dir_emoji = '📈' if direction == 'long' else '📉'
+    if action == 'closed_sl' and not pos.get('partial_taken'):
+        msg = (
+            f'{dir_emoji} {direction.upper()} {sym} cerrado: {label}\n'
+            f'PnL: {pnl:+.4f} USDT | Acumulado: {state["total_pnl_usdt"]:+.4f} USDT'
+        )
+    elif action == 'closed_sl' and pos.get('partial_taken'):
+        ppnl = pos.get('partial_pnl')
+        ppnl_str = f'+${ppnl:.4f}' if ppnl else 'ver log'
+        msg = (
+            f'{dir_emoji} {direction.upper()} {sym} cerrado: {label} (breakeven — parcial TP cobrado: {ppnl_str})\n'
+            f'PnL esta mitad: {pnl:+.4f} USDT | Acumulado: {state["total_pnl_usdt"]:+.4f} USDT'
+        )
+    else:
+        msg = (
+            f'{dir_emoji} {direction.upper()} {sym} cerrado: {label}\n'
+            f'PnL: {pnl:+.4f} USDT | Acumulado: {state["total_pnl_usdt"]:+.4f} USDT'
+        )
     out(msg)
     utils.send_alert(msg)
     utils.log_trade(state['trade_count'], sym, direction, label, pnl, capital_now)
 
     if action == 'closed_sl':
-        state['consec_sl'] = state.get('consec_sl', 0) + 1
+        had_partial = pos.get('partial_taken', False)
+
+        # SL después de parcial TP: el riesgo real ya estaba protegido (breakeven)
+        # No suma al circuit breaker ni dispara pausa post-SL
+        if not had_partial:
+            state['consec_sl'] = state.get('consec_sl', 0) + 1
+            state['last_sl_time'] = int(time.time())
+            state['skip_next_cycles'] = 2  # saltar 2 ciclos de entrada (~20 min)
+        else:
+            # Parcial previo → SL es en realidad breakeven, no una pérdida real
+            # Solo resetear racha si venía de SLs limpios (no acumular)
+            # No sumar al consec_sl, no pausar
+            pass
+
         if config.COOLDOWN_AFTER_SL:
             utils.add_cooldown(state, sym)
+
+        # Auto-blacklist: solo contar SLs sin parcial previo (pérdidas reales)
+        if not had_partial:
+            sl_history = state.get('sl_history_by_symbol', {})
+            if sym not in sl_history:
+                sl_history[sym] = []
+            sl_history[sym].append(int(time.time()))
+            now = int(time.time())
+            cutoff = now - 432000
+            sl_history[sym] = [ts for ts in sl_history[sym] if ts > cutoff]
+            state['sl_history_by_symbol'] = sl_history
+            if len(sl_history[sym]) >= 3:
+                if sym not in config.BLACKLIST_SYMBOLS:
+                    config.BLACKLIST_SYMBOLS.add(sym)
+                    out(f'⛔ {sym} auto-blacklisted: 3 SLs reales en 5 días')
+                    utils.send_alert(f'⛔ {sym} agregado a BLACKLIST automática: 3 SLs reales en 5 días')
     else:
         state['consec_sl'] = 0
         utils.remove_cooldown(state, sym)
@@ -232,6 +386,17 @@ def _handle_close(state, pos, action, price_close, pnl):
             state['status'] = 'paused'
             out(f'⛔ Límite diario alcanzado ({daily_loss_pct:.2f}%). Bot pausado hasta mañana.')
             utils.send_alert(f'⛔ Bot pausado por límite diario: {daily_loss_pct:.2f}%')
+
+    # Rebalanceo post-cierre: aprovechar el capital recién liberado
+    # Si la tendencia cambió y había posiciones viejas bloqueando la transferencia,
+    # este es el momento de mover el capital disponible hacia la wallet correcta.
+    try:
+        rb_ok, rb_msg = rebalance.rebalance(state, btc_ctx)
+        if rb_ok:
+            out(rb_msg)
+            utils.send_alert(rb_msg)
+    except Exception:
+        pass  # silencioso si falla, el ciclo principal lo reintenta
 
 
 def _check_partial_long(pos, state):
@@ -265,39 +430,85 @@ def _check_partial_long(pos, state):
     if qty_half * price < 5.0:   # notional mínimo
         return
 
+    import urllib.error as _ue
     try:
-        # Cancelar OCO
+        # Cancelar OCO — si ya se ejecutó, manejar el error
+        oco_cancelled = False
         if oco_id:
-            utils.spot_signed('DELETE', '/api/v3/orderList', {'orderListId': int(oco_id)})
+            try:
+                utils.spot_signed('DELETE', '/api/v3/orderList', {'symbol': sym, 'orderListId': int(oco_id)})
+                oco_cancelled = True
+            except _ue.HTTPError as e:
+                err = utils._binance_error_msg(e)
+                if '-2011' in err or '-1013' in err:
+                    # OCO ya ejecutado (TP o SL disparado) — no hay nada que vender
+                    pos['partial_taken'] = True
+                    out(f'⚠️ Parcial LONG {sym}: OCO ya ejecutado ({err}), marcando partial_taken')
+                    return
+                else:
+                    out(f'⚠️ Parcial LONG {sym}: error al cancelar OCO ({err}), abortando parcial')
+                    return
+
+        # Verificar balance real antes de vender
+        try:
+            acct = utils.get_spot_account()
+            base_asset = sym.replace('USDT', '')
+            free_base = next((float(b['free']) for b in acct.get('balances', []) if b['asset'] == base_asset), 0)
+            step = utils.get_spot_filters(sym).get('step_size', 0.001)
+            qty_half_real = utils.round_step(min(qty_half, free_base * 0.5), step)
+            qty_rest_real = utils.round_step(free_base - qty_half_real, step)
+            if qty_half_real * price < 5.0 or qty_rest_real * price < 5.0:
+                out(f'⚠️ Parcial LONG {sym}: qty insuficiente (free={free_base:.4f}), abortando')
+                if oco_cancelled:
+                    _recolocar_oco_long(pos, sym, free_base, step, price, tp, entry)
+                return
+        except Exception as e:
+            out(f'⚠️ Parcial LONG {sym}: no pude verificar balance ({e}), abortando')
+            return
 
         # Vender mitad
-        utils.spot_signed('POST', '/api/v3/order', {
-            'symbol': sym, 'side': 'SELL', 'type': 'MARKET', 'quantity': str(qty_half)
-        })
+        try:
+            utils.spot_signed('POST', '/api/v3/order', {
+                'symbol': sym, 'side': 'SELL', 'type': 'MARKET', 'quantity': str(qty_half_real)
+            })
+        except _ue.HTTPError as e:
+            err = utils._binance_error_msg(e)
+            out(f'⚠️ Parcial LONG {sym}: venta fallida ({err})')
+            if oco_cancelled:
+                _recolocar_oco_long(pos, sym, qty_half_real + qty_rest_real, step, price, tp, entry)
+            return
 
-        pnl_partial = (price - entry) * qty_half
+        pnl_partial = (price - entry) * qty_half_real
         tick = utils.get_spot_filters(sym).get('tick_size', 0.0001)
 
         # Nuevo OCO con SL en breakeven (entrada) y mismo TP
-        new_sl       = utils.round_tick(entry * 1.001, tick)   # breakeven + 0.1%
+        new_sl       = utils.round_tick(entry * 1.003, tick)
         new_sl_limit = utils.round_tick(new_sl * 0.999, tick)
         new_tp       = utils.round_tick(tp, tick)
 
-        oco = utils.spot_signed('POST', '/api/v3/order/oco', {
-            'symbol':               sym,
-            'side':                 'SELL',
-            'quantity':             str(qty_rest),
-            'price':                str(new_tp),
-            'stopPrice':            str(new_sl),
-            'stopLimitPrice':       str(new_sl_limit),
-            'stopLimitTimeInForce': 'GTC',
-        })
+        try:
+            oco = utils.spot_signed('POST', '/api/v3/order/oco', {
+                'symbol':               sym,
+                'side':                 'SELL',
+                'quantity':             str(qty_rest_real),
+                'price':                str(new_tp),
+                'stopPrice':            str(new_sl),
+                'stopLimitPrice':       str(new_sl_limit),
+                'stopLimitTimeInForce': 'GTC',
+            })
+        except _ue.HTTPError as e:
+            err = utils._binance_error_msg(e)
+            utils.send_alert(f'🚨 Parcial LONG {sym}: vendido pero OCO fallido ({err}). Intervención requerida.')
+            out(f'🚨 Parcial LONG {sym}: vendido 50% pero no pude colocar nuevo OCO ({err})')
+            pos['partial_taken'] = True
+            return
 
-        pos['quantity']            = qty_rest
+        pos['quantity']            = qty_rest_real
         pos['sl']                  = new_sl
         pos['oco_order_list_id']   = str(oco.get('orderListId', ''))
         pos['oco_order_ids']       = [str(o['orderId']) for o in oco.get('orders', [])]
         pos['partial_taken']       = True
+        pos['partial_pnl']         = round(pnl_partial, 4)
 
         msg = (
             f'💰 PARCIAL LONG {sym}: vendí 50% @ ${price:.4f}\n'
@@ -305,12 +516,11 @@ def _check_partial_long(pos, state):
         )
         out(msg)
         utils.send_alert(msg)
-        # Registrar PnL parcial en el state
         state['total_pnl_usdt'] = round(state.get('total_pnl_usdt', 0) + pnl_partial, 4)
         state['daily_pnl_usdt'] = round(state.get('daily_pnl_usdt', 0) + pnl_partial, 4)
 
     except Exception as e:
-        out(f'⚠️ Parcial LONG {sym} falló: {e}')
+        out(f'⚠️ Parcial LONG {sym} error inesperado: {e}')
 
 
 def _check_partial_short(pos, state):
@@ -367,7 +577,8 @@ def _check_partial_short(pos, state):
                 pass
 
         tick   = utils.get_futures_filters(sym).get('tick_size', 0.001)
-        new_sl = utils.round_tick(entry * 0.999, tick)   # breakeven - 0.1% (por fees)
+        # Fix #2: breakeven para SHORT es por ENCIMA de la entrada (SL se activa cuando precio SUBE)
+        new_sl = utils.round_tick(entry * 1.003, tick)   # breakeven + 0.3% (cubre fees + ruido)
         new_tp = utils.round_tick(tp, tick)
 
         tp_order = utils.fut_signed('POST', '/fapi/v1/order', {
@@ -375,11 +586,51 @@ def _check_partial_short(pos, state):
             'price': str(new_tp), 'quantity': str(qty_rest),
             'reduceOnly': 'true', 'timeInForce': 'GTC',
         })
+        new_tp_order_id = str(tp_order.get('orderId', ''))
+
+        # Fix #1: actualizar SL nativo en el exchange con la nueva qty y nuevo precio
+        old_sl_id = pos.get('sl_order_id', '')
+        new_sl_order_id = ''
+        if config.NATIVE_SL_ENABLED:
+            # Cancelar SL nativo viejo (tenía qty_total)
+            if old_sl_id:
+                try:
+                    utils.fut_signed('DELETE', '/fapi/v1/order', {
+                        'symbol': sym, 'orderId': int(old_sl_id)
+                    })
+                except Exception:
+                    pass
+            # Colocar nuevo SL nativo con qty_rest y precio breakeven
+            # Solo colocar STOP_MARKET si el stopPrice está POR ENCIMA del precio actual.
+            # Si el precio ya bajó más allá del breakeven, Binance rechaza la orden (400).
+            # En ese caso el guardian software es suficiente — el SL ya no tiene sentido colocarlo.
+            try:
+                price_now = utils.get_fut_price(sym)
+                if new_sl > price_now * 1.0005:  # margen mínimo de 0.05% sobre precio actual
+                    # Validación adicional: stopPrice no debe exceder ~4.5% del precio actual
+                    # Binance rechaza STOP_MARKET si stopPrice > markPrice +5%
+                    max_stop_dist_pct = 4.5
+                    max_allowed_sl = price_now * (1 + max_stop_dist_pct / 100)
+                    if new_sl > max_allowed_sl:
+                        new_sl = utils.round_tick(max_allowed_sl, tick)
+                    
+                    sl_order = shorts._place_stop_market(sym, 'BUY', new_sl, qty_rest)
+                    new_sl_order_id = str(sl_order.get('orderId', '') or sl_order.get('strategyId', '')) if sl_order else ''
+                else:
+                    # Precio ya por debajo del breakeven — guardian software cubre
+                    pass
+            except Exception as e:
+                import logging
+                error_msg = str(e)
+                logging.error(f'SL breakeven {sym}: stopPrice={new_sl}, qty={qty_rest}, price={price_now}, error={error_msg}')
+                utils.send_alert(f'⚠️ SL nativo breakeven {sym} no se pudo colocar: {error_msg}. Guardian software activo.')
 
         pos['quantity']      = qty_rest
         pos['sl']            = new_sl
-        pos['tp_order_id']   = str(tp_order.get('orderId', ''))
+        pos['tp_order_id']   = new_tp_order_id
+        pos['sl_order_id']   = new_sl_order_id
         pos['partial_taken'] = True
+        pos['partial_pnl']   = round(pnl_partial, 4)
 
         msg = (
             f'💰 PARCIAL SHORT {sym}: cerré 50% @ ${fill:.4f}\n'
@@ -387,9 +638,13 @@ def _check_partial_short(pos, state):
         )
         out(msg)
         utils.send_alert(msg)
-        # Registrar PnL parcial en el state
+        # Registrar PnL parcial en el state y en el log
+        state['trade_count']    = state.get('trade_count', 0) + 1
         state['total_pnl_usdt'] = round(state.get('total_pnl_usdt', 0) + pnl_partial, 4)
         state['daily_pnl_usdt'] = round(state.get('daily_pnl_usdt', 0) + pnl_partial, 4)
+        spot_free_now = utils.get_usdt_spot()
+        capital_now   = spot_free_now + utils.get_total_futures()
+        utils.log_trade(state['trade_count'], sym, 'short', 'PARCIAL TP 💰 (50%)', pnl_partial, capital_now)
 
     except Exception as e:
         out(f'⚠️ Parcial SHORT {sym} falló: {e}')
@@ -400,9 +655,17 @@ def _audit_orphans(state):
     Detecta activos spot con valor > $5 que no tienen posición registrada en el state.
     Si encuentra uno: intenta colocar un OCO de protección y lo agrega al state.
     Evita que un activo quede desprotegido por ciclos duplicados o errores de escritura.
+
+    Fix #7: excluye falsos positivos:
+    - Activos en cooldown (el par USDT está en cooldown_symbols) → solo monitoreo, no OCO
+    - Activos en proceso de limpieza de polvo (dust_in_progress) → ignorar
+    - Activos sin par USDT en futures (no tradeable como short) pero sí en spot
     """
     try:
         active_syms = {p['symbol'] for p in state.get('positions', []) if p['direction'] == 'long'}
+        # Fix #7a: obtener cooldowns activos para excluirlos de la recuperación automática
+        cooldown_syms = utils.get_active_cooldowns(state)
+        dust_in_progress = state.get('dust_in_progress', False)
 
         # Precios en batch
         import urllib.request as _ur
@@ -414,8 +677,8 @@ def _audit_orphans(state):
         except Exception:
             pass
 
-        acc = utils.spot_signed('GET', '/api/v3/account')
-        for b in acc['balances']:
+        acc = utils.get_spot_account()
+        for b in acc.get('balances', []):
             asset  = b['asset']
             free   = float(b['free'])
             locked = float(b['locked'])
@@ -430,6 +693,19 @@ def _audit_orphans(state):
             if price == 0 or total * price < 5.0:
                 continue
             if sym in active_syms:
+                continue
+
+            # Fix #7b: si el par está en cooldown, no es un huérfano accionable — solo alertar
+            if sym in cooldown_syms:
+                cd_info = state.get('cooldown_symbols', {})
+                expiry  = cd_info.get(sym, 0) if isinstance(cd_info, dict) else 0
+                rem_h   = max(0, (expiry - int(time.time())) / 3600) if expiry else 0
+                out(f'ℹ️ {asset} en cooldown ({rem_h:.1f}h restantes), no se coloca OCO automático')
+                continue
+
+            # Fix #7c: si hay limpieza de polvo en progreso, ignorar activos pequeños
+            # (pueden ser residuos de conversiones parciales que se limpiarán solas)
+            if dust_in_progress and total * price < 15.0:
                 continue
 
             # Activo huérfano detectado

@@ -1,23 +1,97 @@
 {
-  "status": "scanning",
-  "symbol": "SOLUSDT",
-  "entry_price": 83.61,
-  "quantity": 0.1,
-  "sl": 82.73,
-  "tp": 85.36,
-  "oco_order_list_id": "",
-  "oco_order_ids": [],
-  "capital_usdt": 9.0354,
-  "trade_count": 9,
-  "total_pnl_usdt": -1.0401,
-  "last_update": "2026-05-28T00:49:28Z",
-  "entry_time": 1779903124,
-  "partial_taken": false,
+  "positions": [
+    {
+      "id": "short_XAGUSDT_1780651415",
+      "direction": "short",
+      "symbol": "XAGUSDT",
+      "entry_price": 72.91,
+      "quantity": 0.201,
+      "sl": 68.85,
+      "tp": 71.93,
+      "atr": 0.49071428571428605,
+      "tp_order_id": "3228068461",
+      "sl_order_id": "",
+      "entry_time": 1780651415,
+      "partial_taken": true,
+      "trail_trough": 68.11,
+      "leverage": 2,
+      "partial_pnl": 0.1628
+    },
+    {
+      "id": "short_DOGEUSDT_1780775654",
+      "direction": "short",
+      "symbol": "DOGEUSDT",
+      "entry_price": 0.08067,
+      "quantity": 453.0,
+      "sl": 0.08245,
+      "tp": 0.0783,
+      "atr": 0.0011871428571428577,
+      "tp_order_id": "98968937074",
+      "sl_order_id": "",
+      "entry_time": 1780775654,
+      "partial_taken": false,
+      "trail_trough": 0.08067,
+      "leverage": 2
+    }
+  ],
+  "trade_count": 73,
+  "total_pnl_usdt": 4.2741,
+  "daily_pnl_usdt": 0.4506,
+  "pnl_date": "2026-06-06",
+  "daily_start_capital": 56.96297076,
   "consec_sl": 1,
-  "cooldown_symbol": "",
-  "daily_pnl_usdt": -0.117,
-  "pnl_date": "2026-05-28",
-  "daily_start_capital": 9.0353662,
-  "last_ctx_alert_time": 1779926520,
-  "last_ctx_alert_reason": "contexto bajista \u2014 horario de baja liquidez (00:xx UTC, ventana restringida 22h-06h)"
+  "cooldown_symbols": {
+    "ATOMUSDT": 1780288233,
+    "SNXUSDT": 1780296222,
+    "ONDOUSDT": 1780429013,
+    "GUNUSDT": 1780308372,
+    "NEARUSDT": 1780320994,
+    "HOMEUSDT": 1780325195,
+    "XRPUSDT": 1780347743,
+    "VICUSDT": 1780366027,
+    "DOGEUSDT": 1780380685,
+    "ZECUSDT": 1780487237,
+    "INJUSDT": 1780523567,
+    "ADAUSDT": 1780571381,
+    "SKYAIUSDT": 1780453519,
+    "HYPEUSDT": 1780489001,
+    "SNDKUSDT": 1780506641,
+    "FETUSDT": 1780517842,
+    "SOXLUSDT": 1780612181,
+    "FILUSDT": 1780614571,
+    "INTCUSDT": 1780625374,
+    "CLUSDT": 1780678406,
+    "AVAXUSDT": 1780719879,
+    "ENAUSDT": 1780760013,
+    "XLMUSDT": 1780802651
+  },
+  "status": "active",
+  "last_ctx_alert_time": 1780264701,
+  "last_ctx_alert_reason": "contexto bajista \u2014 BTC bajo EMA50_4h ($73888 < $74811, -1.2%)",
+  "last_update": "2026-06-06T21:54:09Z",
+  "last_dust_clean": 1780292768,
+  "dust_in_progress": false,
+  "last_dust_conversion": 1780288570,
+  "last_rebalance_trend": "bearish",
+  "last_sl_time": 1780773851,
+  "skip_next_cycles": 0,
+  "sl_history_by_symbol": {
+    "SOXLUSDT": [
+      1780583381
+    ],
+    "FILUSDT": [
+      1780585771
+    ],
+    "INTCUSDT": [
+      1780596574
+    ],
+    "ENAUSDT": [
+      1780731213
+    ],
+    "XLMUSDT": [
+      1780773851
+    ]
+  },
+  "pause_until": 0,
+  "last_bl_review": 1780778641
 }

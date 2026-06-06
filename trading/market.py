@@ -15,6 +15,118 @@ _STATIC_CANDIDATES = [
     'SNXUSDT', 'LDOUSDT', 'SUIUSDT', 'APTUSDT', 'SEIUSDT',
 ]
 
+def _check_oversold_for_short(closes, highs, lows):
+    """
+    Detecta si el precio lleva una caída sostenida antes de entrar short.
+    Evita vender en el piso de un dump — alto riesgo de rebote y SL.
+    Mirror del filtro anti-momentum-agotado para longs.
+    
+    Lógica:
+    - Si el precio bajó >RECOVERY_FROM_LOW_PCT% desde el máximo de las últimas 24 velas
+      Y las últimas N velas son consecutivamente bajistas → penalizar fuerte.
+    - Si solo la caída supera el umbral (sin velas consecutivas) → penalizar suave.
+    """
+    try:
+        n = min(24, len(closes))
+        recent = closes[-n:]
+        high_price = max(recent)
+        current   = closes[-1]
+
+        drop_pct = (high_price - current) / high_price * 100
+        if drop_pct < config.RECOVERY_FROM_LOW_PCT:
+            return 0  # Caída modesta, no penalizar
+
+        # Contar velas 1h consecutivamente bajistas desde el final
+        consec = 0
+        for i in range(-1, -len(closes), -1):
+            if closes[i] < closes[i-1]:
+                consec += 1
+            else:
+                break
+
+        if consec >= config.RECOVERY_CONSEC_CANDLES:
+            return 3  # Caída extendida con velas bajistas consecutivas → penalizar fuerte
+        else:
+            return 2  # Solo caída de precio → penalizar moderado
+    except Exception:
+        return 0
+
+
+def _check_recovery_from_low(closes, highs, lows):
+    """
+    Detecta si el precio lleva un rebote sostenido desde un mínimo reciente.
+    Retorna penalización de score (0, 2 o 3) para shorts.
+    
+    Lógica:
+    - Si el precio rebotó >RECOVERY_FROM_LOW_PCT% desde el mínimo de las últimas 24 velas
+      Y las últimas N velas 1h son consecutivamente alcistas → penalizar fuertemente.
+    - Si solo se cumple el rebote de precio (sin velas consecutivas) → penalizar suave.
+    """
+    try:
+        n = min(24, len(closes))
+        recent = closes[-n:]
+        low_idx = recent.index(min(recent))
+        low_price = recent[low_idx]
+        current   = closes[-1]
+
+        # Rebote desde mínimo
+        recovery_pct = (current - low_price) / low_price * 100
+
+        if recovery_pct < config.RECOVERY_FROM_LOW_PCT:
+            return 0  # Sin rebote significativo, no penalizar
+
+        # Contar velas 1h consecutivamente alcistas desde el final
+        consec = 0
+        for i in range(-1, -len(closes), -1):
+            if closes[i] > closes[i-1]:
+                consec += 1
+            else:
+                break
+
+        if consec >= config.RECOVERY_CONSEC_CANDLES:
+            return 3  # Rebote sostenido con velas alcistas consecutivas → penalizar fuerte
+        else:
+            return 2  # Solo rebote de precio → penalizar moderado
+    except Exception:
+        return 0
+
+
+def _check_overbought_for_long(closes):
+    """
+    Detecta si el precio lleva un impulso alcista sobreextendido antes de entrar long.
+    Evita comprar en el techo de un rally — patrón que causó el SL de FET (10:57 UTC 03-Jun).
+    
+    Lógica:
+    - Si el precio subió >RECOVERY_FROM_LOW_PCT% desde el mínimo de las últimas 24 velas
+      Y las últimas N velas son consecutivamente alcistas → penalizar fuerte.
+    - Si solo el rebote supera el umbral (sin velas consecutivas) → penalizar suave.
+    """
+    try:
+        n = min(24, len(closes))
+        recent = closes[-n:]
+        low_price = min(recent)
+        current   = closes[-1]
+
+        rally_pct = (current - low_price) / low_price * 100
+        if rally_pct < config.RECOVERY_FROM_LOW_PCT:
+            return 0  # Rally modesto, no penalizar
+
+        # Contar velas 1h consecutivamente alcistas desde el final
+        consec = 0
+        for i in range(-1, -len(closes), -1):
+            if closes[i] > closes[i-1]:
+                consec += 1
+            else:
+                break
+
+        if consec >= config.RECOVERY_CONSEC_CANDLES:
+            return 3  # Rally extendido con velas alcistas consecutivas → penalizar fuerte
+        else:
+            return 2  # Solo rally de precio → penalizar moderado
+    except Exception:
+        return 0
+
+
 # Cache para no re-fetchear en cada ciclo (TTL 1 hora)
 _candidates_cache = {'ts': 0, 'symbols': []}
 
@@ -166,6 +278,47 @@ def score_long(symbol, btc_ctx):
     Timeframes: 15m (momentum) + 1h (entrada) + 4h (tendencia).
     """
     try:
+        # Filtro apertura mercado US: no entrar en stocks tokenizados
+        # durante los primeros N minutos de apertura (alta volatilidad / price discovery)
+        import time as _time
+        if symbol in config.US_STOCK_TOKENS:
+            _now = _time.gmtime()
+            open_h, open_m = config.US_MARKET_OPEN_UTC
+            minutes_since_open = (_now.tm_hour - open_h) * 60 + (_now.tm_min - open_m)
+            if 0 <= minutes_since_open < config.US_MARKET_AVOID_MIN:
+                return None  # demasiado cerca de la apertura US — descartar
+
+        # Score dinámico por día/hora (basado en histórico de SLs)
+        now = _time.gmtime()
+        weekday = now.tm_wday  # 0=lunes
+        hour = now.tm_hour
+        
+        hour_penalty = 0
+        hour_reason = ''
+        # Lunes: +2 (66.7% SL rate histórico)
+        if weekday == 0:
+            hour_penalty += 2
+            hour_reason = 'lunes+2'
+        # Martes: +1 (58.3% SL rate)
+        elif weekday == 1:
+            hour_penalty += 1
+            hour_reason = 'martes+1'
+        # 06:00-12:00 UTC: +1 (58.3% SL rate)
+        if 6 <= hour < 12:
+            hour_penalty += 1
+            hour_reason += '+horario_eu'
+        # 00:00-04:00 UTC: +1 (horas más muertas)
+        if 0 <= hour < 4:
+            hour_penalty += 1
+            hour_reason += '+night'
+        # 18:00-24:00 UTC: -1 (mejor slot, 28.6% SL rate)
+        if 18 <= hour < 24:
+            hour_penalty = max(0, hour_penalty - 1)
+            if hour_reason:
+                hour_reason += '-bonus_us'
+            else:
+                hour_reason = 'bonus_us-1'
+
         k1h = utils.get_klines(symbol, interval='1h', limit=50)
         closes = [float(k[4]) for k in k1h]
         highs  = [float(k[2]) for k in k1h]
@@ -210,9 +363,43 @@ def score_long(symbol, btc_ctx):
         atr_4h_pct = (atr_4h / last) * 100
         min_score  = config.SCORE_MIN_VOLATILE if atr_4h_pct > config.ATR_VOLATILE_THRESH else config.SCORE_MIN
 
+        # Score dinámico por día/hora (long)
+        if hour_penalty > 0:
+            min_score = min_score + hour_penalty
+            reasons.append(f'ajuste_día/hora ({hour_reason}) → score+{hour_penalty}')
+        elif hour_penalty < 0:
+            min_score = max(config.SCORE_MIN, min_score - 1)
+            reasons.append(f'bonus_día/hora ({hour_reason}) → score-1')
+
         # Si el 15m falla explícitamente, subir el min_score requerido
         if not ok_15m:
             min_score = max(min_score, config.SCORE_MIN + 2)
+
+        # Filtro volumen relativo: no entrar si volumen actual < 50% del promedio 24h
+        # Evita entrar en horas muertas o monedas sin liquidez (slippage, manipulación)
+        vol_24h_avg = sum(vols[-24:]) / 24 if len(vols) >= 24 else sum(vols) / len(vols)
+        vol_ratio = vols[-1] / vol_24h_avg if vol_24h_avg > 0 else 1.0
+        if vol_ratio < 0.5:
+            return None  # Volumen demasiado bajo — descartar candidato
+
+        # Filtro anti-momentum-agotado para longs: penalizar si el precio subió demasiado
+        overbought_penalty = _check_overbought_for_long(closes)
+        if overbought_penalty > 0:
+            min_score = min_score + overbought_penalty
+            reasons.append(f'impulso_sobreextendido → score+{overbought_penalty} requerido')
+
+        # ATR expansion filter: si ATR actual > 2× ATR promedio 7 días → volatilidad anormal
+        atr_7d_avg = sum(atr_v / max(closes[i], 0.0001) * 100 for i in range(-7, 0)) / 7 if len(closes) >= 7 else atr_pct
+        if atr_pct > atr_7d_avg * 2:
+            min_score = min_score + 3
+            reasons.append(f'ATR expansión ({atr_pct:.1f}% vs {atr_7d_avg:.1f}% promedio) → score+3')
+
+        # Distancia a máximos 24h: no entrar long si resistencia está <2% arriba
+        high_24h = max(highs[-24:]) if len(highs) >= 24 else max(highs)
+        dist_to_high = (high_24h - last) / last * 100
+        if dist_to_high < 2.0:
+            min_score = min_score + 2
+            reasons.append(f'resistencia_cerca ({dist_to_high:.1f}% al high 24h) → score+2')
 
         sl = round(last - config.SL_ATR_MULT * atr_v, 8)
         tp = round(last + config.TP_ATR_MULT * atr_v, 8)
@@ -259,6 +446,42 @@ def score_short(symbol, btc_ctx):
     death cross, volumen en distribución.
     """
     try:
+        # Filtro apertura mercado US: no entrar en stocks tokenizados
+        # durante los primeros N minutos de apertura (alta volatilidad / price discovery)
+        import time as _time
+        if symbol in config.US_STOCK_TOKENS:
+            _now = _time.gmtime()
+            open_h, open_m = config.US_MARKET_OPEN_UTC
+            minutes_since_open = (_now.tm_hour - open_h) * 60 + (_now.tm_min - open_m)
+            if 0 <= minutes_since_open < config.US_MARKET_AVOID_MIN:
+                return None  # demasiado cerca de la apertura US — descartar
+
+        # Score dinámico por día/hora (mismo criterio que score_long)
+        now = _time.gmtime()
+        weekday = now.tm_wday
+        hour = now.tm_hour
+        
+        hour_penalty = 0
+        hour_reason = ''
+        if weekday == 0:
+            hour_penalty += 2
+            hour_reason = 'lunes+2'
+        elif weekday == 1:
+            hour_penalty += 1
+            hour_reason = 'martes+1'
+        if 6 <= hour < 12:
+            hour_penalty += 1
+            hour_reason += '+horario_eu'
+        if 0 <= hour < 4:
+            hour_penalty += 1
+            hour_reason += '+night'
+        if 18 <= hour < 24:
+            hour_penalty = max(0, hour_penalty - 1)
+            if hour_reason:
+                hour_reason += '-bonus_us'
+            else:
+                hour_reason = 'bonus_us-1'
+
         k1h = utils.get_klines(symbol, interval='1h', limit=60, futures=True)
         closes = [float(k[4]) for k in k1h]
         highs  = [float(k[2]) for k in k1h]
@@ -280,12 +503,17 @@ def score_short(symbol, btc_ctx):
                         ema20_series[-3] >= ema50_series[-3])
 
         # Divergencia bajista RSI: precio hace higher high pero RSI hace lower high
-        rsi_series = [utils.rsi(closes[:i]) for i in range(30, len(closes)+1, 5)]
-        bearish_div = False
-        if len(rsi_series) >= 3:
-            price_hh = closes[-1] > closes[-6]      # precio subió
-            rsi_lh   = rsi_series[-1] < rsi_series[-3]  # RSI bajó
-            bearish_div = price_hh and rsi_lh
+        # Fix #5: en lugar de recalcular RSI desde cero para cada slice (O(n²)),
+        # comparamos RSI en 3 puntos clave usando la serie de closes completa.
+        rsi_now  = utils.rsi(closes)                     # RSI sobre closes completos
+        rsi_mid  = utils.rsi(closes[:-10])               # RSI hace 10 velas
+        rsi_old  = utils.rsi(closes[:-20])               # RSI hace 20 velas
+        bearish_div = (
+            closes[-1] > closes[-11]                     # precio: higher high vs hace 10 velas
+            and rsi_now < rsi_mid                        # RSI: lower high actual vs hace 10
+            and closes[-11] > closes[-21]                # precio también subió en el periodo anterior
+            and rsi_mid < rsi_old                        # y RSI también bajó en ese periodo
+        )
 
         # Volumen en distribución: velas bajistas con más volumen que alcistas
         bear_vol = sum(vols[i] for i in range(-10, 0) if closes[i] < closes[i-1])
@@ -339,12 +567,57 @@ def score_short(symbol, btc_ctx):
         atr_4h_pct = (atr_4h / last) * 100
         min_score  = config.SCORE_MIN_VOLATILE if atr_4h_pct > config.ATR_VOLATILE_THRESH else config.SCORE_MIN
 
+        # Score dinámico por día/hora (short)
+        if hour_penalty > 0:
+            min_score = min_score + hour_penalty
+            reasons.append(f'ajuste_día/hora ({hour_reason}) → score+{hour_penalty}')
+        elif hour_penalty < 0:
+            min_score = max(config.SCORE_MIN, min_score - 1)
+            reasons.append(f'bonus_día/hora ({hour_reason}) → score-1')
+
         # Si el 15m no confirma, subir el umbral mínimo
         if not ok_15m:
             min_score = max(min_score, config.SCORE_MIN + 2)
 
+        # Filtro volumen relativo: no entrar si volumen actual < 50% del promedio 24h
+        vol_24h_avg = sum(vols[-24:]) / 24 if len(vols) >= 24 else sum(vols) / len(vols)
+        vol_ratio = vols[-1] / vol_24h_avg if vol_24h_avg > 0 else 1.0
+        if vol_ratio < 0.5:
+            return None  # Volumen demasiado bajo — descartar candidato
+
+        # Penalizar si BTC está en rebote 1h (arrastra altcoins al alza → shorts peligrosos)
+        btc_rebound = btc_ctx.get('change_1h', 0) > config.BTC_REBOUND_1H_PCT
+        if btc_rebound:
+            min_score = min_score + 2
+            reasons.append(f'BTC rebote 1h ({btc_ctx.get("change_1h", 0):+.2f}%) → score+2 requerido')
+
+        # Filtro de recuperación desde mínimo: evitar shorts en rebote sostenido
+        recovery_penalty = _check_recovery_from_low(closes, highs, lows)
+        if recovery_penalty > 0:
+            min_score = min_score + recovery_penalty
+            reasons.append(f'rebote_desde_mínimo → score+{recovery_penalty} requerido')
+
+        # Filtro anti-piso: evitar shorts si el precio viene cayendo mucho (riesgo rebote)
+        oversold_penalty = _check_oversold_for_short(closes, highs, lows)
+        if oversold_penalty > 0:
+            min_score = min_score + oversold_penalty
+            reasons.append(f'caída_sostenida → score+{oversold_penalty} requerido')
+
+        # ATR expansion filter: si ATR actual > 2× ATR promedio 7 días → volatilidad anormal
+        atr_7d_avg = sum(atr_v / max(closes[i], 0.0001) * 100 for i in range(-7, 0)) / 7 if len(closes) >= 7 else atr_pct
+        if atr_pct > atr_7d_avg * 2:
+            min_score = min_score + 3
+            reasons.append(f'ATR expansión ({atr_pct:.1f}% vs {atr_7d_avg:.1f}% promedio) → score+3')
+
+        # Distancia a mínimos 24h: no entrar short si soporte está <2% abajo
+        low_24h = min(lows[-24:]) if len(lows) >= 24 else min(lows)
+        dist_to_low = (last - low_24h) / last * 100
+        if dist_to_low < 2.0:
+            min_score = min_score + 2
+            reasons.append(f'soporte_cerca ({dist_to_low:.1f}% al low 24h) → score+2')
+
         # SL arriba del precio, TP abajo
-        real_sl = utils.round_tick(last + config.SL_ATR_MULT * atr_v, 0.00001)
+        real_sl = utils.round_tick(last + config.SL_ATR_MULT_SHORT * atr_v, 0.00001)
         real_tp = utils.round_tick(last - config.TP_ATR_MULT * atr_v, 0.00001)
         real_tp = max(real_tp, last * 0.001)
 
@@ -375,11 +648,190 @@ def score_short(symbol, btc_ctx):
         return None
 
 
+
+# ── Blacklist dinámica (persiste entre reinicios) ─────────────────────────────
+import os as _os
+_DYNAMIC_BL_FILE = _os.path.join(_os.path.dirname(__file__), 'blacklist_dynamic.json')
+
+def _load_dynamic_blacklist():
+    """Carga la blacklist dinámica desde disco y la fusiona con la de config."""
+    try:
+        with open(_DYNAMIC_BL_FILE) as f:
+            data = __import__('json').load(f)
+        for sym in data.get('symbols', []):
+            config.BLACKLIST_SYMBOLS.add(sym)
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+
+def _persist_blacklist(sym, reason):
+    """Persiste un nuevo símbolo en la blacklist dinámica y manda alerta (una sola vez)."""
+    import json as _json
+    try:
+        try:
+            with open(_DYNAMIC_BL_FILE) as f:
+                data = _json.load(f)
+        except FileNotFoundError:
+            data = {'symbols': [], 'log': []}
+        if sym not in data['symbols']:
+            data['symbols'].append(sym)
+            data['log'].append({'symbol': sym, 'reason': reason,
+                                'added': __import__('time').strftime('%Y-%m-%d %H:%M UTC')})
+            with open(_DYNAMIC_BL_FILE, 'w') as f:
+                _json.dump(data, f, indent=2)
+            utils.send_alert(f'⚠️ {sym} agregado a blacklist: {reason}')
+    except Exception:
+        pass
+
+def _remove_from_dynamic_blacklist(sym, reason):
+    """Elimina un símbolo de la blacklist dinámica y notifica."""
+    import json as _json
+    try:
+        with open(_DYNAMIC_BL_FILE) as f:
+            data = _json.load(f)
+        if sym in data.get('symbols', []):
+            data['symbols'].remove(sym)
+            data.setdefault('rehabilitated', []).append({
+                'symbol': sym, 'reason': reason,
+                'date': __import__('time').strftime('%Y-%m-%d %H:%M UTC')
+            })
+            with open(_DYNAMIC_BL_FILE, 'w') as f:
+                _json.dump(data, f, indent=2)
+        config.BLACKLIST_SYMBOLS.discard(sym)
+        utils.send_alert(f'✅ {sym} rehabilitado desde blacklist: {reason}')
+    except Exception:
+        pass
+
+
+def review_dynamic_blacklist():
+    """
+    Revisa la blacklist dinámica y rehabilita tokens cuya volatilidad
+    ya está dentro de parámetros normales y llevan al menos MIN_DAYS_BLACKLISTED días.
+
+    Criterios de salida (todos deben cumplirse):
+      1. ≥48h desde que fue agregado
+      2. Volatilidad horaria actual < RISKY_VOL_HOURLY_MAX / 2  (umbrales relajados)
+      3. Rango 48h actual < RISKY_RANGE_48H_MAX / 2
+      4. Si entró por SLs recurrentes: el sl_history ya no tiene ≥2 SLs en los últimos 5 días
+         (ese chequeo lo hace el llamador pasando sl_history)
+
+    Retorna lista de símbolos rehabilitados.
+    """
+    import json as _json, time as _time, math
+    rehabilitated = []
+    try:
+        with open(_DYNAMIC_BL_FILE) as f:
+            data = _json.load(f)
+    except FileNotFoundError:
+        return []
+
+    MIN_HOURS_BLACKLISTED = 48
+
+    for entry in data.get('log', []):
+        sym    = entry.get('symbol', '')
+        reason = entry.get('reason', '')
+        added  = entry.get('added', '')
+
+        # Solo procesar tokens que sigan en la blacklist activa
+        if sym not in data.get('symbols', []):
+            continue
+
+        # Verificar tiempo mínimo en blacklist
+        try:
+            import time as _t
+            added_ts = _t.mktime(_t.strptime(added, '%Y-%m-%d %H:%M UTC'))
+            hours_in_bl = (_t.time() - added_ts) / 3600
+        except Exception:
+            continue
+        if hours_in_bl < MIN_HOURS_BLACKLISTED:
+            continue
+
+        # Medir volatilidad actual
+        try:
+            futures = True  # todos los de la blacklist dinámica son futures
+            k = utils.get_klines(sym, interval='1h', limit=48, futures=futures)
+            closes = [float(x[4]) for x in k]
+            highs  = [float(x[2]) for x in k]
+            lows   = [float(x[3]) for x in k]
+        except Exception:
+            continue
+
+        returns   = [(closes[i]-closes[i-1])/closes[i-1]*100 for i in range(1, len(closes))]
+        mean_r    = sum(returns) / len(returns)
+        std_r     = math.sqrt(sum((r-mean_r)**2 for r in returns) / len(returns))
+        p_min     = min(closes); p_max = max(closes)
+        range_48h = (p_max - p_min) / p_min * 100
+
+        vol_ok   = std_r   < config.RISKY_VOL_HOURLY_MAX / 2   # mitad del umbral de entrada
+        range_ok = range_48h < config.RISKY_RANGE_48H_MAX / 2
+
+        if vol_ok and range_ok:
+            rehab_reason = (f'vol actual {std_r:.1f}%/h y rango48h {range_48h:.0f}% '
+                           f'dentro de parámetros ({hours_in_bl:.0f}h en blacklist)')
+            _remove_from_dynamic_blacklist(sym, rehab_reason)
+            rehabilitated.append(sym)
+
+    return rehabilitated
+
+
+# Cargar blacklist dinámica al importar el módulo
+_load_dynamic_blacklist()
+
+
+def check_volatility_risk(symbol, futures=False):
+    """
+    Chequea si un token es demasiado volátil para operar.
+    Retorna (is_risky: bool, auto_blacklist: bool, reason: str)
+      - is_risky: aplicar filtros extra (RISKY_SYMBOLS)
+      - auto_blacklist: demasiado peligroso, descartar siempre
+    """
+    try:
+        import math
+        k1h = utils.get_klines(symbol, interval='1h', limit=48, futures=futures)
+        closes = [float(k[4]) for k in k1h]
+        highs  = [float(k[2]) for k in k1h]
+        lows   = [float(k[3]) for k in k1h]
+
+        # Volatilidad horaria (desv. estándar de retornos %)
+        returns = [(closes[i]-closes[i-1])/closes[i-1]*100 for i in range(1, len(closes))]
+        mean_r = sum(returns) / len(returns)
+        std_r  = math.sqrt(sum((r - mean_r)**2 for r in returns) / len(returns))
+
+        # Rango 48h
+        p_min = min(closes); p_max = max(closes)
+        range_48h = (p_max - p_min) / p_min * 100
+
+        # Auto-blacklist si supera umbrales duros
+        if std_r > config.RISKY_VOL_HOURLY_MAX:
+            return True, True, f'volatilidad extrema {std_r:.1f}%/h'
+        if range_48h > config.RISKY_RANGE_48H_MAX:
+            return True, True, f'rango 48h {range_48h:.0f}%'
+
+        # Risky si supera la mitad del umbral
+        is_risky = std_r > config.RISKY_VOL_HOURLY_MAX / 2 or range_48h > config.RISKY_RANGE_48H_MAX / 2
+        reason = f'vol={std_r:.1f}%/h range48h={range_48h:.0f}%'
+        return is_risky, False, reason
+    except Exception:
+        return False, False, ''
+
 def scan_longs(btc_ctx, excluded_symbols=None):
     """
     Escanea candidatos long (lista dinámica por volumen + fallback estático).
     Retorna el mejor candidato o None.
+    
+    Si DIRECTIONAL_MODE=True y BTC es bearish → retorna None inmediatamente
+    (no operar longs contra la tendencia principal).
     """
+    # ── Modo direccional: bloquear longs en mercado bajista ───────────────────
+    if config.DIRECTIONAL_MODE:
+        trend = btc_ctx.get('trend', 'neutral')
+        if trend == 'bearish':
+            return None, {'MERCADO': 'modo direccional: longs bloqueados en bearish'}
+        # En neutral, permitir solo si DIRECTIONAL_NEUTRAL_BOTH=True
+        if trend == 'neutral' and not config.DIRECTIONAL_NEUTRAL_BOTH:
+            return None, {'MERCADO': 'modo direccional: longs bloqueados en neutral'}
+    
     excluded = set(excluded_symbols or [])
     results  = []
     descarte = {}
@@ -387,6 +839,9 @@ def scan_longs(btc_ctx, excluded_symbols=None):
     if btc_ctx.get('force_mode') == 'short_only':
         descarte['MERCADO'] = 'Caída fuerte de BTC — solo shorts'
         return None, descarte
+
+    # Contexto bajista: subir el umbral de score para filtrar oportunidades mediocres
+    counter_trend = btc_ctx.get('trend') == 'bearish'
 
     # Lista dinámica: filtrar solo los que tienen par en spot
     dyn = get_dynamic_candidates(40)
@@ -398,7 +853,28 @@ def scan_longs(btc_ctx, excluded_symbols=None):
             descarte[sym] = 'ya en posición/cooldown'
             continue
 
+        if sym in config.BLACKLIST_SYMBOLS:
+            descarte[sym] = 'blacklist (microcap/riesgo)'
+            continue
+
+        # Check de volatilidad: auto-blacklist si extrema, filtros extra si risky
+        _is_risky, _auto_bl, _vol_reason = check_volatility_risk(sym, futures=False)
+        if _auto_bl:
+            descarte[sym] = f'auto-blacklist: {_vol_reason}'
+            if sym not in config.BLACKLIST_SYMBOLS:
+                config.BLACKLIST_SYMBOLS.add(sym)
+                _persist_blacklist(sym, _vol_reason)
+            continue
+
         r = score_long(sym, btc_ctx)
+        if r is None:
+            descarte[sym] = 'error al obtener datos'
+            continue
+        # Si es risky, aplicar score bonus y reducir capital
+        if _is_risky or sym in config.RISKY_SYMBOLS:
+            r['min_score'] = r.get('min_score', config.SCORE_MIN) + config.RISKY_SCORE_BONUS
+            r['risky'] = True
+            r['vol_reason'] = _vol_reason
         if r is None:
             descarte[sym] = 'error al obtener datos'
             continue
@@ -406,14 +882,21 @@ def scan_longs(btc_ctx, excluded_symbols=None):
         if r['atr_pct'] < config.ATR_MIN_PCT:
             descarte[sym] = f'ATR bajo ({r["atr_pct"]:.2f}%)'
             continue
+        if r['atr_pct'] > config.ATR_MAX_PCT:
+            descarte[sym] = f'ATR alto ({r["atr_pct"]:.2f}%)'
+            continue
         if r['rsi'] > config.RSI_MAX_LONG:
             descarte[sym] = f'RSI alto ({r["rsi"]:.0f})'
             continue
         if r['corr_btc'] > config.BTC_CORR_MAX and btc_ctx['change_4h'] < config.BTC_WEAK_PCT:
             descarte[sym] = f'Alta corr BTC ({r["corr_btc"]:.2f})'
             continue
-        if r['score'] < r['min_score']:
-            descarte[sym] = f'score insuf. {r["score"]}/{r["min_score"]}'
+
+        # Si el contexto es bajista, exigir score mucho más alto (contra-tendencia)
+        effective_min = max(r['min_score'], config.SCORE_MIN_COUNTER) if counter_trend else r['min_score']
+        if r['score'] < effective_min:
+            tag = ' [ctx bajista]' if counter_trend and r['score'] >= r['min_score'] else ''
+            descarte[sym] = f'score insuf. {r["score"]}/{effective_min}{tag}'
             continue
 
         results.append(r)
@@ -422,6 +905,8 @@ def scan_longs(btc_ctx, excluded_symbols=None):
         return None, descarte
 
     best = max(results, key=lambda x: (x['score'], x['atr_pct']))
+    # Marcar si es contexto bajista para que longs.py ajuste el riesgo
+    best['bearish_context'] = counter_trend
     return best, descarte
 
 
@@ -429,7 +914,18 @@ def scan_shorts(btc_ctx, excluded_symbols=None):
     """
     Escanea candidatos short (lista dinámica por volumen + fallback estático).
     Retorna el mejor candidato o None.
+    
+    Si DIRECTIONAL_MODE=True y BTC es bullish → retorna None inmediatamente
+    (no operar shorts contra la tendencia principal).
     """
+    # ── Modo direccional: bloquear shorts en mercado alcista ──────────────────
+    if config.DIRECTIONAL_MODE:
+        trend = btc_ctx.get('trend', 'neutral')
+        if trend == 'bullish':
+            return None, {'MERCADO': 'modo direccional: shorts bloqueados en bullish'}
+        if trend == 'neutral' and not config.DIRECTIONAL_NEUTRAL_BOTH:
+            return None, {'MERCADO': 'modo direccional: shorts bloqueados en neutral'}
+    
     excluded = set(excluded_symbols or [])
     results  = []
     descarte = {}
@@ -437,6 +933,9 @@ def scan_shorts(btc_ctx, excluded_symbols=None):
     if btc_ctx.get('force_mode') == 'long_only':
         descarte['MERCADO'] = 'Subida fuerte de BTC — solo longs'
         return None, descarte
+
+    # Contexto alcista: subir el umbral de score para filtrar shorts mediocres
+    counter_trend = btc_ctx.get('trend') == 'bullish'
 
     candidates = get_dynamic_candidates(40)
     if not candidates:
@@ -447,7 +946,27 @@ def scan_shorts(btc_ctx, excluded_symbols=None):
             descarte[sym] = 'ya en posición/cooldown'
             continue
 
+        if sym in config.BLACKLIST_SYMBOLS:
+            descarte[sym] = 'blacklist (microcap/riesgo)'
+            continue
+
+        # Check de volatilidad
+        _is_risky, _auto_bl, _vol_reason = check_volatility_risk(sym, futures=True)
+        if _auto_bl:
+            descarte[sym] = f'auto-blacklist: {_vol_reason}'
+            if sym not in config.BLACKLIST_SYMBOLS:
+                config.BLACKLIST_SYMBOLS.add(sym)
+                _persist_blacklist(sym, _vol_reason)
+            continue
+
         r = score_short(sym, btc_ctx)
+        if r is None:
+            descarte[sym] = 'error al obtener datos'
+            continue
+        if _is_risky or sym in config.RISKY_SYMBOLS:
+            r['min_score'] = r.get('min_score', config.SCORE_MIN) + config.RISKY_SCORE_BONUS
+            r['risky'] = True
+            r['vol_reason'] = _vol_reason
         if r is None:
             descarte[sym] = 'error al obtener datos'
             continue
@@ -455,11 +974,18 @@ def scan_shorts(btc_ctx, excluded_symbols=None):
         if r['atr_pct'] < config.ATR_MIN_PCT:
             descarte[sym] = f'ATR bajo ({r["atr_pct"]:.2f}%)'
             continue
+        if r['atr_pct'] > config.ATR_MAX_PCT:
+            descarte[sym] = f'ATR alto ({r["atr_pct"]:.2f}%)'
+            continue
         if r['rsi'] < config.RSI_MIN_SHORT:
             descarte[sym] = f'RSI bajo ({r["rsi"]:.0f})'
             continue
-        if r['score'] < r['min_score']:
-            descarte[sym] = f'score insuf. {r["score"]}/{r["min_score"]}'
+
+        # Si el contexto es alcista, exigir score mucho más alto (contra-tendencia)
+        effective_min = max(r['min_score'], config.SCORE_MIN_COUNTER) if counter_trend else r['min_score']
+        if r['score'] < effective_min:
+            tag = ' [ctx alcista]' if counter_trend and r['score'] >= r['min_score'] else ''
+            descarte[sym] = f'score insuf. {r["score"]}/{effective_min}{tag}'
             continue
 
         results.append(r)

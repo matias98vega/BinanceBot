@@ -7,6 +7,22 @@ import json, os, sys, subprocess, socket
 
 import config
 
+# ── Parseo de errores Binance ─────────────────────────────────────────────────
+def _binance_error_msg(http_err):
+    """
+    Lee el body de un HTTPError de Binance y retorna un string legible.
+    Ejemplo: 'code=-2019 msg=Margin is insufficient.'
+    """
+    try:
+        body = http_err.read()
+        data = json.loads(body)
+        code = data.get('code', '?')
+        msg  = data.get('msg', str(http_err))
+        return f'code={code} msg={msg}'
+    except Exception:
+        return str(http_err)
+
+
 # ── HTTP con retry ────────────────────────────────────────────────────────────
 def _urlopen(req_or_url, timeout=10):
     last_err = None
@@ -98,27 +114,43 @@ def get_fut_price(symbol):
     return float(d['price'])
 
 # ── Balance ──────────────────────────────────────────────────────────────────
+def get_spot_account(retries=3):
+    """Obtiene el account spot con reintentos. Centraliza todos los llamados a /api/v3/account."""
+    for attempt in range(retries):
+        try:
+            return spot_signed('GET', '/api/v3/account')
+        except Exception as e:
+            if attempt < retries - 1:
+                import time as _t
+                _t.sleep(3 * (attempt + 1))
+            else:
+                raise
+    return {}
+
 def get_usdt_spot():
-    d = spot_signed('GET', '/api/v3/account')
+    d = get_spot_account()
     for b in d.get('balances', []):
         if b['asset'] == 'USDT':
             return float(b['free'])
     return 0.0
 
 def get_asset_spot(asset):
-    d = spot_signed('GET', '/api/v3/account')
+    d = get_spot_account()
     for b in d.get('balances', []):
         if b['asset'] == asset:
             return float(b['free'])
     return 0.0
 
 def get_usdt_futures():
+    """Retorna walletBalance + uPnL — balance real incluyendo posiciones abiertas."""
     d = fut_signed('GET', '/fapi/v2/account')
-    return float(d.get('availableBalance', 0))
+    wallet  = float(d.get('totalWalletBalance', 0))
+    upnl    = float(d.get('totalUnrealizedProfit', 0))
+    return wallet + upnl
 
 def get_total_futures():
-    d = fut_signed('GET', '/fapi/v2/account')
-    return float(d.get('totalWalletBalance', 0))
+    """Alias de get_usdt_futures para compatibilidad."""
+    return get_usdt_futures()
 
 def get_futures_summary():
     """Retorna (wallet_total, disponible, en_margen) de la cuenta futures."""
@@ -267,10 +299,16 @@ def log_analysis(direction, chosen, descarte):
                 f.write(f'[{now}] {tag} ELEGIDO: {chosen["symbol"]} score={chosen["score"]} RSI={chosen["rsi"]:.0f} ATR={chosen["atr_pct"]:.2f}%\n')
             else:
                 motivo = descarte.get('MERCADO', 'sin candidatos')
-                f.write(f'[{now}] {tag} SIN CANDIDATO — {motivo}\n')
+                # No loguear en el log principal si es por modo direccional (ruido)
+                if 'modo direccional' in motivo:
+                    pass  # silencioso
+                else:
+                    f.write(f'[{now}] {tag} SIN CANDIDATO — {motivo}\n')
             for sym, motivo in descarte.items():
                 if sym != 'MERCADO':
-                    f.write(f'  ✗ {sym}: {motivo}\n')
+                    # No loguear símbolos individuales si es por modo direccional
+                    if 'modo direccional' not in motivo:
+                        f.write(f'  ✗ {sym}: {motivo}\n')
     except Exception:
         pass
 
@@ -359,6 +397,22 @@ def get_futures_risk_pct(usdt_available):
     return config.FUTURES_RISK_PCT        # 50% (default)
 
 
+def get_futures_capital_per_position(state):
+    """
+    Retorna el capital a usar por posición short dividiendo el wallet total
+    equitativamente entre los slots disponibles.
+    Así cada posición usa wallet_total / max_shorts sin importar el orden de entrada.
+    Siempre se reserva al menos 20% del wallet como colchón de mantenimiento.
+    """
+    total, available, _ = get_futures_summary()
+    max_shorts = get_max_short_positions(available)
+    # Reservar 20% como colchón de mantenimiento ante fluctuaciones
+    usable = total * 0.80
+    capital = usable / max_shorts if max_shorts > 0 else usable
+    # No usar más de lo disponible actualmente
+    return min(capital, available * 0.95)
+
+
 def get_max_short_positions(usdt_available):
     """
     Retorna cuántas posiciones short simultáneas se permiten según capital futures.
@@ -389,7 +443,7 @@ def clean_dust(dry_run=False):
     Retorna (convertidos, mensaje).
     """
     try:
-        acc = spot_signed('GET', '/api/v3/account')
+        acc = get_spot_account()
     except Exception as e:
         return [], f'Error al obtener balance: {e}'
 

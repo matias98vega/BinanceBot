@@ -1,0 +1,132 @@
+{
+  "symbols": [
+    "PORTALUSDT",
+    "EPICUSDT",
+    "LABUSDT",
+    "USUSDT",
+    "OPNUSDT",
+    "CLOUSDT",
+    "WLDUSDT",
+    "BTWUSDT",
+    "ZECUSDT",
+    "BABYUSDT",
+    "SOXLUSDT",
+    "ALLOUSDT",
+    "HEIUSDT",
+    "BLUAIUSDT"
+  ],
+  "log": [
+    {
+      "symbol": "PORTALUSDT",
+      "reason": "volatilidad extrema 10.4%/h",
+      "added": "2026-06-02 18:09 UTC"
+    },
+    {
+      "symbol": "EPICUSDT",
+      "reason": "volatilidad extrema 4.5%/h",
+      "added": "2026-06-02 18:09 UTC"
+    },
+    {
+      "symbol": "LABUSDT",
+      "reason": "volatilidad extrema 4.6%/h",
+      "added": "2026-06-02 21:37 UTC"
+    },
+    {
+      "symbol": "HUSDT",
+      "reason": "volatilidad extrema 6.6%/h",
+      "added": "2026-06-02 21:37 UTC"
+    },
+    {
+      "symbol": "EDGEUSDT",
+      "reason": "volatilidad extrema 16.4%/h",
+      "added": "2026-06-02 21:37 UTC"
+    },
+    {
+      "symbol": "MRVLUSDT",
+      "reason": "rango 48h 63%",
+      "added": "2026-06-03 00:07 UTC"
+    },
+    {
+      "symbol": "USUSDT",
+      "reason": "volatilidad extrema 6.1%/h",
+      "added": "2026-06-03 02:47 UTC"
+    },
+    {
+      "symbol": "OPNUSDT",
+      "reason": "volatilidad extrema 5.3%/h",
+      "added": "2026-06-03 17:48 UTC"
+    },
+    {
+      "symbol": "CLOUSDT",
+      "reason": "volatilidad extrema 4.7%/h",
+      "added": "2026-06-03 19:58 UTC"
+    },
+    {
+      "symbol": "MAGMAUSDT",
+      "reason": "rango 48h 68%",
+      "added": "2026-06-04 03:18 UTC"
+    },
+    {
+      "symbol": "WLDUSDT",
+      "reason": "rango 48h 62%",
+      "added": "2026-06-04 16:49 UTC"
+    },
+    {
+      "symbol": "BTWUSDT",
+      "reason": "volatilidad extrema 13.5%/h",
+      "added": "2026-06-05 02:50 UTC"
+    },
+    {
+      "symbol": "ZECUSDT",
+      "reason": "rango 48h 60%",
+      "added": "2026-06-05 04:20 UTC"
+    },
+    {
+      "symbol": "BABYUSDT",
+      "reason": "volatilidad extrema 8.2%/h",
+      "added": "2026-06-05 11:43 UTC"
+    },
+    {
+      "symbol": "SOXLUSDT",
+      "reason": "rango 48h 63%",
+      "added": "2026-06-06 04:03 UTC"
+    },
+    {
+      "symbol": "ALLOUSDT",
+      "reason": "rango 48h 61%",
+      "added": "2026-06-06 09:03 UTC"
+    },
+    {
+      "symbol": "HEIUSDT",
+      "reason": "volatilidad extrema 5.5%/h",
+      "added": "2026-06-06 16:33 UTC"
+    },
+    {
+      "symbol": "BLUAIUSDT",
+      "reason": "volatilidad extrema 7.1%/h",
+      "added": "2026-06-06 19:14 UTC"
+    }
+  ],
+  "rehabilitated": [
+    {
+      "symbol": "EDGEUSDT",
+      "reason": "vol actual 2.0%/h y rango48h 21% dentro de par\u00e1metros (65h en blacklist)",
+      "date": "2026-06-05 14:23 UTC"
+    },
+    {
+      "symbol": "MRVLUSDT",
+      "reason": "vol actual 2.0%/h y rango48h 13% dentro de par\u00e1metros (62h en blacklist)",
+      "date": "2026-06-05 14:23 UTC"
+    },
+    {
+      "symbol": "HUSDT",
+      "reason": "vol actual 1.9%/h y rango48h 11% dentro de par\u00e1metros (83h en blacklist)",
+      "date": "2026-06-06 08:43 UTC"
+    },
+    {
+      "symbol": "MAGMAUSDT",
+      "reason": "vol actual 1.7%/h y rango48h 15% dentro de par\u00e1metros (53h en blacklist)",
+      "date": "2026-06-06 08:43 UTC"
+    }
+  ]
+}

@@ -1,12 +1,50 @@
 #!/usr/bin/env python3
 """
 Módulo SHORT — gestión de posiciones short en Futures (fapi).
-SL: monitoreado por precio y cerrado con MARKET (STOP_MARKET no disponible en esta cuenta).
+SL: STOP_MARKET nativo en el exchange (si NATIVE_SL_ENABLED=True) + guardian software como fallback.
 TP: orden LIMIT + reduceOnly=true.
 """
 import sys, os, time, math
+import urllib.error as _ue
 sys.path.insert(0, os.path.dirname(__file__))
 import utils, config
+
+
+def _place_stop_market(symbol, side, stop_price, quantity, reduce_only=True):
+    """
+    Coloca una orden STOP_MARKET en Binance Futures.
+    Si Binance devuelve -4120 (endpoint no soportado para esta cuenta/par),
+    retorna None silenciosamente — el guardian software cubre como fallback.
+    El endpoint Algo (/fapi/v1/order/algo) no está disponible en esta cuenta.
+    """
+    import json as _json, urllib.error as _ue
+    params = {
+        'symbol':     symbol,
+        'side':       side,
+        'type':       'STOP_MARKET',
+        'stopPrice':  str(stop_price),
+        'quantity':   str(quantity),
+        'reduceOnly': 'true' if reduce_only else 'false',
+    }
+    try:
+        return utils.fut_signed('POST', '/fapi/v1/order', params)
+    except _ue.HTTPError as e:
+        body = ''
+        try:
+            body = e.read().decode('utf-8')
+        except Exception:
+            pass
+        code = -1
+        try:
+            code = _json.loads(body).get('code', -1)
+        except Exception:
+            pass
+        if code == -4120:
+            # SL nativo no soportado en esta cuenta para este par
+            # Guardian software cubre como fallback — no es un error crítico
+            return None
+        # Otro error: relanzar con cuerpo legible
+        raise _ue.HTTPError(e.url, e.code, f'{e.reason} - {body}', e.headers, None)
 
 
 def _ensure_leverage(symbol, leverage):
@@ -39,8 +77,10 @@ def open_short(candidate, state):
     sym = candidate['symbol']
 
     available = utils.get_usdt_futures()
-    risk_pct  = utils.get_futures_risk_pct(available)
-    capital   = available * risk_pct
+    capital   = utils.get_futures_capital_per_position(state)
+    # Reducir capital si el token es volátil/riesgoso
+    if candidate.get('risky'):
+        capital = capital * config.RISKY_RISK_FACTOR
 
     try:
         filters  = utils.get_futures_filters(sym)
@@ -59,7 +99,7 @@ def open_short(candidate, state):
     # Dry-run: simular sin ejecutar
     if config.DRY_RUN:
         atr_v = candidate['atr']
-        real_sl = utils.round_tick(price + config.SL_ATR_MULT * atr_v, tick)
+        real_sl = utils.round_tick(price + config.SL_ATR_MULT_SHORT * atr_v, tick)
         real_tp = utils.round_tick(price - config.TP_ATR_MULT * atr_v, tick)
         notional_dry = available * config.FUTURES_RISK_PCT * config.FUTURES_LEVERAGE
         qty_dry = utils.round_step(notional_dry / price, step)
@@ -83,16 +123,42 @@ def open_short(candidate, state):
     if qty * price < min_not:
         return None, f'Notional mínimo futures no alcanzado: ${qty * price:.2f} < ${min_not}'
 
-    # MARKET SELL (abrir short)
-    try:
-        order = utils.fut_signed('POST', '/fapi/v1/order', {
-            'symbol':   sym,
-            'side':     'SELL',
-            'type':     'MARKET',
-            'quantity': str(qty),
-        })
-    except Exception as e:
-        return None, f'Error al abrir short en futures {sym}: {e}'
+    # MARKET SELL (abrir short) con backoff ante errores transitorios de API
+    order = None
+    last_err = None
+    for _attempt in range(4):
+        try:
+            order = utils.fut_signed('POST', '/fapi/v1/order', {
+                'symbol':   sym,
+                'side':     'SELL',
+                'type':     'MARKET',
+                'quantity': str(qty),
+            })
+            break  # éxito
+        except _ue.HTTPError as e:
+            last_err = utils._binance_error_msg(e)
+            # Errores no retriables: balance insuficiente, par inválido, etc.
+            import json as _j
+            try:
+                _code = _j.loads(e.read().decode()).get('code', 0)
+            except Exception:
+                _code = 0
+            if _code in (-2019, -1121, -1100, -1102):  # errores definitivos
+                break
+            if _attempt < 3:
+                _delay = 10 * (2 ** _attempt)  # 10s, 20s, 40s
+                import logging
+                logging.warning(f'SHORT {sym}: intento {_attempt+1} fallido ({last_err}), reintentando en {_delay}s')
+                time.sleep(_delay)
+        except Exception as e:
+            last_err = str(e)
+            if _attempt < 3:
+                _delay = 10 * (2 ** _attempt)
+                import logging
+                logging.warning(f'SHORT {sym}: intento {_attempt+1} fallido ({e}), reintentando en {_delay}s')
+                time.sleep(_delay)
+    if order is None:
+        return None, f'Error al abrir short {sym} tras 4 intentos: {last_err}'
 
     order_id    = order.get('orderId')
     actual_price = _get_fill_price(order_id, sym, price)
@@ -110,7 +176,7 @@ def open_short(candidate, state):
 
     # Calcular SL/TP desde precio real de fill
     atr_v   = candidate['atr']
-    real_sl = utils.round_tick(actual_price + config.SL_ATR_MULT * atr_v, tick)
+    real_sl = utils.round_tick(actual_price + config.SL_ATR_MULT_SHORT * atr_v, tick)
     real_tp = utils.round_tick(actual_price - config.TP_ATR_MULT * atr_v, tick)
     real_tp = max(real_tp, tick)
 
@@ -146,6 +212,27 @@ def open_short(candidate, state):
     except Exception as e:
         utils.send_alert(f'⚠️ TP futures {sym} no se pudo colocar: {e}. SL gestionado por el bot.')
 
+    # SL nativo: STOP_MARKET en el exchange (más robusto que el guardian software)
+    sl_order_id = ''
+    if config.NATIVE_SL_ENABLED:
+        try:
+            # Validación: stopPrice no debe exceder ~4.5% del precio actual
+            # Binance rechaza STOP_MARKET si stopPrice > markPrice +5% (varía por símbolo)
+            max_stop_dist_pct = 4.5
+            max_allowed_sl = actual_price * (1 + max_stop_dist_pct / 100)
+            if real_sl > max_allowed_sl:
+                # Ajustar SL al máximo permitido
+                real_sl = utils.round_tick(max_allowed_sl, tick)
+                utils.send_alert(f'⚠️ {sym}: SL ajustado a {real_sl:.4f} (máx {max_stop_dist_pct}% sobre precio)')
+            
+            sl_order = _place_stop_market(sym, 'BUY', real_sl, actual_qty)
+            sl_order_id = str(sl_order.get('orderId', '') or sl_order.get('strategyId', '')) if sl_order else ''
+        except Exception as e:
+            import logging
+            error_msg = str(e)
+            logging.error(f'SL nativo {sym}: stopPrice={real_sl}, qty={actual_qty}, price={actual_price}, error={error_msg}')
+            utils.send_alert(f'⚠️ SL nativo {sym} no se pudo colocar: {error_msg}. Guardian software activo como fallback.')
+
     pos = {
         'id':            f'short_{sym}_{int(time.time())}',
         'direction':     'short',
@@ -156,6 +243,7 @@ def open_short(candidate, state):
         'tp':            real_tp,
         'atr':           atr_v,
         'tp_order_id':   tp_order_id,
+        'sl_order_id':   sl_order_id,   # SL nativo (vacío si falló o está desactivado)
         'entry_time':    int(time.time()),
         'partial_taken': False,
         'trail_trough':  actual_price,
@@ -165,11 +253,12 @@ def open_short(candidate, state):
     fee    = actual_qty * actual_price * config.FUTURES_FEE_RATE
     pnl_tp = round((actual_price - real_tp) * actual_qty - fee * 2, 4)
     pnl_sl = round((actual_price - real_sl) * actual_qty - fee * 2, 4)
+    sl_type = 'STOP_MARKET nativo' if sl_order_id else 'guardian software'
 
     msg = (
         f'📉 SHORT abierto: {sym} (x{config.FUTURES_LEVERAGE})\n'
         f'Entrada: ${actual_price:.4f} | Qty: {actual_qty}\n'
-        f'SL: ${real_sl:.4f} (bot) | TP: ${real_tp:.4f} (LIMIT)\n'
+        f'SL: ${real_sl:.4f} ({sl_type}) | TP: ${real_tp:.4f} (LIMIT)\n'
         f'Si TP: +${pnl_tp:.4f} | Si SL: ${pnl_sl:.4f}'
     )
     return pos, msg
@@ -191,7 +280,11 @@ def manage_short(pos, state):
 
     price_now = utils.get_fut_price(sym)
 
-    # Verificar si la posición sigue abierta
+    # Verificar si la posición sigue abierta.
+    # Fix #6 — flujo con SL nativo: si STOP_MARKET se ejecutó entre ciclos, positionAmt llega 0
+    # acá y se retorna 'closed_sl'. _handle_close() agrega cooldown y limpia el state.
+    # El guardian (sl_guardian.py) también lo detecta por positionAmt==0 y solo limpia el TP.
+    # No hay doble-cierre porque manage_short sale por este bloque antes de llegar al check de SL.
     try:
         positions = utils.fut_signed('GET', '/fapi/v2/positionRisk', {'symbol': sym})
         pos_amt = next((abs(float(p['positionAmt'])) for p in positions
@@ -208,9 +301,30 @@ def manage_short(pos, state):
     except Exception:
         pass
 
-    # SL check: si precio subió hasta el SL → cerrar
+    # SL check: guardian software actúa siempre que no haya SL nativo válido en el exchange.
+    # Si hay sl_order_id registrado, verificamos que la orden siga activa.
+    # Si fue cancelada externamente (por Binance o manually), limpiamos el ID y el guardian toma control.
     sl = pos['sl']
-    if price_now >= sl:
+    sl_order_id = pos.get('sl_order_id', '')
+
+    if sl_order_id:
+        # Verificar que la orden nativa sigue activa en el exchange
+        try:
+            order_info = utils.fut_signed('GET', '/fapi/v1/order', {
+                'symbol': sym, 'orderId': int(sl_order_id)
+            })
+            status = order_info.get('status', '')
+            if status not in ('NEW', 'PARTIALLY_FILLED'):
+                # La orden ya no está activa (cancelada, expirada, o ejecutada sin cerrar posición)
+                pos['sl_order_id'] = ''
+                sl_order_id = ''
+        except Exception:
+            # Si no podemos verificar, asumimos que no existe y activamos el guardian
+            pos['sl_order_id'] = ''
+            sl_order_id = ''
+
+    if not sl_order_id and price_now >= sl:
+        # Guardian software: SL nativo no existe o fue cancelado
         if pos.get('dry_run'):
             pnl = (pos['entry_price'] - price_now) * qty * (1 - config.FUTURES_FEE_RATE * 2)
             return 'closed_sl', price_now, pnl
@@ -230,18 +344,60 @@ def manage_short(pos, state):
     trail_trough = pos.get('trail_trough', entry)
     if price_now < trail_trough * (1 - config.TRAIL_STEP_PCT / 100):
         atr_v  = pos.get('atr', abs(sl - entry))
-        new_sl = price_now + config.SL_ATR_MULT * atr_v
+        new_sl = price_now + config.SL_ATR_MULT_SHORT * atr_v
         if new_sl < sl:
             try:
                 tick   = utils.get_futures_filters(sym).get('tick_size', 0.001)
                 new_sl = utils.round_tick(new_sl, tick)
-                pos['sl']           = new_sl
+                pos['sl'] = new_sl
                 pos['trail_trough'] = price_now
+                # Actualizar SL nativo si existe: cancelar el viejo y poner uno nuevo
+                if sl_order_id and config.NATIVE_SL_ENABLED:
+                    new_id = _replace_native_sl(sym, sl_order_id, new_sl, qty)
+                    if new_id:
+                        pos['sl_order_id'] = new_id
                 return 'updated', price_now, 0
             except Exception:
                 pass
 
     return 'hold', price_now, 0
+
+
+def _replace_native_sl(symbol, old_order_id, new_sl_price, qty):
+    """Cancela el SL nativo anterior y coloca uno nuevo. Retorna el nuevo orderId o ''."""
+    # Cancelar viejo
+    if old_order_id:
+        try:
+            utils.fut_signed('DELETE', '/fapi/v1/order', {
+                'symbol': symbol, 'orderId': int(old_order_id)
+            })
+        except Exception:
+            pass
+    # Colocar nuevo
+    try:
+        tick = utils.get_futures_filters(symbol).get('tick_size', 0.001)
+        new_sl_price = utils.round_tick(new_sl_price, tick)
+        
+        # Validación: stopPrice no debe exceder ~4.5% del precio actual
+        price_now = utils.get_fut_price(symbol)
+        max_stop_dist_pct = 4.5
+        max_allowed_sl = price_now * (1 + max_stop_dist_pct / 100)
+        if new_sl_price > max_allowed_sl:
+            new_sl_price = utils.round_tick(max_allowed_sl, tick)
+        
+        order = _place_stop_market(symbol, 'BUY', new_sl_price, qty)
+        return str(order.get('orderId', '') or order.get('strategyId', '')) if order else ''
+    except Exception as e:
+        import logging
+        error_msg = str(e)
+        logging.error(f'Update SL nativo {symbol}: stopPrice={new_sl_price}, qty={qty}, error={error_msg}')
+        utils.send_alert(f'⚠️ No se pudo actualizar SL nativo {symbol}: {error_msg}')
+        return ''
+
+
+def _update_native_sl(symbol, order_id, new_sl_price, qty):
+    """Alias eliminado — usar _replace_native_sl directamente."""
+    pass  # mantenido solo por compatibilidad; la lógica vive en _replace_native_sl
 
 
 def _close_short_market(symbol, qty, entry, price_now):

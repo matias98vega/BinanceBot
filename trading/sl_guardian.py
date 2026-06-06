@@ -33,6 +33,7 @@ def _run():
         return
 
     triggered = []
+    critical_alerts = []   # alertas que sí se notifican al usuario
 
     for pos in positions:
         direction = pos['direction']
@@ -50,7 +51,14 @@ def _run():
 
                 price = utils.get_spot_price(sym)
                 if price <= sl:
-                    print(f'🛡️ GUARDIAN SL LARGO {sym}: precio {price:.4f} <= SL {sl:.4f} → cerrando')
+                    partial_info = ''
+                    if pos.get('partial_taken'):
+                        ppnl = pos.get('partial_pnl')
+                        ppnl_str = f'+${ppnl:.4f}' if ppnl is not None else 'registrado'
+                        partial_info = f' (parcial TP ya cobrado: {ppnl_str} — esta mitad sale en breakeven ✅)'
+                    msg = f'🛡️ GUARDIAN SL LONG {sym}: precio {price:.4f} <= SL {sl:.4f} → cerrando{partial_info}'
+                    print(msg)
+                    critical_alerts.append(msg)
                     _close_spot_market(sym, qty)
                     pnl = (price - entry) * qty
                     triggered.append((sym, 'long', price, pnl))
@@ -60,20 +68,70 @@ def _run():
                 dist_pct = (sl - price) / price * 100
 
                 if price >= sl:
-                    print(f'🛡️ GUARDIAN SL CORTO {sym}: precio {price:.4f} >= SL {sl:.4f} → cerrando')
-                    pnl = _close_fut_market(sym, qty, entry, price)
-                    # Cancelar TP
-                    tp_id = pos.get('tp_order_id', '')
-                    if tp_id:
+                    # Si hay SL nativo registrado, es posible que ya se ejecutó en el exchange.
+                    # El bot.py / manage_short lo detecta por positionAmt==0.
+                    # Guardian como fallback: solo actuar si no hay SL nativo O si la posición sigue abierta.
+                    sl_order_id = pos.get('sl_order_id', '')
+                    pos_still_open = True
+                    if sl_order_id:
                         try:
-                            utils.fut_signed('DELETE', '/fapi/v1/order', {
-                                'symbol': sym, 'orderId': int(tp_id)
-                            })
+                            positions_check = utils.fut_signed('GET', '/fapi/v2/positionRisk', {'symbol': sym})
+                            pos_amt = next((abs(float(p['positionAmt'])) for p in positions_check
+                                            if float(p.get('positionAmt', 0)) < 0), 0.0)
+                            pos_still_open = pos_amt > 0
                         except Exception:
                             pass
-                    triggered.append((sym, 'short', price, pnl))
-                else:
-                    print(f'  📉 {sym}: ${price:.4f} | SL ${sl:.4f} | distancia {dist_pct:.2f}%')
+
+                    if pos_still_open:
+                        partial_info = ''
+                        if pos.get('partial_taken'):
+                            ppnl = pos.get('partial_pnl')
+                            ppnl_str = f'+${ppnl:.4f}' if ppnl is not None else 'registrado'
+                            partial_info = f' (parcial TP ya cobrado: {ppnl_str} \u2014 esta mitad sale en breakeven \u2705)'
+                        msg = f'\ud83d\udee1\ufe0f GUARDIAN SL SHORT {sym}: precio {price:.4f} >= SL {sl:.4f} \u2192 cerrando{partial_info}'
+                        print(msg)
+                        critical_alerts.append(msg)
+                        pnl = _close_fut_market(sym, qty, entry, price)
+                        # Cancelar TP y SL nativo si existen
+                        tp_id = pos.get('tp_order_id', '')
+                        if tp_id:
+                            try:
+                                utils.fut_signed('DELETE', '/fapi/v1/order', {
+                                    'symbol': sym, 'orderId': int(tp_id)
+                                })
+                            except Exception:
+                                pass
+                        if sl_order_id:
+                            try:
+                                utils.fut_signed('DELETE', '/fapi/v1/order', {
+                                    'symbol': sym, 'orderId': int(sl_order_id)
+                                })
+                            except Exception:
+                                pass
+                        triggered.append((sym, 'short', price, pnl))
+                    else:
+                        # SL nativo ya cerró la posición — solo limpiar state
+                        msg = f'🛡️ SL nativo ejecutado {sym} → limpiando state'
+                        print(msg)
+                        critical_alerts.append(msg)
+                        pnl = (entry - price) * qty * (1 - config.FUTURES_FEE_RATE * 2)
+                        # Cancelar TP
+                        tp_id = pos.get('tp_order_id', '')
+                        if tp_id:
+                            try:
+                                utils.fut_signed('DELETE', '/fapi/v1/order', {
+                                    'symbol': sym, 'orderId': int(tp_id)
+                                })
+                            except Exception:
+                                pass
+                        triggered.append((sym, 'short', price, pnl))
+                elif dist_pct < 0.5:
+                    # Muy cerca del SL — alerta de atención (con contexto de partial)
+                    partial_info = ', ya cobró parcial TP (riesgo reducido 50%)' if pos.get('partial_taken') else ''
+                    msg = f'⚠️ {sym} a {dist_pct:.2f}% del SL${sl:.4f}{partial_info}'
+                    print(msg)
+                    critical_alerts.append(msg)
+                # else: monitoreo silencioso, no imprimir nada
 
         except Exception as e:
             print(f'  ⚠️ Error al chequear {sym}: {e}')
@@ -98,8 +156,10 @@ def _run():
         state['positions'] = positions_new
         utils.save_state(state)
     else:
-        # Sin SL tocados → silencio total (HEARTBEAT_OK suprime la notificación)
-        print('HEARTBEAT_OK')
+        # Sin SL tocados — solo alertar si hay critical_alerts (SL muy cerca)
+        if not critical_alerts:
+            print('HEARTBEAT_OK')
+        # Si hay critical_alerts, ya se imprimieron arriba y el agente los entrega
 
 
 def _close_spot_market(symbol, qty):
