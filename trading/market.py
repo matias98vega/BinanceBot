@@ -275,20 +275,23 @@ def get_btc_context():
 def check_btc_momentum(btc_ctx):
     """
     Verifica si el momentum de BTC excede el umbral para pausar nuevas entradas.
-    Retorna (is_paused, reason) donde:
-      - is_paused=True si BTC se movió >BTC_MOMENTUM_PAUSE_PCT en la ventana
-      - reason explica por qué (ej: 'BTC +2.8% en 4h — pausa entradas')
+    Retorna (is_paused_longs, is_paused_shorts, reason) donde:
+      - Si BTC sube >umbral: pausa SHORTS (van a sufrir el pump)
+      - Si BTC baja >umbral: pausa LONGS (van a sufrir el dump)
+      - reason explica por qué
     """
     change_4h = btc_ctx.get('change_4h', 0)
     threshold = config.BTC_MOMENTUM_PAUSE_PCT
     window = config.BTC_MOMENTUM_WINDOW_H
     
-    if abs(change_4h) >= threshold:
-        if change_4h > 0:
-            return True, f'BTC +{change_4h:.1f}% en {window}h — pausa nuevas entradas'
-        else:
-            return True, f'BTC {change_4h:.1f}% en {window}h — pausa nuevas entradas'
-    return False, None
+    if change_4h >= threshold:
+        # BTC subió -> pausar SHORTS (contra-tendencia peligrosa)
+        return False, True, f'BTC +{change_4h:.1f}% en {window}h — pausa SHORTS (pump)'
+    elif change_4h <= -threshold:
+        # BTC bajó -> pausar LONGS (contra-tendencia peligrosa)
+        return True, False, f'BTC {change_4h:.1f}% en {window}h — pausa LONGS (dump)'
+    
+    return False, False, None
 
 
 def score_long(symbol, btc_ctx):
@@ -851,9 +854,9 @@ def scan_longs(btc_ctx, excluded_symbols=None):
         if trend == 'neutral' and not config.DIRECTIONAL_NEUTRAL_BOTH:
             return None, {'MERCADO': 'modo direccional: longs bloqueados en neutral'}
     
-    # ── Filtro momentum BTC: pausar entradas si movimiento brusco ─────────────
-    is_paused, reason = check_btc_momentum(btc_ctx)
-    if is_paused:
+    # ── Filtro momentum BTC: pausar LONGS si BTC baja brusco (va a seguir cayendo) ─
+    pause_longs, pause_shorts, reason = check_btc_momentum(btc_ctx)
+    if pause_longs:
         return None, {'MERCADO': reason}
     
     excluded = set(excluded_symbols or [])
@@ -950,9 +953,9 @@ def scan_shorts(btc_ctx, excluded_symbols=None):
         if trend == 'neutral' and not config.DIRECTIONAL_NEUTRAL_BOTH:
             return None, {'MERCADO': 'modo direccional: shorts bloqueados en neutral'}
     
-    # ── Filtro momentum BTC: pausar entradas si movimiento brusco ─────────────
-    is_paused, reason = check_btc_momentum(btc_ctx)
-    if is_paused:
+    # ── Filtro momentum BTC: pausar SHORTS si BTC sube brusco (va a seguir subiendo) ─
+    pause_longs, pause_shorts, reason = check_btc_momentum(btc_ctx)
+    if pause_shorts:
         return None, {'MERCADO': reason}
     
     excluded = set(excluded_symbols or [])
