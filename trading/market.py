@@ -275,9 +275,8 @@ def get_btc_context():
 def check_btc_momentum(btc_ctx):
     """
     Verifica si el momentum de BTC excede el umbral para pausar nuevas entradas.
-    Retorna (is_paused_longs, is_paused_shorts, reason) donde:
-      - Si BTC sube >umbral: pausa SHORTS (van a sufrir el pump)
-      - Si BTC baja >umbral: pausa LONGS (van a sufrir el dump)
+    Retorna (pause_longs, pause_shorts, reason) donde:
+      - Si |BTC| >umbral: pausa AMBOS lados (alto riesgo de reversa)
       - reason explica por qué
     """
     change_4h = btc_ctx.get('change_4h', 0)
@@ -285,11 +284,11 @@ def check_btc_momentum(btc_ctx):
     window = config.BTC_MOMENTUM_WINDOW_H
     
     if change_4h >= threshold:
-        # BTC subió -> pausar SHORTS (contra-tendencia peligrosa)
-        return False, True, f'BTC +{change_4h:.1f}% en {window}h — pausa SHORTS (pump)'
+        # BTC subió mucho -> pausar ambos (shorts sufren pump, longs compran top)
+        return True, True, f'BTC +{change_4h:.1f}% en {window}h — pausa entradas (pump extremo)'
     elif change_4h <= -threshold:
-        # BTC bajó -> pausar LONGS (contra-tendencia peligrosa)
-        return True, False, f'BTC {change_4h:.1f}% en {window}h — pausa LONGS (dump)'
+        # BTC bajó mucho -> pausar ambos (longs sufren dump, shorts venden piso)
+        return True, True, f'BTC {change_4h:.1f}% en {window}h — pausa entradas (dump extremo)'
     
     return False, False, None
 
@@ -843,11 +842,11 @@ def scan_longs(btc_ctx, excluded_symbols=None):
     Retorna el mejor candidato o None.
     
     ORDEN DE FILTROS:
-    1. Momentum BTC (prioridad máxima) - si BTC subió >2%, pausa longs
+    1. Momentum BTC (prioridad máxima) - si BTC se movió >2%, pausa todo
     2. Modo direccional - si es bearish, bloquea longs
     """
     # ── FILTRO 1: Momentum BTC (prioridad sobre modo direccional) ─────────────
-    # Si BTC subió >2% en 4h, NO abrir longs (ya subió mucho, alto riesgo de reversa)
+    # Si BTC se movió >2% en 4h, NO abrir nada (alto riesgo de reversa)
     pause_longs, pause_shorts, reason = check_btc_momentum(btc_ctx)
     if pause_longs:
         return None, {'MERCADO': reason}
@@ -945,11 +944,11 @@ def scan_shorts(btc_ctx, excluded_symbols=None):
     Retorna el mejor candidato o None.
     
     ORDEN DE FILTROS:
-    1. Momentum BTC (prioridad máxima) - si BTC bajó >2%, pausa shorts
+    1. Momentum BTC (prioridad máxima) - si BTC se movió >2%, pausa todo
     2. Modo direccional - si es bullish, bloquea shorts
     """
     # ── FILTRO 1: Momentum BTC (prioridad sobre modo direccional) ─────────────
-    # Si BTC bajó >2% en 4h, NO abrir shorts (ya bajó mucho, alto riesgo de rebote)
+    # Si BTC se movió >2% en 4h, NO abrir nada (alto riesgo de reversa)
     pause_longs, pause_shorts, reason = check_btc_momentum(btc_ctx)
     if pause_shorts:
         return None, {'MERCADO': reason}
