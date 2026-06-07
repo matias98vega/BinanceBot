@@ -842,10 +842,17 @@ def scan_longs(btc_ctx, excluded_symbols=None):
     Escanea candidatos long (lista dinámica por volumen + fallback estático).
     Retorna el mejor candidato o None.
     
-    Si DIRECTIONAL_MODE=True y BTC es bearish → retorna None inmediatamente
-    (no operar longs contra la tendencia principal).
+    ORDEN DE FILTROS:
+    1. Momentum BTC (prioridad máxima) - si BTC subió >2%, pausa longs
+    2. Modo direccional - si es bearish, bloquea longs
     """
-    # ── Modo direccional: bloquear longs en mercado bajista ───────────────────
+    # ── FILTRO 1: Momentum BTC (prioridad sobre modo direccional) ─────────────
+    # Si BTC subió >2% en 4h, NO abrir longs (ya subió mucho, alto riesgo de reversa)
+    pause_longs, pause_shorts, reason = check_btc_momentum(btc_ctx)
+    if pause_longs:
+        return None, {'MERCADO': reason}
+    
+    # ── FILTRO 2: Modo direccional ────────────────────────────────────────────
     if config.DIRECTIONAL_MODE:
         trend = btc_ctx.get('trend', 'neutral')
         if trend == 'bearish':
@@ -853,11 +860,6 @@ def scan_longs(btc_ctx, excluded_symbols=None):
         # En neutral, permitir solo si DIRECTIONAL_NEUTRAL_BOTH=True
         if trend == 'neutral' and not config.DIRECTIONAL_NEUTRAL_BOTH:
             return None, {'MERCADO': 'modo direccional: longs bloqueados en neutral'}
-    
-    # ── Filtro momentum BTC: pausar LONGS si BTC baja brusco (va a seguir cayendo) ─
-    pause_longs, pause_shorts, reason = check_btc_momentum(btc_ctx)
-    if pause_longs:
-        return None, {'MERCADO': reason}
     
     excluded = set(excluded_symbols or [])
     results  = []
@@ -942,21 +944,23 @@ def scan_shorts(btc_ctx, excluded_symbols=None):
     Escanea candidatos short (lista dinámica por volumen + fallback estático).
     Retorna el mejor candidato o None.
     
-    Si DIRECTIONAL_MODE=True y BTC es bullish → retorna None inmediatamente
-    (no operar shorts contra la tendencia principal).
+    ORDEN DE FILTROS:
+    1. Momentum BTC (prioridad máxima) - si BTC bajó >2%, pausa shorts
+    2. Modo direccional - si es bullish, bloquea shorts
     """
-    # ── Modo direccional: bloquear shorts en mercado alcista ──────────────────
+    # ── FILTRO 1: Momentum BTC (prioridad sobre modo direccional) ─────────────
+    # Si BTC bajó >2% en 4h, NO abrir shorts (ya bajó mucho, alto riesgo de rebote)
+    pause_longs, pause_shorts, reason = check_btc_momentum(btc_ctx)
+    if pause_shorts:
+        return None, {'MERCADO': reason}
+    
+    # ── FILTRO 2: Modo direccional ────────────────────────────────────────────
     if config.DIRECTIONAL_MODE:
         trend = btc_ctx.get('trend', 'neutral')
         if trend == 'bullish':
             return None, {'MERCADO': 'modo direccional: shorts bloqueados en bullish'}
         if trend == 'neutral' and not config.DIRECTIONAL_NEUTRAL_BOTH:
             return None, {'MERCADO': 'modo direccional: shorts bloqueados en neutral'}
-    
-    # ── Filtro momentum BTC: pausar SHORTS si BTC sube brusco (va a seguir subiendo) ─
-    pause_longs, pause_shorts, reason = check_btc_momentum(btc_ctx)
-    if pause_shorts:
-        return None, {'MERCADO': reason}
     
     excluded = set(excluded_symbols or [])
     results  = []

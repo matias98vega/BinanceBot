@@ -15,7 +15,9 @@
     "HEIUSDT",
     "BLUAIUSDT",
     "VELVETUSDT",
-    "FIDAUSDT"
+    "FIDAUSDT",
+    "SIRENUSDT",
+    "BEATUSDT"
   ],
   "log": [
     {
@@ -117,6 +119,16 @@
       "symbol": "FIDAUSDT",
       "reason": "volatilidad extrema 5.5%/h",
       "added": "2026-06-07 06:54 UTC"
+    },
+    {
+      "symbol": "SIRENUSDT",
+      "reason": "volatilidad extrema 4.7%/h",
+      "added": "2026-06-07 12:34 UTC"
+    },
+    {
+      "symbol": "BEATUSDT",
+      "reason": "rango 48h 63%",
+      "added": "2026-06-07 12:44 UTC"
     }
   ],
   "rehabilitated": [

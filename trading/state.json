@@ -18,34 +18,34 @@
       "partial_pnl": 0.1628
     },
     {
-      "id": "short_LTCUSDT_1780800849",
+      "id": "short_XLMUSDT_1780835664",
       "direction": "short",
-      "symbol": "LTCUSDT",
-      "entry_price": 41.66,
-      "quantity": 0.709,
-      "sl": 42.57,
-      "tp": 40.44,
-      "atr": 0.6085714285714278,
-      "tp_order_id": "43298030314",
+      "symbol": "XLMUSDT",
+      "entry_price": 0.2029,
+      "quantity": 135.0,
+      "sl": 0.20984,
+      "tp": 0.19365,
+      "atr": 0.004627142857142856,
+      "tp_order_id": "22107758018",
       "sl_order_id": "",
-      "entry_time": 1780800849,
+      "entry_time": 1780835664,
       "partial_taken": false,
-      "trail_trough": 41.66,
+      "trail_trough": 0.2029,
       "leverage": 2
     }
   ],
-  "trade_count": 76,
-  "total_pnl_usdt": 2.0777,
-  "daily_pnl_usdt": -2.1964,
+  "trade_count": 79,
+  "total_pnl_usdt": 0.5964,
+  "daily_pnl_usdt": -3.6777,
   "pnl_date": "2026-06-07",
   "daily_start_capital": 56.384216529999996,
-  "consec_sl": 3,
+  "consec_sl": 2,
   "cooldown_symbols": {
     "ATOMUSDT": 1780288233,
     "SNXUSDT": 1780296222,
     "ONDOUSDT": 1780429013,
     "GUNUSDT": 1780308372,
-    "NEARUSDT": 1780320994,
+    "NEARUSDT": 1780871108,
     "HOMEUSDT": 1780325195,
     "XRPUSDT": 1780347743,
     "VICUSDT": 1780366027,
@@ -65,18 +65,19 @@
     "ENAUSDT": 1780760013,
     "XLMUSDT": 1780802651,
     "TAOUSDT": 1780823661,
-    "MUUSDT": 1780842854
+    "MUUSDT": 1780842854,
+    "LTCUSDT": 1780863263
   },
-  "status": "active",
+  "status": "paused",
   "last_ctx_alert_time": 1780264701,
   "last_ctx_alert_reason": "contexto bajista \u2014 BTC bajo EMA50_4h ($73888 < $74811, -1.2%)",
-  "last_update": "2026-06-07T07:04:02Z",
+  "last_update": "2026-06-07T14:25:13Z",
   "last_dust_clean": 1780292768,
   "dust_in_progress": false,
   "last_dust_conversion": 1780288570,
   "last_rebalance_trend": "bearish",
-  "last_sl_time": 1780814054,
-  "skip_next_cycles": 0,
+  "last_sl_time": 1780842308,
+  "skip_next_cycles": 2,
   "sl_history_by_symbol": {
     "SOXLUSDT": [
       1780583381
@@ -101,8 +102,14 @@
     ],
     "MUUSDT": [
       1780814054
+    ],
+    "LTCUSDT": [
+      1780834463
+    ],
+    "NEARUSDT": [
+      1780842308
     ]
   },
   "pause_until": 0,
-  "last_bl_review": 1780800242
+  "last_bl_review": 1780821844
 }
