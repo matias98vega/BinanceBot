@@ -71,6 +71,10 @@ TP_ATR_MULT          = 2.0
 SL_MIN_DIST_PCT      = 1.0    # distancia mínima SL desde entrada (%)
 PARTIAL_TAKE_PCT     = 0.5    # cerrar esta fracción en TP1 (50%)
 
+# ── Filtros de entrada ───────────────────────────────────────────────────────
+BTC_MOMENTUM_PAUSE_PCT = 2.0  # pausar entradas si BTC se mueve >2% en la ventana
+BTC_MOMENTUM_WINDOW_H  = 4    # ventana de tiempo para medir momentum (horas)
+
 # ── Modo direccional (trend-following) ─────────────────────────────────────
 # Si True: solo opera en dirección de la tendencia (shorts en bearish, longs en bullish)
 # Si False: opera ambos lados simultáneamente (sistema actual)

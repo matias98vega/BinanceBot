@@ -18,28 +18,28 @@
       "partial_pnl": 0.1628
     },
     {
-      "id": "short_DOGEUSDT_1780775654",
+      "id": "short_LTCUSDT_1780800849",
       "direction": "short",
-      "symbol": "DOGEUSDT",
-      "entry_price": 0.08067,
-      "quantity": 453.0,
-      "sl": 0.08245,
-      "tp": 0.0783,
-      "atr": 0.0011871428571428577,
-      "tp_order_id": "98968937074",
+      "symbol": "LTCUSDT",
+      "entry_price": 41.66,
+      "quantity": 0.709,
+      "sl": 42.57,
+      "tp": 40.44,
+      "atr": 0.6085714285714278,
+      "tp_order_id": "43298030314",
       "sl_order_id": "",
-      "entry_time": 1780775654,
+      "entry_time": 1780800849,
       "partial_taken": false,
-      "trail_trough": 0.08067,
+      "trail_trough": 41.66,
       "leverage": 2
     }
   ],
-  "trade_count": 73,
-  "total_pnl_usdt": 4.2741,
-  "daily_pnl_usdt": 0.4506,
-  "pnl_date": "2026-06-06",
-  "daily_start_capital": 56.96297076,
-  "consec_sl": 1,
+  "trade_count": 76,
+  "total_pnl_usdt": 2.0777,
+  "daily_pnl_usdt": -2.1964,
+  "pnl_date": "2026-06-07",
+  "daily_start_capital": 56.384216529999996,
+  "consec_sl": 3,
   "cooldown_symbols": {
     "ATOMUSDT": 1780288233,
     "SNXUSDT": 1780296222,
@@ -49,7 +49,7 @@
     "HOMEUSDT": 1780325195,
     "XRPUSDT": 1780347743,
     "VICUSDT": 1780366027,
-    "DOGEUSDT": 1780380685,
+    "DOGEUSDT": 1780823653,
     "ZECUSDT": 1780487237,
     "INJUSDT": 1780523567,
     "ADAUSDT": 1780571381,
@@ -63,17 +63,19 @@
     "CLUSDT": 1780678406,
     "AVAXUSDT": 1780719879,
     "ENAUSDT": 1780760013,
-    "XLMUSDT": 1780802651
+    "XLMUSDT": 1780802651,
+    "TAOUSDT": 1780823661,
+    "MUUSDT": 1780842854
   },
   "status": "active",
   "last_ctx_alert_time": 1780264701,
   "last_ctx_alert_reason": "contexto bajista \u2014 BTC bajo EMA50_4h ($73888 < $74811, -1.2%)",
-  "last_update": "2026-06-06T22:24:02Z",
+  "last_update": "2026-06-07T06:54:18Z",
   "last_dust_clean": 1780292768,
   "dust_in_progress": false,
   "last_dust_conversion": 1780288570,
   "last_rebalance_trend": "bearish",
-  "last_sl_time": 1780773851,
+  "last_sl_time": 1780814054,
   "skip_next_cycles": 0,
   "sl_history_by_symbol": {
     "SOXLUSDT": [
@@ -90,8 +92,17 @@
     ],
     "XLMUSDT": [
       1780773851
+    ],
+    "DOGEUSDT": [
+      1780794853
+    ],
+    "TAOUSDT": [
+      1780794861
+    ],
+    "MUUSDT": [
+      1780814054
     ]
   },
   "pause_until": 0,
-  "last_bl_review": 1780778641
+  "last_bl_review": 1780800242
 }
