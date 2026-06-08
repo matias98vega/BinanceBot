@@ -222,8 +222,15 @@ def manage_long(pos, state):
 
     price_now = utils.get_spot_price(sym)
 
-    # Stale exit
+    # Stale exit por tiempo máximo (12h) — aunque esté en profit
     elapsed_h = (time.time() - pos.get('entry_time', time.time())) / 3600
+    if elapsed_h > config.STALE_MAX_HOURS:
+        _cancel_oco(sym, oco_id)
+        cum_quote, fill_price = _market_sell(sym, qty)
+        pnl = (fill_price - entry) * qty * (1 - config.BNB_FEE_RATE * 2) if fill_price else 0.0
+        return 'closed_manual', fill_price or price_now, pnl
+    
+    # Stale exit por poco movimiento (<0.5% en 5h)
     price_pct  = abs(price_now - entry) / entry * 100
     if elapsed_h > config.STALE_HOURS and price_pct < config.STALE_RANGE_PCT:
         _cancel_oco(sym, oco_id)

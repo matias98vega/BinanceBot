@@ -332,8 +332,14 @@ def manage_short(pos, state):
         _cancel_tp(pos)
         return 'closed_sl', price_now, pnl
 
-    # Stale exit
+    # Stale exit por tiempo máximo (12h) — aunque esté en profit
     elapsed_h  = (time.time() - pos.get('entry_time', time.time())) / 3600
+    if elapsed_h > config.STALE_MAX_HOURS:
+        pnl = _close_short_market(sym, qty, entry, price_now)
+        _cancel_tp(pos)
+        return 'closed_manual', price_now, pnl
+    
+    # Stale exit por poco movimiento (<0.5% en 5h)
     price_pct  = abs(price_now - entry) / entry * 100
     if elapsed_h > config.STALE_HOURS and price_pct < config.STALE_RANGE_PCT:
         pnl = _close_short_market(sym, qty, entry, price_now)

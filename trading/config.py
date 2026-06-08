@@ -105,6 +105,7 @@ RECOVERY_CONSEC_CANDLES   = 3    # velas 1h consecutivamente alcistas desde el m
 DAILY_LOSS_LIMIT_PCT = 5.0    # pausar si PnL del día cae >5% del capital inicial
 STALE_HOURS          = 5      # salir si trade lleva +5h sin moverse
 STALE_RANGE_PCT      = 0.5    # rango de "estancado" en %
+STALE_MAX_HOURS      = 12     # salir SIEMPRE después de 12h (aunque esté en profit)
 COOLDOWN_AFTER_SL    = True   # no reentrar en el mismo par tras un SL
 COOLDOWN_HOURS       = 8      # horas que dura el cooldown tras un SL
 BNB_FEE_RATE         = 0.00075  # fee spot con BNB

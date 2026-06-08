@@ -3,14 +3,12 @@
     "PORTALUSDT",
     "EPICUSDT",
     "LABUSDT",
-    "USUSDT",
     "OPNUSDT",
     "CLOUSDT",
     "WLDUSDT",
     "BTWUSDT",
     "ZECUSDT",
     "BABYUSDT",
-    "SOXLUSDT",
     "ALLOUSDT",
     "HEIUSDT",
     "BLUAIUSDT",
@@ -151,6 +149,16 @@
       "symbol": "MAGMAUSDT",
       "reason": "vol actual 1.7%/h y rango48h 15% dentro de par\u00e1metros (53h en blacklist)",
       "date": "2026-06-06 08:43 UTC"
+    },
+    {
+      "symbol": "USUSDT",
+      "reason": "vol actual 1.7%/h y rango48h 11% dentro de par\u00e1metros (123h en blacklist)",
+      "date": "2026-06-08 06:15 UTC"
+    },
+    {
+      "symbol": "SOXLUSDT",
+      "reason": "vol actual 1.4%/h y rango48h 13% dentro de par\u00e1metros (50h en blacklist)",
+      "date": "2026-06-08 06:15 UTC"
     }
   ]
 }
