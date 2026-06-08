@@ -7,15 +7,18 @@
     "CLOUSDT",
     "WLDUSDT",
     "BTWUSDT",
-    "ZECUSDT",
-    "BABYUSDT",
     "ALLOUSDT",
     "HEIUSDT",
     "BLUAIUSDT",
     "VELVETUSDT",
     "FIDAUSDT",
     "SIRENUSDT",
-    "BEATUSDT"
+    "BEATUSDT",
+    "BSBUSDT",
+    "BLESSUSDT",
+    "ESPORTSUSDT",
+    "PIPPINUSDT",
+    "HUSDT"
   ],
   "log": [
     {
@@ -127,6 +130,31 @@
       "symbol": "BEATUSDT",
       "reason": "rango 48h 63%",
       "added": "2026-06-07 12:44 UTC"
+    },
+    {
+      "symbol": "BSBUSDT",
+      "reason": "volatilidad extrema 5.0%/h",
+      "added": "2026-06-08 06:35 UTC"
+    },
+    {
+      "symbol": "BLESSUSDT",
+      "reason": "volatilidad extrema 4.3%/h",
+      "added": "2026-06-08 06:35 UTC"
+    },
+    {
+      "symbol": "ESPORTSUSDT",
+      "reason": "volatilidad extrema 5.4%/h",
+      "added": "2026-06-08 06:45 UTC"
+    },
+    {
+      "symbol": "PIPPINUSDT",
+      "reason": "volatilidad extrema 4.3%/h",
+      "added": "2026-06-08 17:55 UTC"
+    },
+    {
+      "symbol": "HUSDT",
+      "reason": "volatilidad extrema 4.3%/h",
+      "added": "2026-06-08 18:45 UTC"
     }
   ],
   "rehabilitated": [
@@ -159,6 +187,16 @@
       "symbol": "SOXLUSDT",
       "reason": "vol actual 1.4%/h y rango48h 13% dentro de par\u00e1metros (50h en blacklist)",
       "date": "2026-06-08 06:15 UTC"
+    },
+    {
+      "symbol": "BABYUSDT",
+      "reason": "vol actual 1.9%/h y rango48h 16% dentro de par\u00e1metros (73h en blacklist)",
+      "date": "2026-06-08 12:25 UTC"
+    },
+    {
+      "symbol": "ZECUSDT",
+      "reason": "vol actual 2.0%/h y rango48h 28% dentro de par\u00e1metros (86h en blacklist)",
+      "date": "2026-06-08 18:35 UTC"
     }
   ]
 }

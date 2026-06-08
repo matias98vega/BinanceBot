@@ -72,8 +72,10 @@ SL_MIN_DIST_PCT      = 1.0    # distancia mínima SL desde entrada (%)
 PARTIAL_TAKE_PCT     = 0.5    # cerrar esta fracción en TP1 (50%)
 
 # ── Filtros de entrada ───────────────────────────────────────────────────────
-BTC_MOMENTUM_PAUSE_PCT = 2.0  # pausar entradas si BTC se mueve >2% en la ventana
-BTC_MOMENTUM_WINDOW_H  = 4    # ventana de tiempo para medir momentum (horas)
+BTC_MOMENTUM_PAUSE_PCT    = 2.0  # pausar entradas si BTC se mueve >2% en la ventana
+BTC_MOMENTUM_CLOSE_PCT    = 4.0  # cerrar SHORTS existentes si BTC sube >4% (pump extremo)
+BTC_MOMENTUM_CLOSE_LONGS  = -4.0 # cerrar LONGS existentes si BTC baja >4% (dump extremo)
+BTC_MOMENTUM_WINDOW_H     = 4    # ventana de tiempo para medir momentum (horas)
 
 # ── Modo direccional (trend-following) ─────────────────────────────────────
 # Si True: solo opera en dirección de la tendencia (shorts en bearish, longs en bullish)

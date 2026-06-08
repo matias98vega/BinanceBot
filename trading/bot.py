@@ -123,7 +123,56 @@ def _run():
         utils.send_alert(rb_msg)
 
     # ── 1. GESTIONAR posiciones activas ──────────────────────────────────────
-    active_positions  = state.get('positions', [])
+    # ── 1a. Cierre preventivo por momentum extremo de BTC ─────────────────────
+    close_shorts, close_longs, close_reason = market.check_btc_momentum_close(btc_ctx)
+    if close_shorts or close_longs:
+        out(f'🚨 {close_reason}')
+        utils.send_alert(close_reason)
+        
+        # Cerrar posiciones afectadas
+        for pos in active_positions[:]:
+            direction = pos['direction']
+            sym = pos['symbol']
+            
+            should_close = (direction == 'short' and close_shorts) or (direction == 'long' and close_longs)
+            if should_close:
+                # Cerrar al mercado
+                if direction == 'short':
+                    price_now = utils.get_fut_price(sym)
+                    pnl = (pos['entry_price'] - price_now) * pos['quantity']
+                    # Cancelar TP si existe
+                    if pos.get('tp_order_id'):
+                        try:
+                            utils.fut_signed('DELETE', '/fapi/v1/order', {'symbol': sym, 'orderId': int(pos['tp_order_id'])})
+                        except: pass
+                else:
+                    price_now = utils.get_spot_price(sym)
+                    pnl = (price_now - pos['entry_price']) * pos['quantity']
+                    # Cancelar OCO si existe
+                    if pos.get('oco_id'):
+                        try:
+                            utils.spot_signed('DELETE', '/api/v3/orderList', {'symbol': sym, 'orderListId': int(pos['oco_id'])})
+                        except: pass
+                
+                # Remover de posiciones
+                out(f'  🔴 {sym} {direction}: cierre preventivo PnL={pnl:+.2f}')
+                active_positions.remove(pos)
+                
+                # Actualizar PnL
+                state['total_pnl_usdt'] = state.get('total_pnl_usdt', 0) + pnl
+                state['daily_pnl_usdt'] = state.get('daily_pnl_usdt', 0) + pnl
+                
+                # Loggear trade
+                now = time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())
+                with open(config.TRADES_LOG, 'a') as f:
+                    trade_id = sum(1 for _ in open(config.TRADES_LOG)) + 1
+                    label = 'PREVENTIVO 🚨'
+                    f.write(f'{trade_id:3d}  | {"📈L" if direction=="long" else "📉S"} {sym.replace("USDT","")}/USDT | {label:13} | {pnl:+.4f}    | ${state["total_pnl_usdt"]:.4f}   | {now}\n')
+        
+        # Recargar lista después de cierres
+        active_positions = state.get('positions', [])
+    
+    # ── 1b. Gestión normal de posiciones restantes ────────────────────────────
     positions_to_keep = []
 
     for pos in active_positions:

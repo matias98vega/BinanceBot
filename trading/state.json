@@ -1,42 +1,43 @@
 {
   "positions": [
     {
-      "id": "short_XAGUSDT_1780651415",
+      "id": "short_ENAUSDT_1780948519",
       "direction": "short",
-      "symbol": "XAGUSDT",
-      "entry_price": 72.91,
-      "quantity": 0.201,
-      "sl": 67.79,
-      "tp": 71.93,
-      "atr": 0.49071428571428605,
-      "tp_order_id": "3228068461",
+      "symbol": "ENAUSDT",
+      "entry_price": 0.0890224,
+      "quantity": 233.0,
+      "sl": 0.09189,
+      "tp": 0.0852,
+      "atr": 0.001909999999999997,
+      "tp_order_id": "15021585496",
       "sl_order_id": "",
-      "entry_time": 1780651415,
-      "partial_taken": true,
-      "trail_trough": 67.05,
-      "leverage": 2,
-      "partial_pnl": 0.1628
+      "entry_time": 1780948519,
+      "partial_taken": false,
+      "trail_trough": 0.0890224,
+      "leverage": 2
     },
     {
-      "id": "short_XLMUSDT_1780835664",
-      "direction": "short",
-      "symbol": "XLMUSDT",
-      "entry_price": 0.2029,
-      "quantity": 135.0,
-      "sl": 0.20613,
-      "tp": 0.19365,
-      "atr": 0.004627142857142856,
-      "tp_order_id": "22107758018",
-      "sl_order_id": "",
-      "entry_time": 1780835664,
+      "id": "long_XRPUSDT_1780951521",
+      "direction": "long",
+      "symbol": "XRPUSDT",
+      "entry_price": 1.1785999999999999,
+      "quantity": 20.6,
+      "sl": 1.1642,
+      "tp": 1.2074,
+      "atr": 0.014407142857142872,
+      "oco_order_list_id": "22776481675",
+      "oco_order_ids": [
+        "14893921454",
+        "14893921455"
+      ],
+      "entry_time": 1780951521,
       "partial_taken": false,
-      "trail_trough": 0.19919,
-      "leverage": 2
+      "trail_peak": 1.1785999999999999
     }
   ],
-  "trade_count": 79,
-  "total_pnl_usdt": 0.5964,
-  "daily_pnl_usdt": 0.0,
+  "trade_count": 87,
+  "total_pnl_usdt": 1.3024,
+  "daily_pnl_usdt": 0.706,
   "pnl_date": "2026-06-08",
   "daily_start_capital": 53.849908060000004,
   "consec_sl": 0,
@@ -63,21 +64,22 @@
     "CLUSDT": 1780678406,
     "AVAXUSDT": 1780719879,
     "ENAUSDT": 1780760013,
-    "XLMUSDT": 1780802651,
     "TAOUSDT": 1780823661,
     "MUUSDT": 1780842854,
-    "LTCUSDT": 1780863263
+    "LTCUSDT": 1780863263,
+    "EWYUSDT": 1780946125,
+    "SPCXUSDT": 1780968918
   },
   "status": "active",
   "last_ctx_alert_time": 1780264701,
   "last_ctx_alert_reason": "contexto bajista \u2014 BTC bajo EMA50_4h ($73888 < $74811, -1.2%)",
-  "last_update": "2026-06-08T06:15:23Z",
+  "last_update": "2026-06-08T21:45:17Z",
   "last_dust_clean": 1780899323,
   "dust_in_progress": false,
   "last_dust_conversion": 1780288570,
   "last_rebalance_trend": "neutral",
-  "last_sl_time": 1780842308,
-  "skip_next_cycles": 1,
+  "last_sl_time": 1780940118,
+  "skip_next_cycles": 0,
   "sl_history_by_symbol": {
     "SOXLUSDT": [
       1780583381
@@ -108,8 +110,14 @@
     ],
     "NEARUSDT": [
       1780842308
+    ],
+    "EWYUSDT": [
+      1780917325
+    ],
+    "SPCXUSDT": [
+      1780940118
     ]
   },
   "pause_until": 0,
-  "last_bl_review": 1780899317
+  "last_bl_review": 1780943715
 }

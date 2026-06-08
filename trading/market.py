@@ -293,6 +293,29 @@ def check_btc_momentum(btc_ctx):
     return False, False, None
 
 
+def check_btc_momentum_close(btc_ctx):
+    """
+    Verifica si el momentum de BTC es tan extremo que justifica cerrar posiciones existentes.
+    Retorna (close_shorts, close_longs, reason) donde:
+      - close_shorts=True si BTC subió >4% (pump extremo → shorts en peligro)
+      - close_longs=True si BTC bajó >4% (dump extremo → longs en peligro)
+      - reason explica por qué
+    """
+    change_4h = btc_ctx.get('change_4h', 0)
+    pump_threshold = config.BTC_MOMENTUM_CLOSE_PCT
+    dump_threshold = config.BTC_MOMENTUM_CLOSE_LONGS
+    window = config.BTC_MOMENTUM_WINDOW_H
+    
+    if change_4h >= pump_threshold:
+        # Pump extremo → cerrar SHORTS (van a tocar SL)
+        return True, False, f'BTC +{change_4h:.1f}% en {window}h — cierre preventivo de SHORTS'
+    elif change_4h <= dump_threshold:
+        # Dump extremo → cerrar LONGS (van a tocar SL)
+        return False, True, f'BTC {change_4h:.1f}% en {window}h — cierre preventivo de LONGS'
+    
+    return False, False, None
+
+
 def score_long(symbol, btc_ctx):
     """
     Evalúa un símbolo como candidato LONG (spot).

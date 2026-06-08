@@ -80,3 +80,11 @@
 77  | 📉S LTC/USDT    | STALE ⏱️ (sin movimiento)| -$0.1417    | $54.7328   | 2026-06-07 08:05 UTC
 78  | 📈L LTC/USDT    | SL 🔴    | -$0.1086    | $80.0587   | 2026-06-07 12:14 UTC
 79  | 📉S NEAR/USDT   | SL 🔴    | -$1.2310    | $53.0159   | 2026-06-07 14:25 UTC
+80  | 📉S XAG/USDT    | STALE ⏱️ (sin movimiento)| +$1.1267    | $53.7075   | 2026-06-08 06:25 UTC
+81  | 📉S XLM/USDT    | STALE ⏱️ (sin movimiento)| +$0.3858    | $53.7160   | 2026-06-08 06:25 UTC
+82  | 📉S EWY/USDT    | SL 🔴    | -$0.6436    | $53.0624   | 2026-06-08 11:15 UTC
+83  | 📈L BTC/USDT    | STALE ⏱️ (sin movimiento)| -$0.0064    | $77.6400   | 2026-06-08 12:05 UTC
+84  | 📈L BTC/USDT    | TP ✅    | +$0.2156    | $64.3181   | 2026-06-08 15:05 UTC
+85  | 📉S SPCX/USDT   | SL 🔴    | -$0.5971    | $52.3494   | 2026-06-08 17:35 UTC
+86  | 📉S XLM/USDT    | STALE ⏱️ (sin movimiento)| +$0.0934    | $52.2391   | 2026-06-08 18:05 UTC
+87  | 📈L BNB/USDT    | STALE ⏱️ (sin movimiento)| -$0.0076    | $76.6026   | 2026-06-08 20:35 UTC
