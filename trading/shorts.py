@@ -7,7 +7,7 @@ TP: orden LIMIT + reduceOnly=true.
 import sys, os, time, math
 import urllib.error as _ue
 sys.path.insert(0, os.path.dirname(__file__))
-import utils, config
+import utils, config, capital_manager
 
 
 def _place_stop_market(symbol, side, stop_price, quantity, reduce_only=True):
@@ -91,8 +91,6 @@ def open_short(candidate, state):
     except Exception as e:
         return None, f'Error en filtros futures {sym}: {e}'
 
-    _ensure_leverage(sym, config.FUTURES_LEVERAGE)
-
     # Obtener precio actual
     price = utils.get_fut_price(sym)
 
@@ -103,6 +101,13 @@ def open_short(candidate, state):
         real_tp = utils.round_tick(price - config.TP_ATR_MULT * atr_v, tick)
         notional_dry = available * config.FUTURES_RISK_PCT * config.FUTURES_LEVERAGE
         qty_dry = utils.round_step(notional_dry / price, step)
+        requested_margin = (qty_dry * price) / config.FUTURES_LEVERAGE
+        try:
+            ok, limit_msg, _ = capital_manager.validate_futures_order(state, available, requested_margin)
+        except Exception as e:
+            return None, f'CAPITAL LIMIT ERROR FUTURES: {e}'
+        if not ok:
+            return None, limit_msg
         pos = {
             'id': f'short_{sym}_{int(time.time())}_DRY',
             'direction': 'short', 'symbol': sym,
@@ -122,6 +127,15 @@ def open_short(candidate, state):
         return None, f'Cantidad mínima en futures no alcanzada: {qty} < {min_qty}'
     if qty * price < min_not:
         return None, f'Notional mínimo futures no alcanzado: ${qty * price:.2f} < ${min_not}'
+    requested_margin = (qty * price) / config.FUTURES_LEVERAGE
+    try:
+        ok, limit_msg, _ = capital_manager.validate_futures_order(state, available, requested_margin)
+    except Exception as e:
+        return None, f'CAPITAL LIMIT ERROR FUTURES: {e}'
+    if not ok:
+        return None, limit_msg
+
+    _ensure_leverage(sym, config.FUTURES_LEVERAGE)
 
     # MARKET SELL (abrir short) con backoff ante errores transitorios de API
     order = None

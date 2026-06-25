@@ -11,6 +11,7 @@ import urllib.parse
 import urllib.request
 
 from config_loader import ENV_FILES, ConfigError, load_config, validate_environment
+import capital_manager
 
 
 REQUIRED_PYTHON = (3, 10)
@@ -94,17 +95,21 @@ def _server_time(config):
         return int(time.time() * 1000)
 
 
-def _check_api_auth(config):
+def _signed_get(config, base_url, path):
     params = {
         'timestamp': _server_time(config),
         'recvWindow': 10000,
     }
     query = urllib.parse.urlencode(params)
     signature = hmac.new(config.api_secret.encode(), query.encode(), hashlib.sha256).hexdigest()
-    url = f'{config.spot_base}/api/v3/account?{query}&signature={signature}'
+    url = f'{base_url}{path}?{query}&signature={signature}'
     req = urllib.request.Request(url, headers={'X-MBX-APIKEY': config.api_key})
+    return _request_json(req, timeout=10)
+
+
+def _check_api_auth(config):
     try:
-        _request_json(req, timeout=10)
+        _signed_get(config, config.spot_base, '/api/v3/account')
         return True, ''
     except urllib.error.HTTPError as exc:
         try:
@@ -114,6 +119,34 @@ def _check_api_auth(config):
         return False, f'HTTP {exc.code}: {body}'
     except Exception as exc:
         return False, str(exc)
+
+
+def _check_capital_limits():
+    ok, result = capital_manager.validate_environment()
+    if not ok:
+        return False, result, None
+    return True, '', result
+
+
+def _get_capital_balances(config, api_ok):
+    if not api_ok:
+        return None, None, 'API authentication is not OK'
+    try:
+        spot_account = _signed_get(config, config.spot_base, '/api/v3/account')
+        spot_real = 0.0
+        for balance in spot_account.get('balances', []):
+            if balance.get('asset') == 'USDT':
+                spot_real = float(balance.get('free', 0))
+                break
+        futures_account = _signed_get(config, config.futures_base, '/fapi/v2/account')
+        futures_real = float(futures_account.get('availableBalance', 0))
+        return spot_real, futures_real, ''
+    except Exception as exc:
+        return None, None, str(exc)
+
+
+def _fmt_money(value):
+    return 'N/A' if value is None else f'{value:.2f}'
 
 
 def main():
@@ -131,6 +164,9 @@ def main():
     if config is None:
         config = load_config(require_api=False)
 
+    capital_ok, capital_error, limits = _check_capital_limits()
+    checks['Capital Limits'] = capital_ok
+
     files_ok, missing_files, unwritable_files = _check_files(config)
     checks['Files'] = files_ok
 
@@ -145,12 +181,24 @@ def main():
         api_error = env_error
     checks['API Authentication'] = api_ok
 
+    spot_real, futures_real, balance_error = _get_capital_balances(config, api_ok and env_ok)
+    cap_snapshot = None
+    if capital_ok and spot_real is not None and futures_real is not None:
+        cap_snapshot = capital_manager.snapshot(spot_real, futures_real)
+
     ready = all(checks.values())
 
     print('SETUP CHECK')
     print(f'Python ............ {_status(checks["Python"])}')
     print(f'Dependencies ...... {_status(checks["Dependencies"])}')
     print(f'Environment ....... {_status(checks["Environment"])}')
+    print(f'Capital Limits .... {_status(checks["Capital Limits"])}')
+    print(f'Spot real ......... {_fmt_money(spot_real)}')
+    print(f'Spot usable ....... {_fmt_money(cap_snapshot["spot_usable"] if cap_snapshot else None)}')
+    print(f'Futures real ...... {_fmt_money(futures_real)}')
+    print(f'Futures usable .... {_fmt_money(cap_snapshot["futures_usable"] if cap_snapshot else None)}')
+    print(f'Max position % .... {limits.max_position_percent if capital_ok else "N/A"}')
+    print(f'Max exposure % .... {limits.max_exposure_percent if capital_ok else "N/A"}')
     print(f'Files ............. {_status(checks["Files"])}')
     print(f'Binance Ping ...... {_status(checks["Binance Ping"])}')
     print(f'API Authentication. {_status(checks["API Authentication"])}')
@@ -165,6 +213,10 @@ def main():
         details.append('Missing .env file')
     if env_error:
         details.append(env_error)
+    if capital_error:
+        details.append(capital_error)
+    if balance_error:
+        details.append('Capital balance lookup: ' + balance_error)
     if missing_files:
         details.append('Missing files: ' + ', '.join(missing_files))
     if unwritable_files:

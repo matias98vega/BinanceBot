@@ -16,6 +16,7 @@ TRADING_DIR = os.path.join(PROJECT_DIR, 'trading')
 sys.path.insert(0, TRADING_DIR)
 
 from config_loader import load_config  # noqa: E402
+import capital_manager  # noqa: E402
 
 
 CONFIG = load_config(require_api=False)
@@ -182,8 +183,16 @@ def _metrics_payload():
     open_now = [t for t in trades.values() if t.get('status') == 'OPEN']
     longs = [t for t in closed if str(t.get('side', '')).upper() == 'LONG']
     shorts = [t for t in closed if str(t.get('side', '')).upper() == 'SHORT']
+    try:
+        cap = capital_manager.snapshot()
+    except Exception:
+        cap = {}
     return {
         'capital_current': state.get('daily_start_capital'),
+        'spot_capital_limit_usdt': cap.get('spot_capital_limit_usdt'),
+        'futures_capital_limit_usdt': cap.get('futures_capital_limit_usdt'),
+        'max_position_percent': cap.get('max_position_percent'),
+        'max_exposure_percent': cap.get('max_exposure_percent'),
         'pnl_total': state.get('total_pnl_usdt'),
         'win_rate': _win_rate(closed),
         'profit_factor': _profit_factor(closed),

@@ -5,7 +5,7 @@ Abre, monitorea, toma parcial, trailing stop, cierra.
 """
 import sys, os, time, math
 sys.path.insert(0, os.path.dirname(__file__))
-import utils, config
+import utils, config, capital_manager
 
 
 def open_long(candidate, state):
@@ -38,6 +38,12 @@ def open_long(candidate, state):
     # Dry-run: simular sin ejecutar
     if config.DRY_RUN:
         price = utils.get_spot_price(sym)
+        try:
+            ok, limit_msg, _ = capital_manager.validate_spot_order(state, usdt, capital)
+        except Exception as e:
+            return None, f'CAPITAL LIMIT ERROR SPOT: {e}'
+        if not ok:
+            return None, limit_msg
         atr_v = candidate['atr']
         real_sl = round(price - config.SL_ATR_MULT * atr_v, 8)
         real_tp = round(price + config.TP_ATR_MULT * atr_v, 8)
@@ -69,6 +75,12 @@ def open_long(candidate, state):
         return None, f'Cantidad mínima no alcanzada: {qty} < {min_qty}'
     if qty * price < min_not:
         return None, f'Notional mínimo no alcanzado: ${qty * price:.2f} < ${min_not}'
+    try:
+        ok, limit_msg, _ = capital_manager.validate_spot_order(state, usdt, qty * price)
+    except Exception as e:
+        return None, f'CAPITAL LIMIT ERROR SPOT: {e}'
+    if not ok:
+        return None, limit_msg
 
     # Redondear SL/TP al tick
     sl = utils.round_tick(sl, tick)

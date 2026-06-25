@@ -49,6 +49,10 @@ function renderStatus(data) {
 
 function renderMetrics(data) {
   setText('capital-current', number(data.capital_current));
+  setText('spot-capital-limit', number(data.spot_capital_limit_usdt, 2));
+  setText('futures-capital-limit', number(data.futures_capital_limit_usdt, 2));
+  setText('max-position-percent', pct(data.max_position_percent));
+  setText('max-exposure-percent', pct(data.max_exposure_percent));
   setText('pnl-total', number(data.pnl_total));
   setText('win-rate', pct(data.win_rate));
   setText('profit-factor', value(data.profit_factor));

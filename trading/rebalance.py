@@ -21,7 +21,7 @@ Filosofía de cambio de tendencia:
 
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
-import utils, config, market
+import utils, config, market, capital_manager
 
 # ── Parámetros ────────────────────────────────────────────────────────────────
 RATIO_BEARISH_FUTURES      = 0.65   # futures recibe 65% cuando mercado bajista
@@ -200,6 +200,14 @@ def rebalance(state, btc_ctx=None):
     if diff_fut > 0:
         # Necesitamos más capital en futures (bearish) — mover Spot → Futures
         amount = round(min(diff_fut, spot_free - REBALANCE_MIN_WALLET), 2)
+        try:
+            capped_amount = capital_manager.cap_transfer_amount('FUTURES', fut_actual, amount)
+        except Exception as e:
+            return False, f'Capital limit: rebalanceo Spot->Futures bloqueado ({e})'
+        if capped_amount < amount:
+            amount = round(capped_amount, 2)
+            if amount < REBALANCE_MIN_USDT:
+                return False, 'Capital limit: no se transfiere a Futures porque la wallet destino ya alcanzo el limite configurado'
         if amount < REBALANCE_MIN_USDT:
             if trend_flipped and longs_open:
                 # Cambio a bearish pero hay longs viejos: esperar que cierren
@@ -229,6 +237,14 @@ def rebalance(state, btc_ctx=None):
     else:
         # Necesitamos más capital en spot (bullish) — mover Futures → Spot
         amount = round(min(-diff_fut, fut_free - REBALANCE_MIN_WALLET), 2)
+        try:
+            capped_amount = capital_manager.cap_transfer_amount('SPOT', spot_actual, amount)
+        except Exception as e:
+            return False, f'Capital limit: rebalanceo Futures->Spot bloqueado ({e})'
+        if capped_amount < amount:
+            amount = round(capped_amount, 2)
+            if amount < REBALANCE_MIN_USDT:
+                return False, 'Capital limit: no se transfiere a Spot porque la wallet destino ya alcanzo el limite configurado'
         if amount < REBALANCE_MIN_USDT:
             if trend_flipped and shorts_open:
                 # Cambio a bullish pero hay shorts viejos: esperar que cierren

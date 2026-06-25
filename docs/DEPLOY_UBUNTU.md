@@ -84,9 +84,15 @@ BINANCE_API_SECRET=
 BINANCE_SPOT_BASE=https://api.binance.com
 BINANCE_FUTURES_BASE=https://fapi.binance.com
 LOCK_FILE=/tmp/trading_bot.lock
+BOT_SPOT_CAPITAL_LIMIT_USDT=50
+BOT_FUTURES_CAPITAL_LIMIT_USDT=25
+BOT_MAX_POSITION_PERCENT=20
+BOT_MAX_EXPOSURE_PERCENT=80
 ```
 
 No versionar `.env`.
+
+Los limites de capital son obligatorios. `setup_check.py` queda NOT READY si faltan, si son menores o iguales a cero, o si los porcentajes estan fuera de 0-100.
 
 ## 7. Ejecutar setup check
 

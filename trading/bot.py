@@ -10,7 +10,7 @@ try:
 except Exception:
     pass
 sys.path.insert(0, os.path.dirname(__file__))
-import config, utils, market, longs, shorts, rebalance
+import config, utils, market, longs, shorts, rebalance, capital_manager
 from analytics import AnalyticsLogger, DecisionSnapshotLogger
 
 OUTPUT = []
@@ -405,6 +405,15 @@ def _run():
         p['entry_price'] * p['quantity'] / p.get('leverage', config.FUTURES_LEVERAGE)
         for p in state['positions'] if p['direction'] == 'short'
     )
+    try:
+        cap = capital_manager.snapshot(spot_total, fut_total)
+        out(
+            f'Capital limits: Spot real ${cap["spot_real"]:.2f} usable ${cap["spot_usable"]:.2f} | '
+            f'Futures real ${cap["futures_real"]:.2f} usable ${cap["futures_usable"]:.2f} | '
+            f'Max pos {cap["max_position_percent"]:.2f}% | Max exposure {cap["max_exposure_percent"]:.2f}%'
+        )
+    except Exception as e:
+        out(f'Capital limits: ERROR ({e})')
     out(f'\nðŸ’¼ Longs: {long_count_final}/{max_longs} | Shorts: {short_count_final}/{max_shorts} | Spot: ${spot_used:.2f}/${spot_total:.2f} | Futures: ${short_notional:.2f}/${fut_total:.2f}')
     out(f'ðŸ“Š PnL total: {state["total_pnl_usdt"]:+.4f} USDT | Hoy: {state["daily_pnl_usdt"]:+.4f} USDT')
 
