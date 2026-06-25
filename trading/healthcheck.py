@@ -57,6 +57,38 @@ def _fmt_age(path):
     return f'{minutes:.2f}m'
 
 
+def _pid_exists(pid):
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def _lock_info(path):
+    if not os.path.exists(path):
+        return {'status': 'ABSENT', 'pid': None, 'created_at': None}
+    try:
+        with open(path, encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception:
+        return {'status': 'STALE', 'pid': None, 'created_at': None}
+
+    pid = data.get('pid')
+    created_at = data.get('created_at')
+    if _pid_exists(pid):
+        return {'status': 'PRESENT', 'pid': pid, 'created_at': created_at}
+    return {'status': 'STALE', 'pid': pid, 'created_at': created_at}
+
+
 def _analytics_open_trades(records):
     merged = {}
     for record in records:
@@ -80,6 +112,7 @@ def main():
     analytics_ids = {t.get('trade_id') for t in analytics_open if t.get('trade_id')}
     missing_in_analytics = sorted(state_ids - analytics_ids)
     missing_in_state = sorted(analytics_ids - state_ids)
+    lock = _lock_info(LOCK_FILE)
 
     warnings = []
     errors = []
@@ -93,8 +126,10 @@ def main():
         warnings.append('open state positions missing in analytics')
     if missing_in_state:
         warnings.append('analytics OPEN trades missing in state')
-    if os.path.exists(LOCK_FILE):
-        warnings.append('bot lock file exists')
+    if lock['status'] == 'PRESENT':
+        warnings.append('bot lock file exists with active process')
+    elif lock['status'] == 'STALE':
+        warnings.append('bot lock file is stale')
 
     final_status = 'OK'
     if errors:
@@ -108,7 +143,12 @@ def main():
     print(f'- state.json: {"OK" if state_valid else "ERROR"}')
     if state_error and state_error != 'missing':
         print(f'  - error: {state_error}')
-    print(f'- bot.lock: {"PRESENT" if os.path.exists(LOCK_FILE) else "ABSENT"}')
+    print(f'- Lock file: {LOCK_FILE}')
+    print(f'- bot.lock: {lock["status"]}')
+    if lock.get('pid') is not None:
+        print(f'  - pid: {lock["pid"]}')
+    if lock.get('created_at'):
+        print(f'  - created_at: {lock["created_at"]}')
     print(f'- trade_analytics.jsonl age: {_fmt_age(TRADE_ANALYTICS)}')
     print(f'- decision_snapshots.jsonl age: {_fmt_age(DECISION_SNAPSHOTS)}')
     print(f'- trades_log.txt age: {_fmt_age(TRADES_LOG)}')

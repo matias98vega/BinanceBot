@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Environment-based configuration loader for BinanceBot."""
 import os
+import tempfile
 from dataclasses import dataclass
 
 
@@ -69,6 +70,13 @@ def _path(value, default):
     return os.path.abspath(os.path.join(PROJECT_DIR, raw))
 
 
+def _lock_path(value, default):
+    raw = value or default
+    if os.name == 'nt' and raw.startswith('/tmp/'):
+        return os.path.join(tempfile.gettempdir(), os.path.basename(raw))
+    return raw
+
+
 def load_config(require_api=False):
     env_present = load_dotenv()
     api_key = _env('BINANCE_API_KEY', '', required=require_api)
@@ -80,6 +88,9 @@ def load_config(require_api=False):
         raise ConfigError('BINANCE_SPOT_BASE must start with https://')
     if not futures_base.startswith('https://'):
         raise ConfigError('BINANCE_FUTURES_BASE must start with https://')
+    default_lock_file = '/tmp/trading_bot.lock'
+    if os.name == 'nt':
+        default_lock_file = os.path.join(tempfile.gettempdir(), 'trading_bot.lock')
 
     return RuntimeConfig(
         api_key=api_key,
@@ -94,7 +105,7 @@ def load_config(require_api=False):
         reports_dir=_path(_env('REPORTS_DIR'), 'trading/reports'),
         csv_file=_path(_env('CSV_FILE'), 'trading/reports/trades.csv'),
         cycle_baseline_file=_path(_env('CYCLE_BASELINE_FILE'), 'trading/.cycle_baseline.json'),
-        lock_file=_env('LOCK_FILE', '/tmp/trading_bot.lock'),
+        lock_file=_lock_path(_env('LOCK_FILE'), default_lock_file),
         alert_target=_env('ALERT_TARGET', ''),
         env_present=env_present,
     )

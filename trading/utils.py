@@ -4,6 +4,7 @@ Helpers compartidos: HTTP, firma, alertas, logs, lock.
 """
 import hmac, hashlib, time, urllib.request, urllib.parse, urllib.error
 import json, os, sys, subprocess, socket
+from datetime import datetime, timezone
 
 import config
 
@@ -539,16 +540,84 @@ def clean_dust(dry_run=False):
 
     return [], 'Ningún activo pudo convertirse en este ciclo'
 
+def _pid_exists(pid):
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def _read_lock_info(path):
+    try:
+        with open(path, encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _lock_is_stale(path):
+    if not os.path.exists(path):
+        return False
+    info = _read_lock_info(path)
+    return not _pid_exists(info.get('pid'))
+
+
+def _remove_stale_lock(path):
+    if _lock_is_stale(path):
+        try:
+            os.remove(path)
+            return True
+        except OSError:
+            return False
+    return False
+
+
+def _write_lock_info(lock_fd):
+    info = {
+        'pid': os.getpid(),
+        'created_at': datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z'),
+        'path': config.LOCK_FILE,
+    }
+    lock_fd.seek(0)
+    lock_fd.truncate()
+    json.dump(info, lock_fd, separators=(',', ':'))
+    lock_fd.write('\n')
+    lock_fd.flush()
+    try:
+        os.fsync(lock_fd.fileno())
+    except OSError:
+        pass
+    lock_fd._lock_path = config.LOCK_FILE
+    lock_fd._lock_pid = os.getpid()
+
+
+def _lock_owned_by_current_process(path):
+    info = _read_lock_info(path)
+    return info.get('pid') == os.getpid()
+
+
 def acquire_lock():
     lock_dir = os.path.dirname(config.LOCK_FILE)
     if lock_dir:
         os.makedirs(lock_dir, exist_ok=True)
-    lock_fd = open(config.LOCK_FILE, 'w', encoding='utf-8')
+    _remove_stale_lock(config.LOCK_FILE)
+    lock_fd = open(config.LOCK_FILE, 'a+', encoding='utf-8')
     try:
+        lock_fd.seek(0)
         if os.name == 'nt':
             msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
         else:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _write_lock_info(lock_fd)
         return lock_fd
     except (BlockingIOError, OSError):
         lock_fd.close()
@@ -556,9 +625,28 @@ def acquire_lock():
 
 def release_lock(lock_fd):
     if lock_fd:
-        if os.name == 'nt':
-            lock_fd.seek(0)
-            msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        lock_fd.close()
+        path = getattr(lock_fd, '_lock_path', config.LOCK_FILE)
+        owned = getattr(lock_fd, '_lock_pid', None) == os.getpid()
+        removed = False
+        try:
+            if owned and os.name != 'nt':
+                os.remove(path)
+                removed = True
+        except OSError:
+            removed = False
+        try:
+            if os.name == 'nt':
+                lock_fd.seek(0)
+                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        finally:
+            lock_fd.close()
+        if owned and not removed and os.path.exists(path):
+            for _ in range(5):
+                try:
+                    if _lock_owned_by_current_process(path):
+                        os.remove(path)
+                    break
+                except OSError:
+                    time.sleep(0.1)
