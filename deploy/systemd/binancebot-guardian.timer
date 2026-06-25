@@ -1,0 +1,12 @@
+[Unit]
+Description=Run BinanceBot SL guardian every 1 minute
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=1min
+AccuracySec=10s
+Persistent=false
+Unit=binancebot-guardian.service
+
+[Install]
+WantedBy=timers.target

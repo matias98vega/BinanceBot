@@ -1,0 +1,17 @@
+[Unit]
+Description=BinanceBot trading iteration
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=binancebot
+Group=binancebot
+WorkingDirectory=/opt/BinanceBot
+Environment=BOT_DIR=/opt/BinanceBot
+Environment=PYTHONIOENCODING=utf-8
+ExecStart=/opt/BinanceBot/scripts/run_once.sh
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

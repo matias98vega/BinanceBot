@@ -1,0 +1,7 @@
+state.json
+trades_log.txt
+analysis_log.txt
+*.lock
+__pycache__/
+*.pyc
+.env

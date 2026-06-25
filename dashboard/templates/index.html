@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BinanceBot Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>BinanceBot</h1>
+      <p>Dashboard local de monitoreo</p>
+    </div>
+    <div class="refresh">Auto refresh: <span id="refresh-count">30</span>s</div>
+  </header>
+
+  <main>
+    <section class="grid cards">
+      <article class="card">
+        <h2>Estado general</h2>
+        <div class="status-row"><span>Bot</span><strong id="bot-status">...</strong></div>
+        <div class="status-row"><span>Guardian</span><strong id="guardian-status">...</strong></div>
+        <div class="kv"><span>Ultima ejecucion</span><b id="last-execution">...</b></div>
+        <div class="kv"><span>Ultimo snapshot</span><b id="last-snapshot">...</b></div>
+        <div class="kv"><span>Ultimo healthcheck</span><b id="last-healthcheck">...</b></div>
+        <div class="kv"><span>Ultimo preflight</span><b id="last-preflight">...</b></div>
+      </article>
+
+      <article class="card">
+        <h2>Trading</h2>
+        <div class="metric"><span>Capital actual</span><strong id="capital-current">...</strong></div>
+        <div class="metric"><span>PnL total</span><strong id="pnl-total">...</strong></div>
+        <div class="metric"><span>Win Rate</span><strong id="win-rate">...</strong></div>
+        <div class="metric"><span>Profit Factor</span><strong id="profit-factor">...</strong></div>
+        <div class="metric"><span>Trades abiertos</span><strong id="open-trades">...</strong></div>
+        <div class="metric"><span>Trades cerrados</span><strong id="closed-trades">...</strong></div>
+        <div class="metric"><span>Long Win Rate</span><strong id="long-win-rate">...</strong></div>
+        <div class="metric"><span>Short Win Rate</span><strong id="short-win-rate">...</strong></div>
+      </article>
+
+      <article class="card">
+        <h2>Estado del sistema</h2>
+        <div class="kv"><span>Healthcheck</span><b id="healthcheck">...</b></div>
+        <div class="kv"><span>Observability</span><b id="observability">...</b></div>
+        <div class="kv"><span>JSON corruptos</span><b id="json-corrupt">...</b></div>
+        <div class="kv"><span>State Alignment</span><b id="state-alignment">...</b></div>
+        <div class="last-error"><span>Ultimo Error</span><pre id="last-error">...</pre></div>
+      </article>
+    </section>
+
+    <section class="panel">
+      <h2>Ultimos trades</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Hora</th>
+              <th>Simbolo</th>
+              <th>LONG / SHORT</th>
+              <th>Resultado</th>
+              <th>PnL</th>
+              <th>Exit Reason</th>
+            </tr>
+          </thead>
+          <tbody id="trades-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Ultimos snapshots</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Hora</th>
+              <th>Market Regime</th>
+              <th>Candidatos</th>
+              <th>Accepted</th>
+              <th>Rejected</th>
+              <th>Skipped</th>
+            </tr>
+          </thead>
+          <tbody id="snapshots-body"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

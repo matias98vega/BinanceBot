@@ -1,0 +1,12 @@
+[Unit]
+Description=Run BinanceBot every 2 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=2min
+AccuracySec=15s
+Persistent=false
+Unit=binancebot.service
+
+[Install]
+WantedBy=timers.target

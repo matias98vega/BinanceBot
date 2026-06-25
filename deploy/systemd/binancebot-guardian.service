@@ -1,0 +1,17 @@
+[Unit]
+Description=BinanceBot SL guardian
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=binancebot
+Group=binancebot
+WorkingDirectory=/opt/BinanceBot
+Environment=BOT_DIR=/opt/BinanceBot
+Environment=PYTHONIOENCODING=utf-8
+ExecStart=/opt/BinanceBot/.venv/bin/python /opt/BinanceBot/trading/sl_guardian.py
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target

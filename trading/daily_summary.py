@@ -1,116 +1,143 @@
 #!/usr/bin/env python3
 """
-Resumen diario del bot de trading. Corre via cron a medianoche UTC.
+Resumen diario de trading — corre a las 00:00 UTC via cron.
+Cada sección separada por \n\n porque Jarvis colapsa \n simple a espacio.
 """
-import json, os, urllib.request, urllib.parse, hmac, hashlib, time, math
+import sys, os, time
+sys.path.insert(0, os.path.dirname(__file__))
+import utils, config
 
-STATE_FILE = '/root/.openclaw/workspace/trading/state.json'
-TRADES_LOG = '/root/.openclaw/workspace/trading/trades_log.txt'
-# Credenciales desde .env (nunca hardcodear en el codigo)
-def _load_env():
-    env_path = os.path.join(os.path.dirname(__file__), '.env')
-    env = {}
+
+def uy_time(utc_str):
     try:
-        with open(env_path) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith('#') and '=' in line:
-                    k, v = line.split('=', 1)
-                    env[k.strip()] = v.strip()
-    except FileNotFoundError:
-        pass
-    return env
-_env = _load_env()
-TOOLS_KEY  = _env.get('BINANCE_API_KEY', os.environ.get('BINANCE_API_KEY', ''))
-TOOLS_SEC  = _env.get('BINANCE_API_SECRET', os.environ.get('BINANCE_API_SECRET', ''))
-BASE       = 'https://api.binance.com'
+        parts = utc_str.replace(' UTC', '').split(' ')
+        h, m  = map(int, parts[1].split(':'))
+        return f"{(h - 3) % 24:02d}:{m:02d} UY"
+    except Exception:
+        return utc_str
 
-def signed_request(path, params=None):
-    params = params or {}
-    params['timestamp'] = int(time.time() * 1000)
-    qs = urllib.parse.urlencode(params)
-    sig = hmac.new(TOOLS_SEC.encode(), qs.encode(), hashlib.sha256).hexdigest()
-    url = f"{BASE}{path}?{qs}&signature={sig}"
-    req = urllib.request.Request(url, headers={'X-MBX-APIKEY': TOOLS_KEY})
-    with urllib.request.urlopen(req, timeout=10) as r:
-        return json.loads(r.read())
 
-def get_price(symbol):
-    with urllib.request.urlopen(f"{BASE}/api/v3/ticker/price?symbol={symbol}", timeout=8) as r:
-        return float(json.loads(r.read())['price'])
+def resultado_emoji(resultado):
+    r = resultado.upper()
+    if 'PARCIAL' in r and 'TP' in r: return 'PARCIAL TP 💰'
+    if 'TP'      in r:               return 'TP ✅'
+    if 'SL'      in r:               return 'SL 🔴'
+    if 'STALE'   in r:               return 'STALE ⏱️'
+    if 'MANUAL'  in r:               return 'MANUAL ⏱️'
+    return resultado
+
 
 def main():
-    state = json.load(open(STATE_FILE))
-    today = time.strftime('%Y-%m-%d', time.gmtime(time.time() - 3*3600))
+    state       = utils.load_state()
+    ayer        = time.strftime('%Y-%m-%d', time.gmtime(time.time() - 86400))
+    spot        = utils.get_usdt_spot()
+    fut_total, fut_avail, fut_margin = utils.get_futures_summary()
+    total       = spot + fut_total
+    positions   = state.get('positions', [])
+    daily_pnl   = state.get('daily_pnl_usdt', 0)
+    daily_start = state.get('daily_start_capital', 0)
+    daily_pct   = (daily_pnl / daily_start * 100) if daily_start > 0 else 0
+    total_pnl   = state.get('total_pnl_usdt', 0)
+    trade_count = state.get('trade_count', 0)
+    bot_status  = state.get('status', 'active').upper()
 
-    # Leer trades del dia de hoy en el log
-    trades_hoy = []
+    # uPnL de posiciones abiertas
+    upnl_total = 0.0
+    pos_data   = []
+    for p in positions:
+        sym = p['symbol']
+        try:
+            if p['direction'] == 'short':
+                price = utils.get_fut_price(sym)
+                upnl  = (p['entry_price'] - price) * p['quantity']
+            else:
+                price = utils.get_spot_price(sym)
+                upnl  = (price - p['entry_price']) * p['quantity']
+        except Exception:
+            upnl = 0.0
+        upnl_total += upnl
+        parcial = ' (parcial TP)' if p.get('partial_taken') else ''
+        signo   = '+' if upnl >= 0 else ''
+        pos_data.append(
+            f"{'LONG' if p['direction']=='long' else 'SHORT'} {sym}: "
+            f"{signo}${upnl:.4f}{parcial}"
+        )
+
+    # Trades del día
+    trades_dia = []
     try:
-        with open(TRADES_LOG) as f:
+        with open(config.TRADES_LOG, encoding='utf-8') as f:
             for line in f:
-                if line.startswith('#') or not line.strip():
+                if line.startswith('#') or '|' not in line:
                     continue
-                if today in line:
-                    trades_hoy.append(line.strip())
-    except:
+                if ayer not in line:
+                    continue
+                parts = [p.strip() for p in line.strip().split('|')]
+                if len(parts) >= 6:
+                    try:
+                        trades_dia.append({
+                            'par':       parts[1],
+                            'resultado': parts[2],
+                            'pnl':       float(parts[3].replace('$','').replace('+','')),
+                            'hora':      uy_time(parts[5]),
+                        })
+                    except Exception:
+                        pass
+    except FileNotFoundError:
         pass
 
-    # Balance real de la cuenta
-    account = signed_request('/api/v3/account')
-    balances = {b['asset']: float(b['free']) + float(b['locked'])
-                for b in account['balances']
-                if float(b['free']) + float(b['locked']) > 0.0001}
+    n_tot = len(trades_dia)
+    n_tp  = sum(1 for t in trades_dia if t['pnl'] > 0)
+    n_sl  = sum(1 for t in trades_dia if t['pnl'] < 0)
 
-    total_usdt = balances.get('USDT', 0)
-    for asset, qty in balances.items():
-        if asset == 'USDT': continue
-        try:
-            total_usdt += qty * get_price(f'{asset}USDT')
-        except:
-            pass
+    pnl_emoji = '🟢' if daily_pnl >= 0 else '🔴'
+    sd = '+' if daily_pnl  >= 0 else ''
+    st = '+' if total_pnl  >= 0 else ''
+    su = '+' if upnl_total >= 0 else ''
 
-    # PnL del dia (usar daily_pnl_usdt, no el acumulado historico)
-    pnl_dia   = state.get('daily_pnl_usdt', 0.0)
-    pnl_total = state.get('total_pnl_usdt', 0.0)
-    capital   = state.get('capital_usdt', 0)
-    status    = state.get('status', '?')
-    sym       = state.get('symbol', '-')
+    # ── Armar partes (cada una separada por \n\n al unir) ────────────────────
+    P = []
 
-    # Evaluacion del dia
-    if not trades_hoy:
-        eval_dia = 'Sin trades hoy.'
-    elif pnl_dia >= 0:
-        eval_dia = f'✅ Buen día — PnL del día: +${pnl_dia:.4f} USDT'
-    elif pnl_dia >= -0.10:
-        eval_dia = f'⚠️ Día neutro — pérdida mínima: ${pnl_dia:.4f} USDT'
+    P.append(f"📊 Resumen diario — {ayer}")
+
+    P.append(f"💰 Balance: ${total:.2f} USDT")
+    P.append(f"Spot: ${spot:.2f}   Futures: ${fut_total:.2f}")
+    if positions:
+        P.append(f"uPnL abierto: {su}${upnl_total:.4f}")
+    P.append(f"{pnl_emoji} PnL del dia: {sd}${daily_pnl:.4f} ({sd}{daily_pct:.2f}%)")
+    P.append(f"📈 PnL acumulado: {st}${total_pnl:.4f}")
+    P.append(f"🤖 Bot: {bot_status}   {trade_count} trades totales")
+
+    P.append("─" * 28)
+
+    if trades_dia:
+        P.append(f"Trades cerrados ({n_tot}):")
+        for t in trades_dia:
+            sp = '+' if t['pnl'] >= 0 else ''
+            P.append(f"• {t['par']}   {resultado_emoji(t['resultado'])}   {sp}${t['pnl']:.4f}   {t['hora']}")
     else:
-        eval_dia = f'🔴 Día difícil — {len(trades_hoy)} trades, PnL: ${pnl_dia:.4f} USDT'
+        P.append("Sin trades cerrados.")
 
-    lines = [
-        f"📊 Resumen diario — {today}",
-        f"{'─'*35}",
-        f"💰 Balance real cuenta: ${total_usdt:.4f} USDT",
-        f"📈 PnL hoy: {'+' if pnl_dia>=0 else ''}{pnl_dia:.4f} USDT",
-        f"📉 PnL acumulado total: {'+' if pnl_total>=0 else ''}{pnl_total:.4f} USDT",
-        f"🤖 Estado bot: {status}" + (f" | Par: {sym}" if status == 'in_position' else ""),
-    ]
+    if pos_data:
+        P.append("─" * 28)
+        P.append(f"Posiciones abiertas ({len(positions)}):")
+        for pd in pos_data:
+            P.append(pd)
 
-    if trades_hoy:
-        lines.append(f"{'─'*35}")
-        lines.append(f"Trades cerrados hoy ({len(trades_hoy)}):")
-        for t in trades_hoy:
-            parts = [p.strip() for p in t.split('|')]
-            if len(parts) >= 5:
-                par, res, pnl, cap, hora = parts[1], parts[2], parts[3], parts[4], parts[5] if len(parts) > 5 else ''
-                lines.append(f"  • {par} | {res} | {pnl} | {cap} | {hora}")
-            else:
-                lines.append(f"  • {t}")
+    P.append("─" * 28)
+
+    if n_tot == 0:
+        P.append("Sin actividad. Bot en modo scanning.")
+    elif daily_pnl > 0:
+        P.append(f"Buen dia — {n_tp} TP / {n_sl} SL. Ganancia neta: +${daily_pnl:.4f}.")
+    elif daily_pnl < 0 and n_sl == n_tot:
+        P.append(f"Dia dificil — {n_tot} trades, todos en negativo.")
     else:
-        lines.append("Sin trades cerrados hoy.")
+        P.append(f"{n_tp} TP / {n_sl} SL — dia mixto. PnL neto: {sd}${daily_pnl:.4f}.")
 
-    lines.append(f"{'─'*35}")
-    lines.append(eval_dia)
-    print('\n'.join(lines))
+    msg = "\n\n".join(P)
+    print(msg)
+
 
 if __name__ == '__main__':
     main()

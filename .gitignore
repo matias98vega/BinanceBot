@@ -1,19 +1,37 @@
-# Credenciales y configuración sensible
+# Credenciales y configuracion sensible
 TOOLS.md
 .env
+trading/.env
 *.key
 *.secret
 
-# Estado del bot (datos personales)
+# Estado del bot y datos operativos personales
 trading/state.json
 trading/trades_log.txt
 trading/analysis_log.txt
+trading/trade_analytics.jsonl
+trading/decision_snapshots.jsonl
+trading/.cycle_baseline.json
+trading/reports/
+
+# Entornos y caches Python
+.venv/
+venv/
+env/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs y temporales
+*.log
+*.tmp
+*.bak
+dashboard/*.log
 
 # OpenClaw internos
 .openclaw/
-__pycache__/
-trading/__pycache__/
-*.pyc
 
 # Memoria personal
 MEMORY.md
@@ -23,4 +41,3 @@ IDENTITY.md
 HEARTBEAT.md
 SOUL.md
 AGENTS.md
-trading/.env
