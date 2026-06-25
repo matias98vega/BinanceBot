@@ -139,6 +139,8 @@ chmod +x scripts/*.sh
 ./scripts/post_cycle.sh --save-baseline
 ```
 
+Los scripts en `scripts/` detectan automaticamente la raiz del proyecto desde su propia ubicacion. No dependen de `/opt/BinanceBot`.
+
 ## systemd
 
 Ejemplos incluidos:
@@ -147,6 +149,8 @@ Ejemplos incluidos:
 - `deploy/systemd/binancebot.timer`
 - `deploy/systemd/binancebot-guardian.service`
 - `deploy/systemd/binancebot-guardian.timer`
+
+Las unidades systemd usan `/opt/BinanceBot` como ejemplo. Si el repo esta en otra ruta, editar `WorkingDirectory` y `ExecStart` en los archivos `.service`.
 
 Bot cada 2 minutos:
 

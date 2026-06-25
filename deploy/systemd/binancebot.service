@@ -7,8 +7,8 @@ After=network-online.target
 Type=oneshot
 User=binancebot
 Group=binancebot
+# If the project is not in /opt/BinanceBot, update WorkingDirectory and ExecStart.
 WorkingDirectory=/opt/BinanceBot
-Environment=BOT_DIR=/opt/BinanceBot
 Environment=PYTHONIOENCODING=utf-8
 ExecStart=/opt/BinanceBot/scripts/run_once.sh
 TimeoutStartSec=120

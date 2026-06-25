@@ -56,6 +56,8 @@ Si se copia manualmente, mantener el proyecto en:
 /opt/BinanceBot
 ```
 
+Los scripts en `scripts/` no dependen de esa ruta: detectan automaticamente la raiz del proyecto desde su propia ubicacion. `/opt/BinanceBot` se usa solo como ruta recomendada y en los ejemplos de `systemd`.
+
 ## 5. Crear venv
 
 ```bash
@@ -149,13 +151,16 @@ sudo nano /etc/systemd/system/binancebot.service
 sudo nano /etc/systemd/system/binancebot-guardian.service
 ```
 
-Verificar:
+Si el proyecto no esta en `/opt/BinanceBot`, cambiar estos campos:
 
-- `User=binancebot`,
-- `Group=binancebot`,
 - `WorkingDirectory=/opt/BinanceBot`,
 - `ExecStart=/opt/BinanceBot/scripts/run_once.sh`,
 - `ExecStart=/opt/BinanceBot/.venv/bin/python /opt/BinanceBot/trading/sl_guardian.py`.
+
+Tambien verificar:
+
+- `User=binancebot`,
+- `Group=binancebot`.
 
 Recargar systemd:
 
@@ -177,7 +182,7 @@ sudo systemctl enable --now binancebot-guardian.timer
 - Unidad: `binancebot.service`
 - Timer: `binancebot.timer`
 - Frecuencia: cada 2 minutos.
-- Concurrencia: `RefuseManualStart=no` y el bot mantiene lock propio por `LOCK_FILE`; si ya hay instancia activa, `utils.acquire_lock()` evita doble ejecucion.
+- Concurrencia: si ya hay una instancia activa, `systemd` no lanza otra ejecucion del mismo service; adicionalmente el bot mantiene lock propio por `LOCK_FILE`.
 - Logs: journalctl.
 
 ### Guardian

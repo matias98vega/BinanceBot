@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BOT_DIR="${BOT_DIR:-/opt/BinanceBot}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 sudo apt update
 sudo apt install -y python3 python3-venv python3-pip git ca-certificates
