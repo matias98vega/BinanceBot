@@ -89,6 +89,7 @@ BOT_TOTAL_CAPITAL_LIMIT_USDT=50
 BOT_SPOT_CAPITAL_LIMIT_USDT=50
 BOT_FUTURES_CAPITAL_LIMIT_USDT=25
 BOT_MAX_EXPOSURE_PERCENT=80
+REBALANCE_MIN_WALLET_USDT=0
 # Deprecated; no participa en sizing ni validacion. Eliminar de .env:
 # BOT_MAX_POSITION_PERCENT=20
 ```
@@ -96,6 +97,8 @@ BOT_MAX_EXPOSURE_PERCENT=80
 No versionar `.env`.
 
 `BOT_TOTAL_CAPITAL_LIMIT_USDT` es obligatorio y debe ser mayor a cero. `setup_check.py` queda NOT READY si falta o es invalido. Si el capital real de la subcuenta es menor al limite configurado, no bloquea: usa el capital real disponible y muestra una advertencia suave. `BOT_SPOT_CAPITAL_LIMIT_USDT` y `BOT_FUTURES_CAPITAL_LIMIT_USDT` quedan deprecated temporalmente para compatibilidad con guardrails existentes. El maximo por operacion se calcula con `BOT_MAX_EXPOSURE_PERCENT / max_positions`.
+
+`REBALANCE_MIN_WALLET_USDT` controla una reserva minima opcional por wallet durante rebalanceos. El default recomendado es `0` para permitir mover el 100% del capital a la wallet objetivo; subirlo, por ejemplo a `3`, conserva ese saldo minimo.
 
 ## 7. Ejecutar setup check
 

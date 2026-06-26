@@ -446,7 +446,7 @@ El objetivo es alinear observabilidad historica con posiciones abiertas previas 
 | Orphan cooldown | `bot.py` | `_audit_orphans` | Activo en cooldown no se protege automatico | Evitar reabrir cierre reciente | Recuperacion erronea |
 | Orphan dust | `bot.py` | `_audit_orphans` | Polvo en limpieza se ignora si bajo valor | Evitar ruido por residuos | Posiciones artificiales |
 | Rebalance minimo | `rebalance.py` | `rebalance` | Transferencia menor a minimo no se ejecuta | Evitar movimientos irrelevantes | Fees/ruido operativo |
-| Wallet minima | `rebalance.py` | `rebalance` | No dejar wallet bajo minimo | Mantener operabilidad | Sin USDT para gestion |
+| Wallet minima | `rebalance.py` | `rebalance` | Reserva opcional configurable | Mantener operabilidad si se configura | Sin USDT para gestion |
 
 ## Inventario de parametros configurables
 
@@ -534,7 +534,7 @@ El objetivo es alinear observabilidad historica con posiciones abiertas previas 
 | `RATIO_VERY_BULLISH_SPOT` | `rebalance.py` | `0.80` | Objetivo spot en bullish persistente. |
 | `VERY_BULLISH_DAYS` | `rebalance.py` | `3.0` | Dias para very bullish. |
 | `REBALANCE_MIN_USDT` | `rebalance.py` | `2.0` | Transferencia minima. |
-| `REBALANCE_MIN_WALLET` | `rebalance.py` | `3.0` | Saldo minimo por wallet. |
+| `REBALANCE_MIN_WALLET` | `rebalance.py` | `0.0` | Reserva minima opcional por wallet (`REBALANCE_MIN_WALLET_USDT`). |
 | `ANALYTICS_FILE` | `analytics.py` via `config_loader.py` | `ANALYTICS_FILE` o `trading/trade_analytics.jsonl` | Ruta de eventos estructurados. |
 | `DECISION_SNAPSHOTS_FILE` | `analytics.py` via `config_loader.py` | `DECISION_SNAPSHOTS_FILE` o `trading/decision_snapshots.jsonl` | Ruta de snapshots de decision. |
 | `CSV_FILE` | `analytics.py` via `config_loader.py` | `CSV_FILE` o `trading/reports/trades.csv` | Ruta de export CSV. |

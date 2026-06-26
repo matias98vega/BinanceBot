@@ -41,7 +41,7 @@ RATIO_BULLISH_SPOT         = 0.65   # spot recibe 65% cuando mercado alcista
 RATIO_VERY_BULLISH_SPOT    = 0.80   # spot recibe 80% cuando alcista >3 días consecutivos
 VERY_BULLISH_DAYS          = 3.0    # umbral de días consecutivos alcistas
 REBALANCE_MIN_USDT         = 2.0    # no transferir menos de $2
-REBALANCE_MIN_WALLET       = _env_float('REBALANCE_MIN_WALLET_USDT', 3.0)  # no dejar ninguna wallet con menos de $3 libres
+REBALANCE_MIN_WALLET       = _env_float('REBALANCE_MIN_WALLET_USDT', 0.0)  # reserva minima opcional por wallet
 
 
 def _rebalance_log(message):
@@ -54,6 +54,12 @@ def _rebalance_log(message):
         print(line)
     except Exception:
         pass
+
+
+def _transferable_amount(required_amount, source_free, wallet_min=None):
+    reserve = REBALANCE_MIN_WALLET if wallet_min is None else float(wallet_min or 0)
+    reserve = max(0.0, reserve)
+    return round(min(float(required_amount or 0), float(source_free or 0) - reserve), 2)
 
 
 def _capital_total(state):
@@ -158,7 +164,7 @@ def rebalance(state, btc_ctx=None):
     # Capital libre para operar
     total_free = spot_free + fut_free
 
-    if total_free < REBALANCE_MIN_WALLET * 2:
+    if REBALANCE_MIN_WALLET > 0 and total_free < REBALANCE_MIN_WALLET * 2:
         _rebalance_log(
             f'SKIP: reason=free capital below wallet minimum regime={trend} '
             f'total_free={total_free:.2f} spot_free={spot_free:.2f} fut_free={fut_free:.2f}'
@@ -234,7 +240,7 @@ def rebalance(state, btc_ctx=None):
 
     if diff_fut > 0:
         # Necesitamos más capital en futures (bearish) — mover Spot → Futures
-        amount = round(min(diff_fut, spot_free - REBALANCE_MIN_WALLET), 2)
+        amount = _transferable_amount(diff_fut, spot_free)
         _rebalance_log(f'CHECK: direction=Spot->Futures calculated_amount={amount:.2f}')
         try:
             capped_amount = capital_manager.cap_transfer_amount('FUTURES', fut_actual, amount)
@@ -283,7 +289,7 @@ def rebalance(state, btc_ctx=None):
 
     else:
         # Necesitamos más capital en spot (bullish) — mover Futures → Spot
-        amount = round(min(-diff_fut, fut_free - REBALANCE_MIN_WALLET), 2)
+        amount = _transferable_amount(-diff_fut, fut_free)
         _rebalance_log(f'CHECK: direction=Futures->Spot calculated_amount={amount:.2f}')
         try:
             capped_amount = capital_manager.cap_transfer_amount('SPOT', spot_actual, amount)

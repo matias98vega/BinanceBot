@@ -45,6 +45,7 @@ BOT_TOTAL_CAPITAL_LIMIT_USDT=50
 BOT_SPOT_CAPITAL_LIMIT_USDT=50
 BOT_FUTURES_CAPITAL_LIMIT_USDT=25
 BOT_MAX_EXPOSURE_PERCENT=80
+REBALANCE_MIN_WALLET_USDT=0
 # Deprecated; no participa en sizing ni validacion. Eliminar de .env:
 # BOT_MAX_POSITION_PERCENT=20
 ```
@@ -52,6 +53,8 @@ BOT_MAX_EXPOSURE_PERCENT=80
 No versionar `.env`.
 
 `BOT_TOTAL_CAPITAL_LIMIT_USDT` es la fuente principal de capital autorizado. Si el capital real es menor al limite configurado, el bot usa el capital real disponible y registra una advertencia suave. Las variables Spot/Futures separadas quedan temporalmente como deprecated para guardrails existentes. El maximo por operacion se calcula con `BOT_MAX_EXPOSURE_PERCENT / max_positions`.
+
+`REBALANCE_MIN_WALLET_USDT` controla una reserva minima opcional por wallet durante rebalanceos. El default recomendado es `0` para permitir mover el 100% del capital a la wallet objetivo; subirlo, por ejemplo a `3`, conserva ese saldo minimo.
 
 ## Checks antes de operar
 

@@ -180,7 +180,7 @@ def _wallet_max_positions(target_capital, configured_max, dynamic_value):
     return max(0, min(dynamic_int, configured_max))
 
 
-def _rebalance_wallet_min(default=3.0):
+def _rebalance_wallet_min(default=0.0):
     try:
         import rebalance
         return float(getattr(rebalance, 'REBALANCE_MIN_WALLET', default))
@@ -273,10 +273,10 @@ def _build_rebalance_diagnostics(spot_real, futures_real, spot_target, futures_t
     try:
         import rebalance
         threshold = float(getattr(rebalance, 'REBALANCE_MIN_USDT', 2.0))
-        wallet_min = float(getattr(rebalance, 'REBALANCE_MIN_WALLET', 3.0))
+        wallet_min = float(getattr(rebalance, 'REBALANCE_MIN_WALLET', 0.0))
     except Exception:
         threshold = 2.0
-        wallet_min = 3.0
+        wallet_min = 0.0
 
     spot_real = float(spot_real)
     futures_real = float(futures_real)
