@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only Telegram command worker for BinanceBot."""
+"""Read-only Telegram interactive dashboard for BinanceBot."""
 import argparse
 import json
 import os
@@ -14,15 +14,17 @@ import capital_manager
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DIR = os.path.dirname(BASE_DIR)
 CONFIG = load_config(require_api=False)
 OFFSET_FILE = os.path.join(BASE_DIR, 'telegram_offset.json')
 
 
 def _env():
     load_dotenv()
-    token = os.environ.get('TELEGRAM_BOT_TOKEN', '').strip()
-    chat_id = os.environ.get('TELEGRAM_CHAT_ID', '').strip()
-    return token, chat_id
+    return (
+        os.environ.get('TELEGRAM_BOT_TOKEN', '').strip(),
+        os.environ.get('TELEGRAM_CHAT_ID', '').strip(),
+    )
 
 
 def _read_json(path, default=None):
@@ -62,21 +64,36 @@ def _mtime_iso(path):
     return datetime.fromtimestamp(os.path.getmtime(path), timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
 
 
+def _mtime_short(path):
+    value = _mtime_iso(path)
+    return value.replace('T', ' ') if value else 'N/A'
+
+
 def _is_recent(path, max_age_seconds):
-    if not os.path.exists(path):
-        return False
-    return time.time() - os.path.getmtime(path) <= max_age_seconds
+    return os.path.exists(path) and time.time() - os.path.getmtime(path) <= max_age_seconds
 
 
 def _fmt(value):
-    if value is None or value == '':
-        return 'N/A'
-    return str(value)
+    return 'N/A' if value is None or value == '' else str(value)
 
 
 def _fmt_money(value):
     try:
-        return f'${float(value):.2f}'
+        return f'{float(value):.2f} USDT'
+    except (TypeError, ValueError):
+        return 'N/A'
+
+
+def _fmt_pnl(value):
+    try:
+        return f'{float(value):+.2f} USDT'
+    except (TypeError, ValueError):
+        return 'N/A'
+
+
+def _fmt_price(value):
+    try:
+        return f'{float(value):.4f}'
     except (TypeError, ValueError):
         return 'N/A'
 
@@ -98,6 +115,16 @@ def _save_offset(offset):
         print(f'Telegram offset write failed: {exc}', file=sys.stderr)
 
 
+def _state():
+    data = _read_json(CONFIG.state_file, {}) or {}
+    return data if isinstance(data, dict) else {}
+
+
+def _positions():
+    positions = _state().get('positions')
+    return positions if isinstance(positions, list) else []
+
+
 def _merged_trades():
     records, corrupt = _read_jsonl(CONFIG.analytics_file)
     trades = {}
@@ -111,9 +138,9 @@ def _merged_trades():
 
 def _health_summary():
     state_exists = os.path.exists(CONFIG.state_file)
-    state = _read_json(CONFIG.state_file, None)
+    state = _state()
     state_valid = state_exists and isinstance(state, dict)
-    positions = state.get('positions', []) if state_valid and isinstance(state.get('positions'), list) else []
+    positions = state.get('positions', []) if isinstance(state.get('positions'), list) else []
     trades, corrupt_trades = _merged_trades()
     snapshots, corrupt_snapshots = _read_jsonl(CONFIG.decision_snapshots_file)
     open_trades = [t for t in trades.values() if t.get('status') == 'OPEN']
@@ -145,240 +172,309 @@ def _health_summary():
     return status, warnings, errors
 
 
-def command_status():
-    state = _read_json(CONFIG.state_file, {}) or {}
-    bot_online = _is_recent(CONFIG.decision_snapshots_file, 15 * 60) or _is_recent(CONFIG.analytics_file, 15 * 60)
-    guardian_online = _is_recent(CONFIG.state_file, 15 * 60)
-    health_status, _, _ = _health_summary()
-    return '\n'.join([
-        'STATUS',
-        f'Bot: {"ONLINE" if bot_online else "OFFLINE"}',
-        f'Guardian: {"ONLINE" if guardian_online else "OFFLINE"}',
-        f'Ultima ejecucion: {_fmt(state.get("last_update") or _mtime_iso(CONFIG.state_file))}',
-        f'Ultimo snapshot: {_fmt(_mtime_iso(CONFIG.decision_snapshots_file))}',
-        f'Healthcheck: {health_status}',
-    ])
+def _bot_status():
+    return 'ONLINE' if (_is_recent(CONFIG.decision_snapshots_file, 15 * 60) or _is_recent(CONFIG.analytics_file, 15 * 60)) else 'OFFLINE'
 
 
-def command_health():
-    status, warnings, errors = _health_summary()
-    lines = ['HEALTH', f'Status: {status}']
-    if warnings:
-        lines.append('Warnings:')
-        lines.extend(f'- {warning}' for warning in warnings[:8])
-    if errors:
-        lines.append('Errors:')
-        lines.extend(f'- {error}' for error in errors[:8])
-    if not warnings and not errors:
-        lines.append('Warnings/Errors: none')
-    return '\n'.join(lines)
+def _guardian_status():
+    return 'ONLINE' if _is_recent(CONFIG.state_file, 15 * 60) else 'OFFLINE'
 
 
-def command_capital():
-    state = _read_json(CONFIG.state_file, {}) or {}
-    try:
-        limits = capital_manager.get_limits()
-        lines = [
-            'CAPITAL',
-            f'Capital actual local: {_fmt_money(state.get("daily_start_capital"))}',
-            'Spot real: N/A (no local balance snapshot)',
-            'Spot usable: N/A',
-            f'Spot limit: {_fmt_money(limits.spot_capital_limit_usdt)}',
-            'Futures real: N/A (no local balance snapshot)',
-            'Futures usable: N/A',
-            f'Futures limit: {_fmt_money(limits.futures_capital_limit_usdt)}',
-            f'Max position: {limits.max_position_percent:.2f}%',
-            f'Max exposure: {limits.max_exposure_percent:.2f}%',
+def _status_icon(status):
+    return '🟢' if status in {'ONLINE', 'OK'} else '🟡' if status == 'WARNING' else '🔴'
+
+
+def _version():
+    for name in ('VERSION', 'version.txt'):
+        path = os.path.join(PROJECT_DIR, name)
+        if os.path.exists(path):
+            try:
+                with open(path, encoding='utf-8') as f:
+                    return f.read().strip() or 'N/A'
+            except Exception:
+                return 'N/A'
+    return 'N/A'
+
+
+def _button(text, data):
+    return {'text': text, 'callback_data': data}
+
+
+def _nav_keyboard(page_id):
+    if page_id == 'home':
+        return [[_button('🔄 Actualizar', 'r:home')]]
+    return [[_button('◀ Menú', 'home')], [_button('🔄 Actualizar', f'r:{page_id}')]]
+
+
+class MenuPage:
+    page_id = ''
+
+    def title(self):
+        return ''
+
+    def render(self):
+        return self.title()
+
+    def keyboard(self):
+        return _nav_keyboard(self.page_id)
+
+
+class HomePage(MenuPage):
+    page_id = 'home'
+
+    def render(self):
+        state = _state()
+        health, _, _ = _health_summary()
+        bot = _bot_status()
+        guardian = _guardian_status()
+        return '\n'.join([
+            '🤖 BinanceBot',
+            '',
+            f'{_status_icon(bot)} Bot: {bot}',
+            f'{_status_icon(guardian)} Guardian: {guardian}',
+            '',
+            f'💰 Capital: {_fmt_money(state.get("daily_start_capital"))}',
+            f'📂 Posiciones abiertas: {len(_positions())}',
+            f'📈 PnL hoy: {_fmt_pnl(state.get("daily_pnl_usdt", 0))}',
+            '',
+            f'🕒 Última ejecución: {_mtime_short(CONFIG.state_file)}',
+            f'❤️ Healthcheck: {health}',
+            '',
+            '────────────',
+            '',
+            'Seleccione una opción:',
+        ])
+
+    def keyboard(self):
+        return [
+            [_button('💰 Capital', 'capital'), _button('📂 Posiciones', 'positions')],
+            [_button('📈 Trades', 'trades'), _button('❤️ Salud', 'health')],
+            [_button('📸 Snapshots', 'snapshots'), _button('⚙ Sistema', 'system')],
+            [_button('🔄 Actualizar', 'r:home')],
         ]
-    except Exception as exc:
-        lines = ['CAPITAL', f'Capital limits error: {exc}']
-    return '\n'.join(lines)
 
 
-def command_positions():
-    state = _read_json(CONFIG.state_file, {}) or {}
-    positions = state.get('positions') if isinstance(state.get('positions'), list) else []
-    lines = ['POSITIONS', f'Open positions: {len(positions)}']
-    for pos in positions[:10]:
-        if not isinstance(pos, dict):
-            continue
-        lines.append(
-            f'- {pos.get("symbol")} {str(pos.get("direction", "")).upper()} '
-            f'entry={_fmt_money(pos.get("entry_price"))} qty={_fmt(pos.get("quantity"))} '
-            f'sl={_fmt_money(pos.get("sl"))} tp={_fmt_money(pos.get("tp"))}'
-        )
-    if not positions:
-        lines.append('- none')
-    return '\n'.join(lines)
+class CapitalPage(MenuPage):
+    page_id = 'capital'
+
+    def render(self):
+        try:
+            limits = capital_manager.get_limits()
+            spot_limit = _fmt_money(limits.spot_capital_limit_usdt)
+            fut_limit = _fmt_money(limits.futures_capital_limit_usdt)
+            max_pos = f'{limits.max_position_percent:.2f}%'
+            max_exp = f'{limits.max_exposure_percent:.2f}%'
+        except Exception as exc:
+            spot_limit = fut_limit = max_pos = max_exp = f'Error: {exc}'
+        return '\n'.join([
+            '💰 Capital',
+            '',
+            '💵 Spot',
+            f'Real: N/A',
+            f'Límite: {spot_limit}',
+            'Disponible: N/A',
+            '',
+            '📈 Futures',
+            'Real: N/A',
+            f'Límite: {fut_limit}',
+            'Disponible: N/A',
+            '',
+            '📊 Configuración',
+            f'Máx exposición: {max_exp}',
+            f'Máx posición: {max_pos}',
+            '',
+            '────────────',
+        ])
 
 
-def command_lasttrades():
-    trades, _ = _merged_trades()
-    closed = [t for t in trades.values() if t.get('status') == 'CLOSED']
-    closed.sort(key=lambda t: t.get('exit_time') or '', reverse=True)
-    lines = ['LAST TRADES']
-    for trade in closed[:5]:
-        lines.append(
-            f'- {_fmt(trade.get("exit_time"))} {trade.get("symbol")} {trade.get("side")} '
-            f'PnL={_fmt_money(trade.get("pnl_usdt"))} reason={_fmt(trade.get("exit_reason"))}'
-        )
-    if not closed:
-        lines.append('- none')
-    return '\n'.join(lines)
+class PositionsPage(MenuPage):
+    page_id = 'positions'
+
+    def render(self):
+        positions = _positions()
+        lines = ['📂 Posiciones abiertas', '']
+        if not positions:
+            lines.append('✅ No existen posiciones abiertas.')
+        for pos in positions[:8]:
+            direction = str(pos.get('direction', '')).upper()
+            icon = '🟢' if direction == 'LONG' else '🔴'
+            lines.extend([
+                f'{icon} {pos.get("symbol")} {direction}',
+                f'Entrada: {_fmt_price(pos.get("entry_price"))}',
+                f'Cantidad: {_fmt(pos.get("quantity"))}',
+                f'PnL: {_fmt_money(pos.get("unrealized_pnl"))}',
+                '',
+            ])
+        lines.extend(['', '────────────'])
+        return '\n'.join(lines)
 
 
-def command_snapshots():
-    snapshots, _ = _read_jsonl(CONFIG.decision_snapshots_file)
-    lines = ['SNAPSHOTS']
-    for snapshot in reversed(snapshots[-3:]):
-        candidates = snapshot.get('candidates') or []
-        counts = {'accepted': 0, 'rejected': 0, 'skipped': 0}
-        for candidate in candidates:
-            if isinstance(candidate, dict) and candidate.get('decision') in counts:
-                counts[candidate.get('decision')] += 1
-        lines.append(
-            f'- {_fmt(snapshot.get("timestamp"))} regime={_fmt(snapshot.get("market_regime"))} '
-            f'accepted={counts["accepted"]} rejected={counts["rejected"]} skipped={counts["skipped"]}'
-        )
-    if not snapshots:
-        lines.append('- none')
-    return '\n'.join(lines)
+class HealthPage(MenuPage):
+    page_id = 'health'
 
-
-def command_help():
-    grouped = {}
-    for command, meta in COMMANDS.items():
-        if not meta.get('show_in_help'):
-            continue
-        grouped.setdefault(meta['category'], []).append((command, meta['description']))
-
-    lines = ['AYUDA', 'Comandos disponibles:']
-    for category in ('Estado', 'Trading', 'Sistema'):
-        items = grouped.get(category, [])
-        if not items:
-            continue
+    def render(self):
+        status, warnings, errors = _health_summary()
+        lines = [
+            '❤️ Estado del sistema',
+            '',
+            f'{_status_icon(status)} Healthcheck: {status}',
+            '',
+            'Warnings:',
+        ]
+        lines.extend([f'- {w}' for w in warnings[:6]] or ['- none'])
         lines.append('')
-        lines.append(f'{category}:')
-        for command, description in items:
-            lines.append(f'- {command}: {description}')
-
-    lines.extend([
-        '',
-        'Proximamente:',
-        '- /pnl: resumen PnL',
-        '- /stats: estadisticas avanzadas',
-        '- /logs: ultimos logs',
-        '- /version: version del bot',
-    ])
-    return '\n'.join(lines)
+        lines.append('Errores:')
+        lines.extend([f'- {e}' for e in errors[:6]] or ['- none'])
+        lines.extend(['', f'Última verificación: {_mtime_short(CONFIG.state_file)}', '', '────────────'])
+        return '\n'.join(lines)
 
 
-def _menu_keyboard():
-    rows = []
-    buttons = [
-        ('Estado', '/status'),
-        ('Health', '/health'),
-        ('Capital', '/capital'),
-        ('Posiciones', '/positions'),
-        ('Ultimos trades', '/lasttrades'),
-        ('Snapshots', '/snapshots'),
-        ('Ayuda', '/help'),
-    ]
-    for index in range(0, len(buttons), 2):
-        row = [{'text': text, 'callback_data': command} for text, command in buttons[index:index + 2]]
-        rows.append(row)
-    return {'inline_keyboard': rows}
+class TradesPage(MenuPage):
+    page_id = 'trades'
+
+    def render(self):
+        trades, _ = _merged_trades()
+        closed = [t for t in trades.values() if t.get('status') == 'CLOSED']
+        closed.sort(key=lambda t: t.get('exit_time') or '', reverse=True)
+        lines = ['📈 Últimos trades', '']
+        if not closed:
+            lines.append('Sin trades cerrados.')
+        for trade in closed[:5]:
+            try:
+                pnl = float(trade.get('pnl_usdt') or 0)
+            except (TypeError, ValueError):
+                pnl = 0
+            icon = '🟢' if pnl >= 0 else '🔴'
+            lines.append(
+                f'{icon} {trade.get("symbol")} {trade.get("side")} | '
+                f'{_fmt_pnl(trade.get("pnl_usdt"))} | {_fmt(trade.get("exit_reason"))}'
+            )
+        lines.extend(['', '────────────'])
+        return '\n'.join(lines)
 
 
-def command_menu():
-    return {
-        'text': 'Menu BinanceBot\nElegir una consulta:',
-        'reply_markup': _menu_keyboard(),
-    }
+class SnapshotsPage(MenuPage):
+    page_id = 'snapshots'
+
+    def render(self):
+        snapshots, _ = _read_jsonl(CONFIG.decision_snapshots_file)
+        lines = ['📸 Últimos snapshots', '']
+        if not snapshots:
+            lines.append('Sin snapshots.')
+        for snapshot in reversed(snapshots[-3:]):
+            candidates = snapshot.get('candidates') or []
+            counts = {'accepted': 0, 'rejected': 0, 'skipped': 0}
+            for candidate in candidates:
+                if isinstance(candidate, dict) and candidate.get('decision') in counts:
+                    counts[candidate.get('decision')] += 1
+            regime = str(snapshot.get('market_regime') or 'N/A').capitalize()
+            icon = '🟥' if regime.lower() == 'bearish' else '🟩' if regime.lower() == 'bullish' else '🟨'
+            lines.extend([
+                f'{icon} {regime}',
+                f'🎯 Candidatos: {len(candidates)}',
+                f'✅ Aceptados: {counts["accepted"]}',
+                f'⏭ Omitidos: {counts["skipped"]}',
+                f'🚫 Rechazados: {counts["rejected"]}',
+                '',
+            ])
+        lines.append('────────────')
+        return '\n'.join(lines)
 
 
-COMMANDS = {
-    '/status': {
-        'name': 'status',
-        'description': 'estado general del bot',
-        'category': 'Estado',
-        'handler': command_status,
-        'show_in_help': True,
-        'show_in_menu': True,
-    },
-    '/health': {
-        'name': 'health',
-        'description': 'healthcheck resumido',
-        'category': 'Estado',
-        'handler': command_health,
-        'show_in_help': True,
-        'show_in_menu': True,
-    },
-    '/capital': {
-        'name': 'capital',
-        'description': 'capital y limites configurados',
-        'category': 'Estado',
-        'handler': command_capital,
-        'show_in_help': True,
-        'show_in_menu': True,
-    },
-    '/positions': {
-        'name': 'positions',
-        'description': 'posiciones abiertas locales',
-        'category': 'Estado',
-        'handler': command_positions,
-        'show_in_help': True,
-        'show_in_menu': True,
-    },
-    '/lasttrades': {
-        'name': 'lasttrades',
-        'description': 'ultimos 5 trades cerrados',
-        'category': 'Trading',
-        'handler': command_lasttrades,
-        'show_in_help': True,
-        'show_in_menu': True,
-    },
-    '/snapshots': {
-        'name': 'snapshots',
-        'description': 'ultimos 3 snapshots de decision',
-        'category': 'Trading',
-        'handler': command_snapshots,
-        'show_in_help': True,
-        'show_in_menu': True,
-    },
-    '/help': {
-        'name': 'help',
-        'description': 'ayuda y comandos disponibles',
-        'category': 'Sistema',
-        'handler': command_help,
-        'show_in_help': True,
-        'show_in_menu': True,
-    },
-    '/menu': {
-        'name': 'menu',
-        'description': 'botonera de consultas',
-        'category': 'Sistema',
-        'handler': command_menu,
-        'show_in_help': True,
-        'show_in_menu': True,
-    },
+class SystemPage(MenuPage):
+    page_id = 'system'
+
+    def render(self):
+        bot = _bot_status()
+        guardian = _guardian_status()
+        dashboard = 'ONLINE' if _is_recent(CONFIG.state_file, 15 * 60) else 'N/A'
+        return '\n'.join([
+            '⚙ Sistema',
+            '',
+            f'{_status_icon(bot)} Bot: {bot}',
+            f'{_status_icon(guardian)} Guardian: {guardian}',
+            f'Dashboard: {dashboard}',
+            f'Versión: {_version()}',
+            f'Último deploy: N/A',
+            f'Uptime: N/A',
+            '',
+            '────────────',
+        ])
+
+
+MENU_PAGES = {
+    'home': HomePage(),
+    'capital': CapitalPage(),
+    'positions': PositionsPage(),
+    'health': HealthPage(),
+    'trades': TradesPage(),
+    'snapshots': SnapshotsPage(),
+    'system': SystemPage(),
 }
 
 
-def _normalize_response(response):
-    if isinstance(response, dict):
-        return response
-    return {'text': response}
+COMMAND_ALIASES = {
+    '/menu': 'home',
+    '/status': 'home',
+    '/capital': 'capital',
+    '/positions': 'positions',
+    '/health': 'health',
+    '/lasttrades': 'trades',
+    '/snapshots': 'snapshots',
+}
 
 
-def _dispatch(text):
+def command_help():
+    return '\n'.join([
+        '🤖 BinanceBot',
+        '',
+        'Utilice:',
+        '',
+        '/menu',
+        '',
+        'para abrir el panel interactivo.',
+        '',
+        'También disponibles:',
+        '',
+        '/status',
+        '/health',
+        '/capital',
+        '/positions',
+        '/lasttrades',
+        '/snapshots',
+        '',
+        'Todos los comandos son solo lectura.',
+    ])
+
+
+def _render_page(page_id):
+    page = MENU_PAGES.get(page_id) or MENU_PAGES['home']
+    return {
+        'page_id': page.page_id,
+        'text': page.render(),
+        'reply_markup': {'inline_keyboard': page.keyboard()},
+    }
+
+
+def _dispatch_text(text):
     command = (text or '').strip().split()[0].lower() if text else ''
-    meta = COMMANDS.get(command)
-    if meta:
-        return _normalize_response(meta['handler']())
+    if command == '/help':
+        return {'text': command_help()}
+    page_id = COMMAND_ALIASES.get(command)
+    if page_id:
+        return _render_page(page_id)
     if command:
-        return {'text': 'Comandos disponibles: /help /menu /status /health /capital /positions /lasttrades /snapshots'}
+        return {'text': 'Use /menu para abrir el panel interactivo o /help para ayuda.'}
     return None
+
+
+def _dispatch_callback(data):
+    data = (data or '').strip()
+    if data.startswith('r:'):
+        data = data.split(':', 1)[1] or 'home'
+    if data == 'refresh':
+        data = 'home'
+    return _render_page(data if data in MENU_PAGES else 'home')
 
 
 def _telegram_request(token, method, params=None, timeout=20):
@@ -394,18 +490,39 @@ def _telegram_request(token, method, params=None, timeout=20):
     return json.loads(body) if body else {}
 
 
-def _send_message(token, chat_id, text, reply_markup=None):
+def _send_message(token, chat_id, response):
+    if not response:
+        return
     try:
         params = {
             'chat_id': chat_id,
-            'text': text[:3900],
+            'text': response.get('text', '')[:3900],
             'disable_web_page_preview': 'true',
         }
-        if reply_markup:
-            params['reply_markup'] = json.dumps(reply_markup, separators=(',', ':'))
+        if response.get('reply_markup'):
+            params['reply_markup'] = json.dumps(response['reply_markup'], separators=(',', ':'))
         _telegram_request(token, 'sendMessage', params, timeout=8)
     except Exception as exc:
         print(f'Telegram sendMessage failed: {exc}', file=sys.stderr)
+
+
+def _edit_message(token, chat_id, message_id, response):
+    if not response:
+        return
+    try:
+        params = {
+            'chat_id': chat_id,
+            'message_id': message_id,
+            'text': response.get('text', '')[:3900],
+            'disable_web_page_preview': 'true',
+        }
+        if response.get('reply_markup'):
+            params['reply_markup'] = json.dumps(response['reply_markup'], separators=(',', ':'))
+        _telegram_request(token, 'editMessageText', params, timeout=8)
+    except Exception as exc:
+        message = str(exc)
+        if 'message is not modified' not in message.lower():
+            print(f'Telegram editMessageText failed: {exc}', file=sys.stderr)
 
 
 def _answer_callback_query(token, callback_query_id):
@@ -415,12 +532,6 @@ def _answer_callback_query(token, callback_query_id):
         _telegram_request(token, 'answerCallbackQuery', {'callback_query_id': callback_query_id}, timeout=5)
     except Exception as exc:
         print(f'Telegram answerCallbackQuery failed: {exc}', file=sys.stderr)
-
-
-def _respond(token, chat_id, response):
-    if not response:
-        return
-    _send_message(token, chat_id, response.get('text', ''), response.get('reply_markup'))
 
 
 def _process_updates(token, allowed_chat_id, once=False):
@@ -442,16 +553,17 @@ def _process_updates(token, allowed_chat_id, once=False):
     for update in payload.get('result', []):
         update_id = int(update.get('update_id', 0))
         max_update_id = max(max_update_id, update_id)
-        if update.get('callback_query'):
-            callback = update.get('callback_query') or {}
+
+        callback = update.get('callback_query')
+        if callback:
             message = callback.get('message') or {}
             chat = message.get('chat') or {}
             chat_id = str(chat.get('id', ''))
             if chat_id != str(allowed_chat_id):
                 continue
             _answer_callback_query(token, callback.get('id'))
-            response = _dispatch(callback.get('data') or '')
-            _respond(token, chat_id, response)
+            response = _dispatch_callback(callback.get('data'))
+            _edit_message(token, chat_id, message.get('message_id'), response)
             continue
 
         message = update.get('message') or update.get('edited_message') or {}
@@ -459,9 +571,8 @@ def _process_updates(token, allowed_chat_id, once=False):
         chat_id = str(chat.get('id', ''))
         if chat_id != str(allowed_chat_id):
             continue
-        text = message.get('text') or ''
-        response = _dispatch(text)
-        _respond(token, chat_id, response)
+        response = _dispatch_text(message.get('text') or '')
+        _send_message(token, chat_id, response)
 
     if max_update_id >= 0:
         _save_offset(max_update_id + 1)
@@ -481,7 +592,7 @@ def run(once=False):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Read-only Telegram commands for BinanceBot.')
+    parser = argparse.ArgumentParser(description='Read-only Telegram dashboard for BinanceBot.')
     parser.add_argument('--once', action='store_true', help='Poll once and exit.')
     args = parser.parse_args()
     return run(once=args.once)
