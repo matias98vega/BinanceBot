@@ -378,7 +378,6 @@ def _build_diagnostics(
         entries_reason = 'Todo habilitado'
 
     if change_4h is not None and abs(change_4h) >= 4:
-        last_warning = f'BTC {change_4h:+.2f}% en 4h'
         if entries_reason == 'Todo habilitado':
             entries_reason = 'BTC movio mas de 4% en 4h'
 
@@ -536,6 +535,15 @@ def build_bot_state(
             )
         except Exception:
             max_longs = None
+    else:
+        try:
+            max_longs = _wallet_max_positions(
+                spot_target,
+                getattr(config, 'MAX_LONG_POSITIONS', 2),
+                min(int(max_longs), int(utils.get_max_long_positions(spot_target if spot_target is not None else 0))),
+            )
+        except Exception:
+            max_longs = _wallet_max_positions(spot_target, getattr(config, 'MAX_LONG_POSITIONS', 2), max_longs)
     if max_shorts is None:
         try:
             max_shorts = _wallet_max_positions(
@@ -545,6 +553,15 @@ def build_bot_state(
             )
         except Exception:
             max_shorts = None
+    else:
+        try:
+            max_shorts = _wallet_max_positions(
+                futures_target,
+                getattr(config, 'MAX_SHORT_POSITIONS', 2),
+                min(int(max_shorts), int(utils.get_max_short_positions(futures_target if futures_target is not None else 0))),
+            )
+        except Exception:
+            max_shorts = _wallet_max_positions(futures_target, getattr(config, 'MAX_SHORT_POSITIONS', 2), max_shorts)
 
     rebalance_info = _build_rebalance_diagnostics(
         spot_real=spot_real,

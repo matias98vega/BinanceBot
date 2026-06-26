@@ -205,15 +205,6 @@ def _config_int(name, default):
     return default
 
 
-def _ui_max_for_target(target_capital, reported_max):
-    try:
-        if target_capital is not None and float(target_capital) <= 0:
-            return 0
-    except (TypeError, ValueError):
-        pass
-    return reported_max
-
-
 def _exposure_metrics():
     snapshot = _bot_state()
     capital = snapshot.get('capital') if isinstance(snapshot.get('capital'), dict) else None
@@ -226,8 +217,8 @@ def _exposure_metrics():
         return {
             'long_count': long_state.get('current', 0),
             'short_count': short_state.get('current', 0),
-            'max_longs': _ui_max_for_target(spot_target, long_state.get('max', 'N/A')),
-            'max_shorts': _ui_max_for_target(futures_target, short_state.get('max', 'N/A')),
+            'max_longs': long_state.get('max', 'N/D'),
+            'max_shorts': short_state.get('max', 'N/D'),
             'total_real': capital.get('total_real'),
             'total_limit': capital.get('total_limit'),
             'total_authorized': capital.get('total_authorized'),
@@ -267,8 +258,8 @@ def _exposure_metrics():
     return {
         'long_count': len(long_positions),
         'short_count': len(short_positions),
-        'max_longs': _ui_max_for_target(spot_total, _max_longs(spot_total)) if spot_total is not None else 'N/A',
-        'max_shorts': _ui_max_for_target(futures_total, _max_shorts(futures_total)) if futures_total is not None else 'N/A',
+        'max_longs': 'N/D',
+        'max_shorts': 'N/D',
         'total_real': None,
         'total_limit': None,
         'total_authorized': None,
@@ -305,7 +296,6 @@ def _max_longs_diagnostic():
     spot_target = capital.get('spot_target')
     input_used = spot_target if spot_target is not None else spot_real
     reported_max = long_state.get('max')
-    ui_result = _ui_max_for_target(spot_target, reported_max)
     try:
         dynamic_result = _max_longs(float(input_used)) if input_used is not None else None
     except Exception as exc:
@@ -316,10 +306,9 @@ def _max_longs_diagnostic():
     print(f'spot_real: {spot_real}')
     print(f'spot_target: {spot_target}')
     print(f'long_max_input_used: {input_used}')
-    print('long_max_function: Telegram UI reads bot_state positions.long.max and forces 0 when spot_target <= 0')
+    print('long_max_function: Telegram reads bot_state positions.long.max without visual override')
     print(f'long_max_fallback_config_result: {dynamic_result}')
     print(f'long_max_current_bot_state: {reported_max}')
-    print(f'long_max_ui_result: {ui_result}')
 
 
 def _merged_trades():
@@ -438,6 +427,22 @@ def _rebalance_label(status):
         'BLOCKED': '\u26d4 Bloqueado',
     }
     return labels.get(str(status or '').upper(), f'\u26aa {status or "UNKNOWN"}')
+
+
+def _compact_waiting_reason(reason):
+    text = str(reason or 'No disponible')
+    match = re.search(r'([0-9]+(?:\.[0-9]+)?)\s*/\s*objetivo\s*([0-9]+(?:\.[0-9]+)?)\s*USDT', text, re.IGNORECASE)
+    if match:
+        return f'{float(match.group(1)):.2f} / {float(match.group(2)):.2f} USDT'
+    return text
+
+
+def _direction_label(direction):
+    return {
+        'SPOT_TO_FUTURES': 'Spot \u2192 Futures',
+        'FUTURES_TO_SPOT': 'Futures \u2192 Spot',
+        'NONE': 'Ninguno',
+    }.get(str(direction or 'NONE'), str(direction or 'NONE'))
 
 
 def _status_icon(status):
@@ -595,12 +600,7 @@ class CapitalPage(MenuPage):
         max_exposure = metrics.get('max_exposure_percent')
         max_position = metrics.get('max_position_percent')
         rebalance = metrics.get('rebalance') or {}
-        direction = str(rebalance.get('direction') or 'NONE')
-        direction_label = {
-            'SPOT_TO_FUTURES': 'Spot -> Futures',
-            'FUTURES_TO_SPOT': 'Futures -> Spot',
-            'NONE': 'Ninguno',
-        }.get(direction, direction)
+        direction_label = _direction_label(rebalance.get('direction'))
         lines = [
             '\U0001F4B0 Capital',
             '',
@@ -687,12 +687,7 @@ class DiagnosticsPage(MenuPage):
     def render(self):
         diagnostics = _diagnostics()
         rebalance = diagnostics.get('rebalance') or {}
-        direction = str(rebalance.get('direction') or 'NONE')
-        direction_label = {
-            'SPOT_TO_FUTURES': 'Spot -> Futures',
-            'FUTURES_TO_SPOT': 'Futures -> Spot',
-            'NONE': 'Ninguno',
-        }.get(direction, direction)
+        direction_label = _direction_label(rebalance.get('direction'))
         return '\n'.join([
             '\U0001FA7A Diagnostico',
             '',
@@ -702,23 +697,22 @@ class DiagnosticsPage(MenuPage):
             '',
             'Longs:',
             _side_label(diagnostics.get('long_entries_status')),
-            diagnostics.get('long_entries_reason'),
+            _compact_waiting_reason(diagnostics.get('long_entries_reason')),
             '',
             'Shorts:',
             _side_label(diagnostics.get('short_entries_status')),
-            diagnostics.get('short_entries_reason'),
+            _compact_waiting_reason(diagnostics.get('short_entries_reason')),
             '',
             'Rebalance:',
             _rebalance_label(diagnostics.get('rebalance_status')),
             direction_label,
-            f'Monto pendiente: {_fmt_money(rebalance.get("amount_pending"))}',
-            diagnostics.get('rebalance_reason'),
+            f'Pendiente: {_fmt_money(rebalance.get("amount_pending"))}',
             '',
             'Proxima accion:',
-            diagnostics.get('next_expected_action'),
+            str(diagnostics.get('next_expected_action') or 'N/D').replace('->', '\u2192'),
             '',
             'Info:',
-            diagnostics.get('last_warning') or 'Ninguna',
+            'Ninguno',
             '',
             'Error:',
             diagnostics.get('last_error'),

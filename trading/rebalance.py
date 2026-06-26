@@ -268,6 +268,7 @@ def rebalance(state, btc_ctx=None):
                 msg = f'🔄 Rebalanceo ({label}): ${amount:.2f} USDT Spot → Futures'
             return True, msg
         except Exception as e:
+            _rebalance_log(f'ERROR: direction=Spot->Futures amount={amount:.2f} error={e}')
             return False, f'Error al transferir Spot→Futures: {e}'
 
     else:
@@ -319,6 +320,7 @@ def rebalance(state, btc_ctx=None):
                 msg = f'🔄 Rebalanceo ({label}): ${amount:.2f} USDT Futures → Spot'
             return True, msg
         except Exception as e:
+            _rebalance_log(f'ERROR: direction=Futures->Spot amount={amount:.2f} error={e}')
             return False, f'Error al transferir Futures→Spot: {e}'
 
 
