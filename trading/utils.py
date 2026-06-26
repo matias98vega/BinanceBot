@@ -2,7 +2,7 @@
 """
 Helpers compartidos: HTTP, firma, alertas, logs, lock.
 """
-import hmac, hashlib, time, urllib.request, urllib.parse, urllib.error, re
+import hmac, hashlib, time, urllib.request, urllib.parse, urllib.error, re, logging
 import json, os, sys, subprocess, socket
 from datetime import datetime, timezone
 
@@ -644,6 +644,18 @@ def get_futures_capital_per_position(state):
     capital = capital_manager.max_margin_per_position(
         usable, max_shorts, limits.max_exposure_percent
     )
+    logging.debug(
+        'POSITION SIZING:\n'
+        'wallet=futures\n'
+        'usable=%.2f\n'
+        'exposure_limit=%.2f%%\n'
+        'slots=%s\n'
+        'margin_per_position=%.2f',
+        usable,
+        limits.max_exposure_percent,
+        max_shorts,
+        capital,
+    )
     return min(capital, available * 0.95)
 
 
@@ -663,6 +675,18 @@ def get_spot_capital_per_position(state, spot_free=None):
     max_longs = get_max_long_positions(usable)
     capital = capital_manager.max_margin_per_position(
         usable, max_longs, limits.max_exposure_percent
+    )
+    logging.debug(
+        'POSITION SIZING:\n'
+        'wallet=spot\n'
+        'usable=%.2f\n'
+        'exposure_limit=%.2f%%\n'
+        'slots=%s\n'
+        'margin_per_position=%.2f',
+        usable,
+        limits.max_exposure_percent,
+        max_longs,
+        capital,
     )
     return min(capital, float(spot_free or 0) * 0.95)
 

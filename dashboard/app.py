@@ -243,7 +243,6 @@ def _metrics_payload():
         'capital_current': state.get('daily_start_capital'),
         'spot_capital_limit_usdt': cap.get('spot_capital_limit_usdt'),
         'futures_capital_limit_usdt': cap.get('futures_capital_limit_usdt'),
-        'max_position_percent': cap.get('max_position_percent'),
         'max_exposure_percent': cap.get('max_exposure_percent'),
         'pnl_total': state.get('total_pnl_usdt'),
         'win_rate': _win_rate(closed),

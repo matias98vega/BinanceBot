@@ -2,7 +2,6 @@
 """Capital limit guardrails for order placement and wallet transfers."""
 import os
 from dataclasses import dataclass
-from typing import Optional
 
 from config_loader import ConfigError, load_dotenv
 
@@ -11,12 +10,10 @@ CAPITAL_ENV_VARS = (
     'BOT_TOTAL_CAPITAL_LIMIT_USDT',
     'BOT_SPOT_CAPITAL_LIMIT_USDT',
     'BOT_FUTURES_CAPITAL_LIMIT_USDT',
-    'BOT_MAX_POSITION_PERCENT',
     'BOT_MAX_EXPOSURE_PERCENT',
 )
 
 DEFAULT_MAX_EXPOSURE_PERCENT = 80.0
-_MAX_POSITION_FROM_DOTENV = False
 
 
 class CapitalLimitError(RuntimeError):
@@ -28,7 +25,6 @@ class CapitalLimits:
     total_capital_limit_usdt: float
     spot_capital_limit_usdt: float
     futures_capital_limit_usdt: float
-    max_position_percent: Optional[float]
     max_exposure_percent: float
     deprecated_split_limits: bool = False
     default_guardrails: bool = False
@@ -51,18 +47,10 @@ def _float_env(name, required=True):
 
 
 def get_limits():
-    global _MAX_POSITION_FROM_DOTENV
-    explicit_max_position = os.environ.get('BOT_MAX_POSITION_PERCENT')
     load_dotenv()
-    if explicit_max_position in (None, '') and os.environ.get('BOT_MAX_POSITION_PERCENT') not in (None, ''):
-        _MAX_POSITION_FROM_DOTENV = True
     total_limit = _float_env('BOT_TOTAL_CAPITAL_LIMIT_USDT', required=False)
     spot_limit = _float_env('BOT_SPOT_CAPITAL_LIMIT_USDT', required=False)
     futures_limit = _float_env('BOT_FUTURES_CAPITAL_LIMIT_USDT', required=False)
-    max_position = (
-        _float_env('BOT_MAX_POSITION_PERCENT', required=False)
-        if explicit_max_position not in (None, '') and not _MAX_POSITION_FROM_DOTENV else None
-    )
     max_exposure = _float_env('BOT_MAX_EXPOSURE_PERCENT', required=False)
 
     invalid_total_limit = total_limit is None or total_limit <= 0
@@ -74,9 +62,6 @@ def get_limits():
     futures_limit = total_limit
     if max_exposure is None:
         max_exposure = DEFAULT_MAX_EXPOSURE_PERCENT
-    if max_position is not None and (max_position <= 0 or max_position > 100):
-        max_position = None
-        default_guardrails = True
     if max_exposure <= 0 or max_exposure > 100:
         max_exposure = DEFAULT_MAX_EXPOSURE_PERCENT
         default_guardrails = True
@@ -85,7 +70,6 @@ def get_limits():
         total_capital_limit_usdt=total_limit,
         spot_capital_limit_usdt=spot_limit,
         futures_capital_limit_usdt=futures_limit,
-        max_position_percent=max_position,
         max_exposure_percent=max_exposure,
         deprecated_split_limits=deprecated_split_limits,
         default_guardrails=default_guardrails,
@@ -101,13 +85,6 @@ def spot_usable_capital(spot_real_usdt, limits=None):
 def futures_usable_capital(futures_real_usdt, limits=None):
     limits = limits or get_limits()
     return min(max(float(futures_real_usdt or 0), 0.0), limits.futures_capital_limit_usdt)
-
-
-def max_position_size(usable_capital, limits=None):
-    limits = limits or get_limits()
-    if limits.max_position_percent is None:
-        return None
-    return max(float(usable_capital or 0), 0.0) * limits.max_position_percent / 100.0
 
 
 def max_margin_per_position(usable_capital, max_positions, max_exposure_percent):
@@ -155,7 +132,6 @@ def open_futures_exposure(state):
 
 def _validation_payload(wallet, real_balance, usable, current_exposure, requested_size, limits, max_positions):
     max_per_position = max_margin_per_position(usable, max_positions, limits.max_exposure_percent)
-    optional_position_guardrail = max_position_size(usable, limits)
     return {
         'wallet': wallet,
         'real_balance': round(float(real_balance or 0), 8),
@@ -165,12 +141,7 @@ def _validation_payload(wallet, real_balance, usable, current_exposure, requeste
         'max_positions': _normalise_max_positions(max_positions),
         'max_position_size': round(max_per_position, 8),
         'max_margin_per_position': round(max_per_position, 8),
-        'optional_position_guardrail': (
-            round(optional_position_guardrail, 8)
-            if optional_position_guardrail is not None else None
-        ),
         'max_exposure': round(max_exposure(usable, limits), 8),
-        'max_position_percent': limits.max_position_percent,
         'max_exposure_percent': limits.max_exposure_percent,
     }
 
@@ -249,13 +220,11 @@ def snapshot(spot_real_usdt=None, futures_real_usdt=None):
         'deprecated_split_limits': limits.deprecated_split_limits,
         'default_guardrails': limits.default_guardrails,
         'invalid_total_limit': limits.invalid_total_limit,
-        'max_position_percent': limits.max_position_percent,
+        'max_position_percent': None,
         'max_exposure_percent': limits.max_exposure_percent,
         'spot_max_position': max_margin_per_position(spot_usable, 1, limits.max_exposure_percent),
-        'spot_optional_position_guardrail': max_position_size(spot_usable, limits),
         'spot_max_exposure': max_exposure(spot_usable, limits),
         'futures_max_position': max_margin_per_position(futures_usable, 1, limits.max_exposure_percent),
-        'futures_optional_position_guardrail': max_position_size(futures_usable, limits),
         'futures_max_exposure': max_exposure(futures_usable, limits),
     }
 

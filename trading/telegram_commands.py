@@ -236,7 +236,7 @@ def _exposure_metrics():
             'note': capital.get('note'),
             'rebalance': snapshot.get('rebalance') if isinstance(snapshot.get('rebalance'), dict) else {},
             'max_exposure_percent': capital.get('max_exposure_percent'),
-            'max_position_percent': capital.get('max_position_percent'),
+            'max_position_percent': None,
         }
     positions = _positions()
     try:
@@ -279,7 +279,7 @@ def _exposure_metrics():
         'note': None,
         'rebalance': {},
         'max_exposure_percent': _env_number('BOT_MAX_EXPOSURE_PERCENT'),
-        'max_position_percent': _env_number('BOT_MAX_POSITION_PERCENT'),
+        'max_position_percent': None,
     }
 
 
