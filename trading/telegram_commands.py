@@ -205,6 +205,15 @@ def _config_int(name, default):
     return default
 
 
+def _ui_max_for_target(target_capital, reported_max):
+    try:
+        if target_capital is not None and float(target_capital) <= 0:
+            return 0
+    except (TypeError, ValueError):
+        pass
+    return reported_max
+
+
 def _exposure_metrics():
     snapshot = _bot_state()
     capital = snapshot.get('capital') if isinstance(snapshot.get('capital'), dict) else None
@@ -212,22 +221,24 @@ def _exposure_metrics():
     if capital and positions_state:
         long_state = positions_state.get('long') or {}
         short_state = positions_state.get('short') or {}
+        spot_target = capital.get('spot_target')
+        futures_target = capital.get('futures_target')
         return {
             'long_count': long_state.get('current', 0),
             'short_count': short_state.get('current', 0),
-            'max_longs': long_state.get('max', 'N/A'),
-            'max_shorts': short_state.get('max', 'N/A'),
+            'max_longs': _ui_max_for_target(spot_target, long_state.get('max', 'N/A')),
+            'max_shorts': _ui_max_for_target(futures_target, short_state.get('max', 'N/A')),
             'total_real': capital.get('total_real'),
             'total_limit': capital.get('total_limit'),
             'total_authorized': capital.get('total_authorized'),
             'spot_real': capital.get('spot_real'),
-            'spot_target': capital.get('spot_target'),
+            'spot_target': spot_target,
             'spot_used': capital.get('spot_used'),
-            'spot_total': capital.get('spot_target'),
+            'spot_total': spot_target,
             'futures_real': capital.get('futures_real'),
-            'futures_target': capital.get('futures_target'),
+            'futures_target': futures_target,
             'futures_used': capital.get('futures_used'),
-            'futures_total': capital.get('futures_target'),
+            'futures_total': futures_target,
             'warning': capital.get('warning'),
             'max_exposure_percent': _env_number('BOT_MAX_EXPOSURE_PERCENT'),
             'max_position_percent': _env_number('BOT_MAX_POSITION_PERCENT'),
@@ -254,8 +265,8 @@ def _exposure_metrics():
     return {
         'long_count': len(long_positions),
         'short_count': len(short_positions),
-        'max_longs': _max_longs(spot_total) if spot_total is not None else 'N/A',
-        'max_shorts': _max_shorts(futures_total) if futures_total is not None else 'N/A',
+        'max_longs': _ui_max_for_target(spot_total, _max_longs(spot_total)) if spot_total is not None else 'N/A',
+        'max_shorts': _ui_max_for_target(futures_total, _max_shorts(futures_total)) if futures_total is not None else 'N/A',
         'total_real': None,
         'total_limit': None,
         'total_authorized': None,
@@ -279,6 +290,32 @@ def _env_number(name):
         return float(os.environ.get(name, ''))
     except ValueError:
         return None
+
+
+def _max_longs_diagnostic():
+    snapshot = _bot_state()
+    capital = snapshot.get('capital') if isinstance(snapshot.get('capital'), dict) else {}
+    positions = snapshot.get('positions') if isinstance(snapshot.get('positions'), dict) else {}
+    long_state = positions.get('long') if isinstance(positions.get('long'), dict) else {}
+    spot_real = capital.get('spot_real')
+    spot_target = capital.get('spot_target')
+    input_used = spot_target if spot_target is not None else spot_real
+    reported_max = long_state.get('max')
+    ui_result = _ui_max_for_target(spot_target, reported_max)
+    try:
+        dynamic_result = _max_longs(float(input_used)) if input_used is not None else None
+    except Exception as exc:
+        dynamic_result = f'ERROR: {exc}'
+    print('MAX LONGS DIAGNOSTIC')
+    print(f'total_limit: {capital.get("total_limit")}')
+    print(f'total_authorized: {capital.get("total_authorized")}')
+    print(f'spot_real: {spot_real}')
+    print(f'spot_target: {spot_target}')
+    print(f'long_max_input_used: {input_used}')
+    print('long_max_function: Telegram UI reads bot_state positions.long.max and forces 0 when spot_target <= 0')
+    print(f'long_max_fallback_config_result: {dynamic_result}')
+    print(f'long_max_current_bot_state: {reported_max}')
+    print(f'long_max_ui_result: {ui_result}')
 
 
 def _merged_trades():
@@ -342,6 +379,39 @@ def _dashboard_status():
 
 def _telegram_service_status():
     return bot_state_module.get_system_statuses().get('telegram', 'UNKNOWN')
+
+
+def _diagnostics():
+    snapshot = _bot_state()
+    diagnostics = snapshot.get('diagnostics') if isinstance(snapshot.get('diagnostics'), dict) else {}
+    return {
+        'entries_allowed': diagnostics.get('entries_allowed'),
+        'entries_reason': diagnostics.get('entries_reason') or 'No disponible',
+        'rebalance_status': diagnostics.get('rebalance_status') or 'UNKNOWN',
+        'rebalance_reason': diagnostics.get('rebalance_reason') or 'No disponible',
+        'next_expected_action': diagnostics.get('next_expected_action') or 'No disponible',
+        'last_warning': diagnostics.get('last_warning') or 'Ninguno',
+        'last_error': diagnostics.get('last_error') or 'Ninguno',
+    }
+
+
+def _entries_label(allowed):
+    if allowed is True:
+        return '\u2705 Habilitadas'
+    if allowed is False:
+        return '\u274c Bloqueadas'
+    return '\u26aa No disponible'
+
+
+def _rebalance_label(status):
+    labels = {
+        'PENDING': '\u23f3 Pendiente',
+        'NOT_REQUIRED': '\u2705 No requerido',
+        'IN_PROGRESS': '\U0001F504 En progreso',
+        'DONE': '\u2705 Completado',
+        'BLOCKED': '\u26d4 Bloqueado',
+    }
+    return labels.get(str(status or '').upper(), f'\u26aa {status or "UNKNOWN"}')
 
 
 def _status_icon(status):
@@ -469,27 +539,24 @@ class HomePage(MenuPage):
             f'\u2764\ufe0f Healthcheck: {health}',
             '',
             f'\U0001F4C8 Longs: {metrics["long_count"]}/{metrics["max_longs"]}',
-            f'\U0001F4B5 Spot real: {_fmt_money(metrics["spot_real"])}',
-            f'\U0001F3AF Spot target: {_fmt_money(metrics["spot_target"])}',
+            f'\U0001F4B5 Spot: {_fmt_money(metrics["spot_real"])}',
             '',
             f'\U0001F4C9 Shorts: {metrics["short_count"]}/{metrics["max_shorts"]}',
-            f'\U0001F4B5 Futures real: {_fmt_money(metrics["futures_real"])}',
-            f'\U0001F3AF Futures target: {_fmt_money(metrics["futures_target"])}',
+            f'\U0001F4B5 Futures: {_fmt_money(metrics["futures_real"])}',
             '',
             f'\U0001F4CA PnL hoy: {_fmt_pnl(pnl.get("today", state.get("daily_pnl_usdt", 0)))}',
             '',
             '\U0001F552 Ultima ejecucion',
             _fmt_uy(system.get('last_execution')) if system.get('last_execution') else _mtime_uy(CONFIG.state_file),
         ]
-        if metrics.get('warning'):
-            lines.extend(['', '\u26a0\ufe0f Capital real menor al limite configurado.'])
         return '\n'.join(lines)
 
     def keyboard(self):
         return [
             [_button('\U0001F4B0 Capital', 'capital'), _button('\U0001F4C2 Posiciones', 'positions')],
             [_button('\U0001F4C8 Trades', 'trades'), _button('\u2764\ufe0f Salud', 'health')],
-            [_button('\U0001F4F8 Snapshots', 'snapshots'), _button('\u2699 Sistema', 'system')],
+            [_button('\U0001FA7A Diagnostico', 'diagnostics'), _button('\U0001F4F8 Snapshots', 'snapshots')],
+            [_button('\u2699 Sistema', 'system')],
             [_button('\U0001F504 Actualizar', 'r:home')],
         ]
 
@@ -501,7 +568,7 @@ class CapitalPage(MenuPage):
         metrics = _exposure_metrics()
         max_exposure = metrics.get('max_exposure_percent')
         max_position = metrics.get('max_position_percent')
-        return '\n'.join([
+        lines = [
             '\U0001F4B0 Capital',
             '',
             f'Total real: {_fmt_money(metrics["total_real"])}',
@@ -517,12 +584,18 @@ class CapitalPage(MenuPage):
             f'Futures real: {_fmt_money(metrics["futures_real"])}',
             f'Futures target: {_fmt_money(metrics["futures_target"])}',
             f'Futures used: {_fmt_money(metrics["futures_used"])}',
-            f'Warning: {metrics["warning"] or "N/A"}',
-            '',
-            '\u2699\ufe0f Riesgo',
-            f'Max exposicion: {max_exposure:.2f}%' if max_exposure is not None else 'Max exposicion: N/A',
-            f'Max por operacion: {max_position:.2f}%' if max_position is not None else 'Max por operacion: N/A',
-        ])
+        ]
+        if metrics.get('warning'):
+            lines.extend(['', 'Info: capital real menor al limite configurado; usando capital disponible.'])
+        risk_lines = []
+        if max_exposure is not None:
+            risk_lines.append(f'Max exposicion: {max_exposure:.2f}%')
+        if max_position is not None:
+            risk_lines.append(f'Max por operacion: {max_position:.2f}%')
+        if risk_lines:
+            lines.extend(['', '\u2699\ufe0f Riesgo'])
+            lines.extend(risk_lines)
+        return '\n'.join(lines)
 
 
 class PositionsPage(MenuPage):
@@ -565,6 +638,35 @@ class HealthPage(MenuPage):
         lines.extend([f'- {e}' for e in errors[:6]] or ['- none'])
         lines.extend(['', f'Última verificación: {_mtime_uy(CONFIG.state_file)}', '', '────────────'])
         return '\n'.join(lines)
+
+
+class DiagnosticsPage(MenuPage):
+    page_id = 'diagnostics'
+
+    def render(self):
+        diagnostics = _diagnostics()
+        return '\n'.join([
+            '\U0001FA7A Diagnostico',
+            '',
+            'Entradas:',
+            _entries_label(diagnostics.get('entries_allowed')),
+            diagnostics.get('entries_reason'),
+            '',
+            'Rebalance:',
+            _rebalance_label(diagnostics.get('rebalance_status')),
+            diagnostics.get('rebalance_reason'),
+            '',
+            'Proxima accion:',
+            diagnostics.get('next_expected_action'),
+            '',
+            'Warning:',
+            diagnostics.get('last_warning'),
+            '',
+            'Error:',
+            diagnostics.get('last_error'),
+            '',
+            '\u2500' * 12,
+        ])
 
 
 class TradesPage(MenuPage):
@@ -649,6 +751,7 @@ MENU_PAGES = {
     'capital': CapitalPage(),
     'positions': PositionsPage(),
     'health': HealthPage(),
+    'diagnostics': DiagnosticsPage(),
     'trades': TradesPage(),
     'snapshots': SnapshotsPage(),
     'system': SystemPage(),
@@ -661,6 +764,7 @@ COMMAND_ALIASES = {
     '/capital': 'capital',
     '/positions': 'positions',
     '/health': 'health',
+    '/diagnostics': 'diagnostics',
     '/lasttrades': 'trades',
     '/snapshots': 'snapshots',
 }
@@ -680,6 +784,7 @@ def command_help():
         '',
         '/status',
         '/health',
+        '/diagnostics',
         '/capital',
         '/positions',
         '/lasttrades',
@@ -830,6 +935,7 @@ def _process_updates(token, allowed_chat_id, once=False):
 def run(once=False):
     if once:
         _env_diagnostic()
+        _max_longs_diagnostic()
     token, chat_id = _env()
     if not token or not chat_id:
         print('Telegram commands inactive: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing')

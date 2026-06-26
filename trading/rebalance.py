@@ -240,6 +240,10 @@ def rebalance(state, btc_ctx=None):
         if amount < REBALANCE_MIN_USDT:
             if trend_flipped and longs_open:
                 # Cambio a bearish pero hay longs viejos: esperar que cierren
+                _rebalance_log(
+                    f'SKIP: reason=trend flipped with active longs count={len(longs_open)} '
+                    f'spot_free={spot_free:.2f} amount={amount:.2f}'
+                )
                 return False, (
                     f'⏳ Tendencia viró a BEARISH — esperando cierre de {len(longs_open)} long(s) ' 
                     f'para liberar capital spot. Rebalanceo progresivo en curso.'
@@ -284,6 +288,10 @@ def rebalance(state, btc_ctx=None):
         if amount < REBALANCE_MIN_USDT:
             if trend_flipped and shorts_open:
                 # Cambio a bullish pero hay shorts viejos: esperar que cierren
+                _rebalance_log(
+                    f'SKIP: reason=trend flipped with active shorts count={len(shorts_open)} '
+                    f'fut_free={fut_free:.2f} amount={amount:.2f}'
+                )
                 return False, (
                     f'⏳ Tendencia viró a BULLISH — esperando cierre de {len(shorts_open)} short(s) '
                     f'para liberar capital futures. Rebalanceo progresivo en curso.'

@@ -180,6 +180,122 @@ def _wallet_max_positions(target_capital, configured_max, dynamic_value):
     return max(0, min(dynamic_int, configured_max))
 
 
+def _diagnostic_rebalance_status(spot_real, futures_real, spot_target, futures_target, total_authorized, warning):
+    if total_authorized is None:
+        return 'BLOCKED', warning or 'Capital autorizado no disponible'
+    if spot_real is None or futures_real is None:
+        return 'BLOCKED', 'Balances reales no disponibles'
+    if spot_target is None or futures_target is None:
+        return 'BLOCKED', 'Targets de capital no disponibles'
+
+    try:
+        import rebalance
+        threshold = float(getattr(rebalance, 'REBALANCE_MIN_USDT', 2.0))
+    except Exception:
+        threshold = 2.0
+
+    spot_diff = abs(float(spot_real) - float(spot_target))
+    futures_diff = abs(float(futures_real) - float(futures_target))
+    if spot_diff <= threshold and futures_diff <= threshold:
+        return 'NOT_REQUIRED', 'Capital ya balanceado'
+    return 'PENDING', 'Esperando rebalance de capital'
+
+
+def _build_diagnostics(
+    state,
+    btc_ctx,
+    spot_real,
+    futures_real,
+    spot_target,
+    futures_target,
+    total_authorized,
+    warning,
+    longs,
+    shorts,
+    max_longs,
+    max_shorts,
+    system_health,
+):
+    entries_allowed = True
+    entries_reason = 'Todo habilitado'
+    last_warning = warning
+    last_error = None
+
+    status = state.get('status')
+    pause_until = int(state.get('pause_until') or 0)
+    now = int(time.time())
+    skip_cycles = int(state.get('skip_next_cycles') or 0)
+    force_mode = btc_ctx.get('force_mode') if isinstance(btc_ctx, dict) else None
+    trend = btc_ctx.get('trend') if isinstance(btc_ctx, dict) else None
+    change_4h = _float_or_none(btc_ctx.get('change_4h')) if isinstance(btc_ctx, dict) else None
+
+    if status == 'paused':
+        entries_allowed = False
+        entries_reason = 'Bot pausado'
+    elif pause_until > now:
+        entries_allowed = False
+        entries_reason = 'Circuit breaker activo'
+    elif skip_cycles > 0:
+        entries_allowed = False
+        entries_reason = 'Cooldown post-SL'
+    elif total_authorized is None or total_authorized <= 0:
+        entries_allowed = False
+        entries_reason = 'Capital insuficiente'
+    elif max_longs == 0 and max_shorts == 0:
+        entries_allowed = False
+        entries_reason = 'Capital asignado insuficiente'
+    elif max_longs is not None and max_shorts is not None and len(longs) >= max_longs and len(shorts) >= max_shorts:
+        entries_allowed = False
+        entries_reason = 'Maximo de posiciones alcanzado'
+    elif force_mode:
+        entries_reason = 'Directional mode'
+    else:
+        entries_reason = 'Todo habilitado'
+
+    if change_4h is not None and abs(change_4h) >= 4:
+        last_warning = f'BTC {change_4h:+.2f}% en 4h'
+        if not entries_allowed and entries_reason == 'Todo habilitado':
+            entries_reason = 'BTC movio mas de 4% en 4h'
+
+    rebalance_status, rebalance_reason = _diagnostic_rebalance_status(
+        spot_real,
+        futures_real,
+        spot_target,
+        futures_target,
+        total_authorized,
+        warning,
+    )
+
+    if system_health == 'ERROR':
+        last_error = 'BotState generado con health ERROR'
+
+    if not entries_allowed:
+        if 'BTC' in entries_reason:
+            next_expected_action = 'Trading pausado por BTC'
+        elif 'posiciones' in entries_reason.lower():
+            next_expected_action = 'Esperando cierre de posicion'
+        else:
+            next_expected_action = entries_reason
+    elif rebalance_status == 'PENDING':
+        next_expected_action = 'Esperando rebalance'
+    elif force_mode == 'short_only' or (trend == 'bearish' and max_shorts and len(shorts) < max_shorts):
+        next_expected_action = 'Esperando señal SHORT'
+    elif force_mode == 'long_only' or (trend == 'bullish' and max_longs and len(longs) < max_longs):
+        next_expected_action = 'Esperando señal LONG'
+    else:
+        next_expected_action = 'Sin acciones pendientes'
+
+    return {
+        'entries_allowed': bool(entries_allowed),
+        'entries_reason': entries_reason,
+        'rebalance_status': rebalance_status,
+        'rebalance_reason': rebalance_reason,
+        'next_expected_action': next_expected_action,
+        'last_warning': last_warning,
+        'last_error': last_error,
+    }
+
+
 def get_total_capital_limit():
     return _env_float('BOT_TOTAL_CAPITAL_LIMIT_USDT')
 
@@ -298,6 +414,22 @@ def build_bot_state(
         except Exception:
             max_shorts = None
 
+    diagnostics = _build_diagnostics(
+        state=state,
+        btc_ctx=btc_ctx,
+        spot_real=spot_real,
+        futures_real=futures_real,
+        spot_target=spot_target,
+        futures_target=futures_target,
+        total_authorized=total_authorized,
+        warning=warning,
+        longs=longs,
+        shorts=shorts,
+        max_longs=max_longs,
+        max_shorts=max_shorts,
+        system_health=system_health,
+    )
+
     last_execution = state.get('last_update') or _now_iso()
     live_system = get_system_statuses()
     if live_system.get('bot') != 'UNKNOWN':
@@ -345,6 +477,7 @@ def build_bot_state(
             'last_snapshot': None,
             'last_healthcheck': None,
         },
+        'diagnostics': diagnostics,
     }
 
 

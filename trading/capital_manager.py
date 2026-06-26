@@ -43,6 +43,8 @@ def _float_env(name, required=True):
     try:
         value = float(raw)
     except ValueError as exc:
+        if not required:
+            return None
         raise CapitalLimitError(f'Invalid numeric value for {name}: {raw}') from exc
     return value
 
@@ -66,14 +68,12 @@ def get_limits():
         max_position = DEFAULT_MAX_POSITION_PERCENT
     if max_exposure is None:
         max_exposure = DEFAULT_MAX_EXPOSURE_PERCENT
-    if not invalid_total_limit and spot_limit <= 0:
-        raise CapitalLimitError('BOT_SPOT_CAPITAL_LIMIT_USDT must be > 0')
-    if not invalid_total_limit and futures_limit <= 0:
-        raise CapitalLimitError('BOT_FUTURES_CAPITAL_LIMIT_USDT must be > 0')
     if max_position <= 0 or max_position > 100:
-        raise CapitalLimitError('BOT_MAX_POSITION_PERCENT must be > 0 and <= 100')
+        max_position = DEFAULT_MAX_POSITION_PERCENT
+        default_guardrails = True
     if max_exposure <= 0 or max_exposure > 100:
-        raise CapitalLimitError('BOT_MAX_EXPOSURE_PERCENT must be > 0 and <= 100')
+        max_exposure = DEFAULT_MAX_EXPOSURE_PERCENT
+        default_guardrails = True
 
     return CapitalLimits(
         total_capital_limit_usdt=total_limit,

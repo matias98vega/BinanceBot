@@ -140,6 +140,7 @@ def _status_payload():
             'last_snapshot': system.get('last_snapshot') or _mtime_iso(CONFIG.decision_snapshots_file),
             'last_healthcheck': system.get('last_healthcheck') or _mtime_iso(CONFIG.state_file),
             'last_preflight': _mtime_iso(CONFIG.cycle_baseline_file),
+            'diagnostics': bot_state.get('diagnostics') or {},
         }
     state = _read_json(CONFIG.state_file, {}) or {}
     return {
@@ -193,6 +194,7 @@ def _metrics_payload():
         capital = bot_state.get('capital') or {}
         positions = bot_state.get('positions') or {}
         pnl = bot_state.get('pnl') or {}
+        diagnostics = bot_state.get('diagnostics') or {}
         trades, corrupt = _merged_trades()
         closed = [t for t in trades.values() if t.get('status') == 'CLOSED']
         open_now = [t for t in trades.values() if t.get('status') == 'OPEN']
@@ -220,6 +222,7 @@ def _metrics_payload():
             'long_win_rate': _win_rate(longs),
             'short_win_rate': _win_rate(shorts),
             'corrupt_trade_lines': corrupt,
+            'diagnostics': diagnostics,
         }
     state = _read_json(CONFIG.state_file, {}) or {}
     positions = state.get('positions') if isinstance(state.get('positions'), list) else []

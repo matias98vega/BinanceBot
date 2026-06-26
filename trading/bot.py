@@ -440,7 +440,7 @@ def _run():
             f'Max pos {cap["max_position_percent"]:.2f}% | Max exposure {cap["max_exposure_percent"]:.2f}%'
         )
     except Exception as e:
-        out(f'Capital limits: ERROR ({e})')
+        out(f'Capital limits: WARNING ({e})')
     out(f'\nðŸ’¼ Longs: {long_count_final}/{max_longs} | Shorts: {short_count_final}/{max_shorts} | Spot: ${spot_used:.2f}/${spot_total:.2f} | Futures: ${short_notional:.2f}/${fut_total:.2f}')
     out(f'ðŸ“Š PnL total: {state["total_pnl_usdt"]:+.4f} USDT | Hoy: {state["daily_pnl_usdt"]:+.4f} USDT')
     _safe_persist_bot_state(
