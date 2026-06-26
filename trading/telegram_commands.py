@@ -225,10 +225,12 @@ def _exposure_metrics():
             'spot_real': capital.get('spot_real'),
             'spot_target': spot_target,
             'spot_used': capital.get('spot_used'),
+            'spot_reserved': capital.get('spot_reserved'),
             'spot_total': spot_target,
             'futures_real': capital.get('futures_real'),
             'futures_target': futures_target,
             'futures_used': capital.get('futures_used'),
+            'futures_reserved': capital.get('futures_reserved'),
             'futures_total': futures_target,
             'warning': capital.get('warning'),
             'note': capital.get('note'),
@@ -266,10 +268,12 @@ def _exposure_metrics():
         'spot_real': None,
         'spot_target': spot_total,
         'spot_used': spot_used,
+        'spot_reserved': None,
         'spot_total': spot_total,
         'futures_real': None,
         'futures_target': futures_total,
         'futures_used': futures_used,
+        'futures_reserved': None,
         'futures_total': futures_total,
         'warning': None,
         'note': None,
@@ -617,12 +621,18 @@ class CapitalPage(MenuPage):
             f'Real: {_fmt_money(metrics["spot_real"])}',
             f'Objetivo: {_fmt_money(metrics["spot_target"])}',
             f'Usado: {_fmt_money(metrics["spot_used"])}',
+        ]
+        if metrics.get('spot_reserved'):
+            lines.append(f'Reserva: {_fmt_money(metrics.get("spot_reserved"))}')
+        lines.extend([
             '',
             'Futures:',
             f'Real: {_fmt_money(metrics["futures_real"])}',
             f'Objetivo: {_fmt_money(metrics["futures_target"])}',
             f'Usado: {_fmt_money(metrics["futures_used"])}',
-        ]
+        ])
+        if metrics.get('futures_reserved'):
+            lines.append(f'Reserva: {_fmt_money(metrics.get("futures_reserved"))}')
         if rebalance:
             lines.extend([
                 '',

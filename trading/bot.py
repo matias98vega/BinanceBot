@@ -441,17 +441,44 @@ def _run():
         )
     except Exception as e:
         out(f'Capital limits: WARNING ({e})')
-    out(f'\nðŸ’¼ Longs: {long_count_final}/{max_longs} | Shorts: {short_count_final}/{max_shorts} | Spot: ${spot_used:.2f}/${spot_total:.2f} | Futures: ${short_notional:.2f}/${fut_total:.2f}')
+    bot_state_payload = None
+    max_longs_console = max_longs
+    max_shorts_console = max_shorts
+    try:
+        bot_state_payload = bot_state.build_bot_state(
+            state=state,
+            btc_ctx=btc_ctx,
+            spot_real=spot_total,
+            futures_real=fut_total,
+            max_longs=max_longs,
+            max_shorts=max_shorts,
+            system_health='OK',
+            bot_status='ONLINE',
+        )
+        position_state = bot_state_payload.get('positions') if isinstance(bot_state_payload.get('positions'), dict) else {}
+        long_state = position_state.get('long') if isinstance(position_state.get('long'), dict) else {}
+        short_state = position_state.get('short') if isinstance(position_state.get('short'), dict) else {}
+        max_longs_console = long_state.get('max', max_longs)
+        max_shorts_console = short_state.get('max', max_shorts)
+    except Exception as e:
+        out(f'BotState build warning: {e}')
+    out(f'\nðŸ’¼ Longs: {long_count_final}/{max_longs_console} | Shorts: {short_count_final}/{max_shorts_console} | Spot: ${spot_used:.2f}/${spot_total:.2f} | Futures: ${short_notional:.2f}/${fut_total:.2f}')
     out(f'ðŸ“Š PnL total: {state["total_pnl_usdt"]:+.4f} USDT | Hoy: {state["daily_pnl_usdt"]:+.4f} USDT')
-    _safe_persist_bot_state(
-        state,
-        btc_ctx=btc_ctx,
-        spot_real=spot_total,
-        futures_real=fut_total,
-        max_longs=max_longs,
-        max_shorts=max_shorts,
-        system_health='OK',
-    )
+    if bot_state_payload is not None:
+        try:
+            bot_state.persist_bot_state(bot_state_payload)
+        except Exception as e:
+            out(f'BotState write warning: {e}')
+    else:
+        _safe_persist_bot_state(
+            state,
+            btc_ctx=btc_ctx,
+            spot_real=spot_total,
+            futures_real=fut_total,
+            max_longs=max_longs,
+            max_shorts=max_shorts,
+            system_health='OK',
+        )
 
     # â”€â”€ Limpieza semanal de polvo â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     _maybe_clean_dust(state)

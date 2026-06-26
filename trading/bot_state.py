@@ -180,6 +180,75 @@ def _wallet_max_positions(target_capital, configured_max, dynamic_value):
     return max(0, min(dynamic_int, configured_max))
 
 
+def _rebalance_wallet_min(default=3.0):
+    try:
+        import rebalance
+        return float(getattr(rebalance, 'REBALANCE_MIN_WALLET', default))
+    except Exception:
+        return float(default)
+
+
+def compute_observable_max_positions(spot_target, futures_target, max_longs=None, max_shorts=None):
+    """Return max position slots for observability using wallet targets as source.
+
+    This is read-only and does not affect trading entry logic.
+    """
+    import config
+    import utils
+
+    try:
+        if max_longs is None:
+            dynamic_longs = utils.get_max_long_positions(spot_target if spot_target is not None else 0)
+        else:
+            dynamic_longs = min(
+                int(max_longs),
+                int(utils.get_max_long_positions(spot_target if spot_target is not None else 0)),
+            )
+        max_longs = _wallet_max_positions(
+            spot_target,
+            getattr(config, 'MAX_LONG_POSITIONS', 2),
+            dynamic_longs,
+        )
+    except Exception:
+        max_longs = _wallet_max_positions(
+            spot_target,
+            getattr(config, 'MAX_LONG_POSITIONS', 2),
+            max_longs,
+        )
+
+    try:
+        if max_shorts is None:
+            dynamic_shorts = utils.get_max_short_positions(futures_target if futures_target is not None else 0)
+        else:
+            dynamic_shorts = min(
+                int(max_shorts),
+                int(utils.get_max_short_positions(futures_target if futures_target is not None else 0)),
+            )
+        max_shorts = _wallet_max_positions(
+            futures_target,
+            getattr(config, 'MAX_SHORT_POSITIONS', 2),
+            dynamic_shorts,
+        )
+    except Exception:
+        max_shorts = _wallet_max_positions(
+            futures_target,
+            getattr(config, 'MAX_SHORT_POSITIONS', 2),
+            max_shorts,
+        )
+
+    return max_longs, max_shorts
+
+
+def _reserved_wallet_amount(real_amount, target_amount, wallet_min):
+    real = _float_or_none(real_amount)
+    target = _float_or_none(target_amount)
+    if real is None or target is None:
+        return 0.0
+    if target <= 0 and 0 < real <= wallet_min:
+        return real
+    return 0.0
+
+
 def _build_rebalance_diagnostics(spot_real, futures_real, spot_target, futures_target, spot_used, futures_used, total_authorized, capital_note):
     payload = {
         'status': 'UNKNOWN',
@@ -228,7 +297,7 @@ def _build_rebalance_diagnostics(spot_real, futures_real, spot_target, futures_t
                 'status': 'NOT_REQUIRED',
                 'direction': 'NONE',
                 'amount_pending': 0.0,
-                'reason': 'Capital alineado respetando minimo de wallet',
+                'reason': 'Capital alineado respetando reserva minima de Spot',
             })
             return payload
         status = 'PENDING'
@@ -250,7 +319,7 @@ def _build_rebalance_diagnostics(spot_real, futures_real, spot_target, futures_t
                 'status': 'NOT_REQUIRED',
                 'direction': 'NONE',
                 'amount_pending': 0.0,
-                'reason': 'Capital alineado respetando minimo de wallet',
+                'reason': 'Capital alineado respetando reserva minima de Futures',
             })
             return payload
         status = 'PENDING'
@@ -272,7 +341,7 @@ def _build_rebalance_diagnostics(spot_real, futures_real, spot_target, futures_t
             'status': 'NOT_REQUIRED',
             'direction': 'NONE',
             'amount_pending': 0.0,
-            'reason': 'Capital alineado respetando minimo de wallet',
+            'reason': 'Capital alineado respetando reserva minima de wallet',
         })
         return payload
 
@@ -554,42 +623,12 @@ def build_bot_state(
     if spot_target is None or futures_target is None:
         spot_target, futures_target = calculate_targets(total_authorized, btc_ctx, config, rebalance)
 
-    if max_longs is None:
-        try:
-            max_longs = _wallet_max_positions(
-                spot_target,
-                getattr(config, 'MAX_LONG_POSITIONS', 2),
-                utils.get_max_long_positions(spot_target if spot_target is not None else (spot_real or 0)),
-            )
-        except Exception:
-            max_longs = None
-    else:
-        try:
-            max_longs = _wallet_max_positions(
-                spot_target,
-                getattr(config, 'MAX_LONG_POSITIONS', 2),
-                min(int(max_longs), int(utils.get_max_long_positions(spot_target if spot_target is not None else 0))),
-            )
-        except Exception:
-            max_longs = _wallet_max_positions(spot_target, getattr(config, 'MAX_LONG_POSITIONS', 2), max_longs)
-    if max_shorts is None:
-        try:
-            max_shorts = _wallet_max_positions(
-                futures_target,
-                getattr(config, 'MAX_SHORT_POSITIONS', 2),
-                utils.get_max_short_positions(futures_target if futures_target is not None else (futures_real or 0)),
-            )
-        except Exception:
-            max_shorts = None
-    else:
-        try:
-            max_shorts = _wallet_max_positions(
-                futures_target,
-                getattr(config, 'MAX_SHORT_POSITIONS', 2),
-                min(int(max_shorts), int(utils.get_max_short_positions(futures_target if futures_target is not None else 0))),
-            )
-        except Exception:
-            max_shorts = _wallet_max_positions(futures_target, getattr(config, 'MAX_SHORT_POSITIONS', 2), max_shorts)
+    max_longs, max_shorts = compute_observable_max_positions(
+        spot_target=spot_target,
+        futures_target=futures_target,
+        max_longs=max_longs,
+        max_shorts=max_shorts,
+    )
 
     rebalance_info = _build_rebalance_diagnostics(
         spot_real=spot_real,
@@ -619,6 +658,10 @@ def build_bot_state(
         system_health=system_health,
     )
 
+    wallet_min = _rebalance_wallet_min()
+    spot_reserved = _reserved_wallet_amount(spot_real, spot_target, wallet_min)
+    futures_reserved = _reserved_wallet_amount(futures_real, futures_target, wallet_min)
+
     last_execution = state.get('last_update') or _now_iso()
     live_system = get_system_statuses()
     if live_system.get('bot') != 'UNKNOWN':
@@ -645,6 +688,8 @@ def build_bot_state(
             'futures_target': _round_or_none(futures_target, 4),
             'spot_used': _round_or_none(spot_used, 4),
             'futures_used': _round_or_none(futures_used, 4),
+            'spot_reserved': _round_or_none(spot_reserved, 4),
+            'futures_reserved': _round_or_none(futures_reserved, 4),
             'spot_available_for_bot': _round_or_none(None if spot_target is None else max(0.0, spot_target - spot_used), 4),
             'futures_available_for_bot': _round_or_none(None if futures_target is None else max(0.0, futures_target - futures_used), 4),
             'warning': warning,

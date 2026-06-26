@@ -23,6 +23,16 @@ import sys, os, logging
 sys.path.insert(0, os.path.dirname(__file__))
 import utils, config, market, capital_manager
 
+
+def _env_float(name, default):
+    raw = os.environ.get(name)
+    if raw in (None, ''):
+        return float(default)
+    try:
+        return float(raw)
+    except ValueError:
+        return float(default)
+
 # ── Parámetros ────────────────────────────────────────────────────────────────
 RATIO_BEARISH_FUTURES      = 0.65   # futures recibe 65% cuando mercado bajista
 RATIO_VERY_BEARISH_FUTURES = 0.80   # futures recibe 80% cuando bajista >3 días consecutivos
@@ -31,7 +41,7 @@ RATIO_BULLISH_SPOT         = 0.65   # spot recibe 65% cuando mercado alcista
 RATIO_VERY_BULLISH_SPOT    = 0.80   # spot recibe 80% cuando alcista >3 días consecutivos
 VERY_BULLISH_DAYS          = 3.0    # umbral de días consecutivos alcistas
 REBALANCE_MIN_USDT         = 2.0    # no transferir menos de $2
-REBALANCE_MIN_WALLET       = 3.0    # no dejar ninguna wallet con menos de $3 libres
+REBALANCE_MIN_WALLET       = _env_float('REBALANCE_MIN_WALLET_USDT', 3.0)  # no dejar ninguna wallet con menos de $3 libres
 
 
 def _rebalance_log(message):
