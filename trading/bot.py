@@ -93,8 +93,8 @@ def _safe_persist_bot_state(state, btc_ctx=None, spot_real=None, futures_real=No
         btc_ctx=btc_ctx,
         spot_real=spot_real,
         futures_real=futures_real,
-        max_longs=None,
-        max_shorts=None,
+        max_longs=max_longs,
+        max_shorts=max_shorts,
         system_health=system_health,
         bot_status='ONLINE' if system_health != 'ERROR' else 'UNKNOWN',
     )
