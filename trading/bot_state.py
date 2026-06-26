@@ -44,7 +44,7 @@ def _env_float(name):
         return None
 
 
-def _systemctl_value(args):
+def _systemctl_value(args, allow_nonzero=False):
     try:
         proc = subprocess.run(
             ['systemctl', *args],
@@ -53,35 +53,118 @@ def _systemctl_value(args):
             timeout=2,
             check=False,
         )
-        if proc.returncode == 0:
+        if proc.returncode == 0 or allow_nonzero:
             return (proc.stdout or '').strip()
     except Exception:
         pass
     return None
 
 
-def _systemd_unit_online(service_name, timer_name=None):
-    service_active = _systemctl_value(['is-active', service_name])
+def _systemctl_available():
+    return _systemctl_value(['--version']) is not None
+
+
+def _unit_load_state(unit_name):
+    return _systemctl_value(['show', unit_name, '--property=LoadState', '--value'], allow_nonzero=True)
+
+
+def _unit_exists(unit_name):
+    load_state = _unit_load_state(unit_name)
+    return load_state not in (None, '', 'not-found')
+
+
+def _unit_active_state(unit_name):
+    return _systemctl_value(['is-active', unit_name], allow_nonzero=True)
+
+
+def _unit_enabled_state(unit_name):
+    return _systemctl_value(['is-enabled', unit_name], allow_nonzero=True)
+
+
+def _timer_has_next_run(timer_name):
+    next_elapse = _systemctl_value(
+        ['show', timer_name, '--property=NextElapseUSecRealtime', '--value'],
+        allow_nonzero=True,
+    )
+    return bool(next_elapse and next_elapse.lower() not in {'n/a', '0'})
+
+
+def _bot_systemd_status():
+    if not _systemctl_available():
+        return 'UNKNOWN'
+    service = 'binancebot.service'
+    timer = 'binancebot.timer'
+    service_exists = _unit_exists(service)
+    timer_exists = _unit_exists(timer)
+    service_active = _unit_active_state(service)
+    timer_active = _unit_active_state(timer)
+    timer_enabled = _unit_enabled_state(timer)
+
+    if service_active == 'active':
+        return 'RUNNING'
+    if service_active == 'failed' or timer_active == 'failed':
+        return 'OFFLINE'
+    if timer_exists and timer_active == 'active' and timer_enabled == 'enabled' and _timer_has_next_run(timer):
+        return 'ONLINE'
+    if timer_exists and timer_active in {'inactive', 'unknown'} and timer_enabled in {'disabled', 'masked'}:
+        return 'PAUSED'
+    if timer_exists and timer_enabled in {'disabled', 'masked'}:
+        return 'PAUSED'
+    if not service_exists and not timer_exists:
+        return 'OFFLINE'
+    return 'OFFLINE'
+
+
+def _timer_service_status(service_name, timer_name=None):
+    if not _systemctl_available():
+        return 'UNKNOWN'
+
+    service_exists = _unit_exists(service_name)
+    service_active = _unit_active_state(service_name)
     if service_active == 'active':
         return 'ONLINE'
+    if service_active == 'failed':
+        return 'OFFLINE'
 
+    timer_exists = False
     if timer_name:
-        timer_active = _systemctl_value(['is-active', timer_name])
-        timer_enabled = _systemctl_value(['is-enabled', timer_name])
-        next_elapse = _systemctl_value(['show', timer_name, '--property=NextElapseUSecRealtime', '--value'])
+        timer_exists = _unit_exists(timer_name)
+        timer_active = _unit_active_state(timer_name)
+        timer_enabled = _unit_enabled_state(timer_name)
         if timer_active == 'active' or timer_enabled == 'enabled':
             return 'ONLINE'
-        if next_elapse and next_elapse.lower() not in {'n/a', '0'}:
-            return 'ONLINE'
-
-    if service_active in {'inactive', 'failed'}:
-        return 'OFFLINE'
-    if timer_name:
-        timer_active = _systemctl_value(['is-active', timer_name])
-        timer_enabled = _systemctl_value(['is-enabled', timer_name])
-        if timer_active in {'inactive', 'failed'} or timer_enabled in {'disabled', 'masked'}:
+        if timer_active == 'failed':
             return 'OFFLINE'
-    return 'UNKNOWN'
+        if timer_exists and timer_enabled in {'disabled', 'masked'}:
+            return 'PAUSED'
+        if timer_exists and timer_active in {'inactive', 'unknown'}:
+            return 'PAUSED'
+
+    if service_exists and service_active in {'inactive', 'unknown'}:
+        return 'OFFLINE'
+    if not service_exists and not timer_exists:
+        return 'OFFLINE'
+    return 'OFFLINE'
+
+
+def _service_status(service_name):
+    if not _systemctl_available():
+        return 'UNKNOWN'
+    if not _unit_exists(service_name):
+        return 'OFFLINE'
+    active = _unit_active_state(service_name)
+    if active == 'active':
+        return 'ONLINE'
+    return 'OFFLINE'
+
+
+def get_system_statuses():
+    return {
+        'bot': _bot_systemd_status(),
+        'guardian': _timer_service_status('binancebot-guardian.service', 'binancebot-guardian.timer'),
+        'dashboard': _service_status('binancebot-dashboard.service'),
+        'telegram': _service_status('binancebot-telegram.service'),
+    }
 
 
 def _wallet_max_positions(target_capital, configured_max, dynamic_value):
@@ -216,10 +299,13 @@ def build_bot_state(
             max_shorts = None
 
     last_execution = state.get('last_update') or _now_iso()
-    if guardian_status == 'UNKNOWN':
-        guardian_status = _systemd_unit_online('binancebot-guardian.service', 'binancebot-guardian.timer')
-    if dashboard_status == 'UNKNOWN':
-        dashboard_status = _systemd_unit_online('binancebot-dashboard.service')
+    live_system = get_system_statuses()
+    if live_system.get('bot') != 'UNKNOWN':
+        bot_status = live_system.get('bot')
+    if live_system.get('guardian') != 'UNKNOWN':
+        guardian_status = live_system.get('guardian')
+    if live_system.get('dashboard') != 'UNKNOWN':
+        dashboard_status = live_system.get('dashboard')
     return {
         'timestamp': _now_iso(),
         'timezone': 'America/Montevideo',

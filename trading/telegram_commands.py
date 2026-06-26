@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 
 from config_loader import ENV_FILES, load_config, load_dotenv
 import capital_manager
+import bot_state as bot_state_module
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -328,21 +329,29 @@ def _health_summary():
 
 
 def _bot_status():
-    system = _bot_state().get('system')
-    if isinstance(system, dict) and system.get('bot'):
-        return system.get('bot')
-    return 'ONLINE' if (_is_recent(CONFIG.decision_snapshots_file, 15 * 60) or _is_recent(CONFIG.analytics_file, 15 * 60)) else 'OFFLINE'
+    return bot_state_module.get_system_statuses().get('bot', 'UNKNOWN')
 
 
 def _guardian_status():
-    system = _bot_state().get('system')
-    if isinstance(system, dict) and system.get('guardian'):
-        return system.get('guardian')
-    return 'ONLINE' if _is_recent(CONFIG.state_file, 15 * 60) else 'OFFLINE'
+    return bot_state_module.get_system_statuses().get('guardian', 'UNKNOWN')
+
+
+def _dashboard_status():
+    return bot_state_module.get_system_statuses().get('dashboard', 'UNKNOWN')
+
+
+def _telegram_service_status():
+    return bot_state_module.get_system_statuses().get('telegram', 'UNKNOWN')
 
 
 def _status_icon(status):
-    return '\U0001F7E2' if status in {'ONLINE', 'OK'} else '\U0001F7E1' if status == 'WARNING' else '\U0001F534'
+    if status in {'ONLINE', 'RUNNING', 'OK'}:
+        return '\U0001F7E2'
+    if status == 'PAUSED':
+        return '\u23f8\ufe0f'
+    if status == 'WARNING':
+        return '\U0001F7E1'
+    return '\U0001F534'
 
 
 def _version():
@@ -613,23 +622,25 @@ class SystemPage(MenuPage):
     def render(self):
         bot = _bot_status()
         guardian = _guardian_status()
-        dashboard = 'ONLINE' if _is_recent(CONFIG.state_file, 15 * 60) else 'N/A'
+        dashboard = _dashboard_status()
+        telegram = _telegram_service_status()
         dashboard_since = _systemd_active_since('binancebot-dashboard.service')
         telegram_since = _systemd_active_since('binancebot-telegram.service')
         return '\n'.join([
-            '⚙ Sistema',
+            '\u2699 Sistema',
             '',
             f'{_status_icon(bot)} Bot: {bot}',
             f'{_status_icon(guardian)} Guardian: {guardian}',
-            f'Dashboard: {dashboard}',
-            f'Versión: {_version()}',
+            f'{_status_icon(dashboard)} Dashboard: {dashboard}',
+            f'{_status_icon(telegram)} Telegram: {telegram}',
+            f'Version: {_version()}',
             f'Commit: {_git_commit()}',
             f'Deploy: {_git_deploy_time()}',
             f'Dashboard desde: {dashboard_since}',
             f'Telegram desde: {telegram_since}',
             f'Servidor uptime: {_server_uptime()}',
             '',
-            '────────────',
+            '\u2500' * 12,
         ])
 
 
