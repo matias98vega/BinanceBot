@@ -227,7 +227,7 @@ def _run():
     rb_ok, rb_msg = rebalance.rebalance(state, btc_ctx)
     if rb_ok:
         out(rb_msg)
-        utils.send_alert(rb_msg)
+        utils.send_alert(utils.format_rebalance_alert(rb_msg))
 
     # â”€â”€ 1. GESTIONAR posiciones activas â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # â”€â”€ 1a. Cierre preventivo por momentum extremo de BTC â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -373,7 +373,7 @@ def _run():
                 state['positions'].append(pos)
                 _safe_log_open(pos, best_long, btc_ctx, spot_total_capital)
                 out(msg)
-                utils.send_alert(msg)
+                utils.send_alert(utils.format_trade_open_alert(pos, best_long, btc_ctx.get('trend')))
             else:
                 out(f'âš ï¸ LONG no abierto: {msg}')
                 utils.send_alert(f'âš ï¸ FALLÃ“ apertura LONG {best_long["symbol"]}: {msg}')
@@ -399,7 +399,7 @@ def _run():
                 state['positions'].append(pos)
                 _safe_log_open(pos, best_short, btc_ctx, fut_free)
                 out(msg)
-                utils.send_alert(msg)
+                utils.send_alert(utils.format_trade_open_alert(pos, best_short, btc_ctx.get('trend')))
             else:
                 out(f'âš ï¸ SHORT no abierto: {msg}')
                 utils.send_alert(f'âš ï¸ FALLÃ“ apertura SHORT {best_short["symbol"]}: {msg}')
@@ -524,9 +524,9 @@ def _handle_close(state, pos, action, price_close, pnl, btc_ctx=None):
             f'PnL: {pnl:+.4f} USDT | Acumulado: {state["total_pnl_usdt"]:+.4f} USDT'
         )
     out(msg)
-    utils.send_alert(msg)
-    utils.log_trade(state['trade_count'], sym, direction, label, pnl, capital_now)
     reason = {'closed_tp': 'TP', 'closed_sl': 'SL', 'closed_manual': 'STALE_EXIT'}[action]
+    utils.send_alert(utils.format_trade_close_alert(pos, price_close, reason, pnl))
+    utils.log_trade(state['trade_count'], sym, direction, label, pnl, capital_now)
     _safe_log_close(pos, price_close, reason, pnl)
 
     if action == 'closed_sl':
@@ -582,7 +582,7 @@ def _handle_close(state, pos, action, price_close, pnl, btc_ctx=None):
         rb_ok, rb_msg = rebalance.rebalance(state, btc_ctx)
         if rb_ok:
             out(rb_msg)
-            utils.send_alert(rb_msg)
+            utils.send_alert(utils.format_rebalance_alert(rb_msg))
     except Exception:
         pass  # silencioso si falla, el ciclo principal lo reintenta
 
@@ -703,7 +703,7 @@ def _check_partial_long(pos, state):
             f'PnL parcial: +${pnl_partial:.4f} | SL movido a breakeven ${new_sl:.4f}'
         )
         out(msg)
-        utils.send_alert(msg)
+        utils.send_alert(utils.format_trade_close_alert(pos, price, 'PARTIAL_TP', pnl_partial))
         state['total_pnl_usdt'] = round(state.get('total_pnl_usdt', 0) + pnl_partial, 4)
         state['daily_pnl_usdt'] = round(state.get('daily_pnl_usdt', 0) + pnl_partial, 4)
         try:
@@ -838,7 +838,7 @@ def _check_partial_short(pos, state):
             f'PnL parcial: +${pnl_partial:.4f} | SL movido a breakeven ${new_sl:.4f}'
         )
         out(msg)
-        utils.send_alert(msg)
+        utils.send_alert(utils.format_trade_close_alert(pos, fill, 'PARTIAL_TP', pnl_partial))
         # Registrar PnL parcial en el state y en el log
         state['trade_count']    = state.get('trade_count', 0) + 1
         state['total_pnl_usdt'] = round(state.get('total_pnl_usdt', 0) + pnl_partial, 4)

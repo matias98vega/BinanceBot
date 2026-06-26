@@ -121,14 +121,15 @@ def _record_sent(level, title, message, fingerprint):
 
 def _format_alert(level, title, message):
     icons = {
-        'INFO': 'ℹ️',
-        'WARNING': '⚠️',
-        'ERROR': '🚨',
-        'CRITICAL': '🛑',
+        'INFO': '\u2139\ufe0f',
+        'WARNING': '\u26a0\ufe0f',
+        'ERROR': '\U0001F6A8',
+        'CRITICAL': '\U0001F6D1',
     }
-    heading = title or 'BinanceBot'
-    return f'{icons.get(level, "⚠️")} {heading}\nNivel: {level}\n\n{message}'
-
+    heading = 'BinanceBot'
+    icon = icons.get(level, '\u26a0\ufe0f')
+    body = message if not title or title == 'BinanceBot' else f'{title}\n\n{message}'
+    return f'{icon} {heading}\nNivel: {level}\n\n{body}'
 
 def _send_raw(token, chat_id, text):
     data = urllib.parse.urlencode({
@@ -193,3 +194,4 @@ def main():
 
 if __name__ == '__main__':
     raise SystemExit(main())
+

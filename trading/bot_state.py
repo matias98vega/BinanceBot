@@ -180,13 +180,26 @@ def _wallet_max_positions(target_capital, configured_max, dynamic_value):
     return max(0, min(dynamic_int, configured_max))
 
 
-def _diagnostic_rebalance_status(spot_real, futures_real, spot_target, futures_target, total_authorized, warning):
+def _build_rebalance_diagnostics(spot_real, futures_real, spot_target, futures_target, spot_used, futures_used, total_authorized, capital_note):
+    payload = {
+        'status': 'UNKNOWN',
+        'direction': 'NONE',
+        'amount_pending': None,
+        'reason': 'Datos insuficientes',
+        'spot_real': _round_or_none(spot_real, 4),
+        'spot_target': _round_or_none(spot_target, 4),
+        'futures_real': _round_or_none(futures_real, 4),
+        'futures_target': _round_or_none(futures_target, 4),
+    }
     if total_authorized is None:
-        return 'BLOCKED', warning or 'Capital autorizado no disponible'
+        payload.update({'status': 'BLOCKED', 'reason': capital_note or 'Capital autorizado no disponible'})
+        return payload
     if spot_real is None or futures_real is None:
-        return 'BLOCKED', 'Balances reales no disponibles'
+        payload.update({'status': 'UNKNOWN', 'reason': 'Balances reales no disponibles'})
+        return payload
     if spot_target is None or futures_target is None:
-        return 'BLOCKED', 'Targets de capital no disponibles'
+        payload.update({'status': 'UNKNOWN', 'reason': 'Targets de capital no disponibles'})
+        return payload
 
     try:
         import rebalance
@@ -194,11 +207,54 @@ def _diagnostic_rebalance_status(spot_real, futures_real, spot_target, futures_t
     except Exception:
         threshold = 2.0
 
-    spot_diff = abs(float(spot_real) - float(spot_target))
-    futures_diff = abs(float(futures_real) - float(futures_target))
+    spot_real = float(spot_real)
+    futures_real = float(futures_real)
+    spot_target = float(spot_target)
+    futures_target = float(futures_target)
+    spot_diff = abs(spot_real - spot_target)
+    futures_diff = abs(futures_real - futures_target)
     if spot_diff <= threshold and futures_diff <= threshold:
-        return 'NOT_REQUIRED', 'Capital ya balanceado'
-    return 'PENDING', 'Esperando rebalance de capital'
+        payload.update({'status': 'NOT_REQUIRED', 'direction': 'NONE', 'amount_pending': 0.0, 'reason': 'Capital ya balanceado'})
+        return payload
+
+    spot_free_est = max(0.0, spot_real - float(spot_used or 0))
+    futures_free_est = max(0.0, futures_real - float(futures_used or 0))
+    if spot_real > spot_target and futures_real < futures_target:
+        amount = min(spot_real - spot_target, futures_target - futures_real)
+        status = 'PENDING'
+        reason = 'Esperando rebalance Spot -> Futures'
+        if spot_free_est < min(amount, threshold):
+            status = 'BLOCKED'
+            reason = 'Esperando liberar Spot'
+        payload.update({
+            'status': status,
+            'direction': 'SPOT_TO_FUTURES',
+            'amount_pending': _round_or_none(amount, 4),
+            'reason': reason,
+        })
+        return payload
+    if futures_real > futures_target and spot_real < spot_target:
+        amount = min(futures_real - futures_target, spot_target - spot_real)
+        status = 'PENDING'
+        reason = 'Esperando rebalance Futures -> Spot'
+        if futures_free_est < min(amount, threshold):
+            status = 'BLOCKED'
+            reason = 'Esperando liberar Futures'
+        payload.update({
+            'status': status,
+            'direction': 'FUTURES_TO_SPOT',
+            'amount_pending': _round_or_none(amount, 4),
+            'reason': reason,
+        })
+        return payload
+
+    payload.update({
+        'status': 'PENDING',
+        'direction': 'NONE',
+        'amount_pending': _round_or_none(max(spot_diff, futures_diff), 4),
+        'reason': 'Capital fuera de target',
+    })
+    return payload
 
 
 def _build_diagnostics(
@@ -209,7 +265,8 @@ def _build_diagnostics(
     spot_target,
     futures_target,
     total_authorized,
-    warning,
+    capital_note,
+    rebalance_info,
     longs,
     shorts,
     max_longs,
@@ -217,8 +274,9 @@ def _build_diagnostics(
     system_health,
 ):
     entries_allowed = True
+    entries_status = 'ENABLED'
     entries_reason = 'Todo habilitado'
-    last_warning = warning
+    last_warning = None
     last_error = None
 
     status = state.get('status')
@@ -228,25 +286,92 @@ def _build_diagnostics(
     force_mode = btc_ctx.get('force_mode') if isinstance(btc_ctx, dict) else None
     trend = btc_ctx.get('trend') if isinstance(btc_ctx, dict) else None
     change_4h = _float_or_none(btc_ctx.get('change_4h')) if isinstance(btc_ctx, dict) else None
+    directional = False
+    try:
+        import config
+        directional = bool(getattr(config, 'DIRECTIONAL_MODE', False))
+    except Exception:
+        directional = False
+
+    long_status = 'ENABLED'
+    long_reason = 'Longs habilitados'
+    short_status = 'ENABLED'
+    short_reason = 'Shorts habilitados'
+
+    if directional and trend == 'bearish':
+        long_status = 'BLOCKED'
+        long_reason = 'Mercado bearish en modo direccional'
+    elif force_mode == 'short_only':
+        long_status = 'BLOCKED'
+        long_reason = 'Force mode short_only'
+    elif max_longs == 0:
+        long_status = 'BLOCKED'
+        long_reason = 'Sin capital objetivo para Longs'
+    elif max_longs is not None and len(longs) >= max_longs:
+        long_status = 'BLOCKED'
+        long_reason = 'Maximo de Longs alcanzado'
+
+    if directional and trend == 'bullish':
+        short_status = 'BLOCKED'
+        short_reason = 'Mercado bullish en modo direccional'
+    elif force_mode == 'long_only':
+        short_status = 'BLOCKED'
+        short_reason = 'Force mode long_only'
+    elif max_shorts == 0:
+        short_status = 'BLOCKED'
+        short_reason = 'Sin capital objetivo para Shorts'
+    elif max_shorts is not None and len(shorts) >= max_shorts:
+        short_status = 'BLOCKED'
+        short_reason = 'Maximo de Shorts alcanzado'
+
+    if (
+        rebalance_info.get('status') in {'PENDING', 'BLOCKED'}
+        and rebalance_info.get('direction') == 'SPOT_TO_FUTURES'
+        and futures_target is not None
+        and float(futures_target or 0) > 0
+        and float(futures_real or 0) < float(futures_target or 0)
+    ):
+        short_status = 'WAITING'
+        short_reason = f'Esperando capital en Futures: {futures_real or 0:.2f} / objetivo {futures_target:.2f} USDT'
+    if (
+        rebalance_info.get('status') in {'PENDING', 'BLOCKED'}
+        and rebalance_info.get('direction') == 'FUTURES_TO_SPOT'
+        and spot_target is not None
+        and float(spot_target or 0) > 0
+        and float(spot_real or 0) < float(spot_target or 0)
+    ):
+        long_status = 'WAITING'
+        long_reason = f'Esperando capital en Spot: {spot_real or 0:.2f} / objetivo {spot_target:.2f} USDT'
 
     if status == 'paused':
         entries_allowed = False
+        entries_status = 'BLOCKED'
         entries_reason = 'Bot pausado'
     elif pause_until > now:
         entries_allowed = False
+        entries_status = 'BLOCKED'
         entries_reason = 'Circuit breaker activo'
     elif skip_cycles > 0:
         entries_allowed = False
+        entries_status = 'BLOCKED'
         entries_reason = 'Cooldown post-SL'
     elif total_authorized is None or total_authorized <= 0:
         entries_allowed = False
+        entries_status = 'BLOCKED'
         entries_reason = 'Capital insuficiente'
-    elif max_longs == 0 and max_shorts == 0:
+    elif long_status in {'BLOCKED', 'WAITING'} and short_status in {'BLOCKED', 'WAITING'}:
         entries_allowed = False
-        entries_reason = 'Capital asignado insuficiente'
-    elif max_longs is not None and max_shorts is not None and len(longs) >= max_longs and len(shorts) >= max_shorts:
-        entries_allowed = False
-        entries_reason = 'Maximo de posiciones alcanzado'
+        entries_status = 'BLOCKED'
+        if 'Esperando capital en Futures' in short_reason:
+            entries_reason = 'Esperando rebalance hacia Futures para operar shorts'
+        elif 'Esperando capital en Spot' in long_reason:
+            entries_reason = 'Esperando rebalance hacia Spot para operar longs'
+        else:
+            entries_reason = 'Entradas bloqueadas por regimen/capital'
+    elif long_status in {'BLOCKED', 'WAITING'} or short_status in {'BLOCKED', 'WAITING'}:
+        entries_allowed = True
+        entries_status = 'PARTIAL'
+        entries_reason = 'Entradas parcialmente habilitadas'
     elif force_mode:
         entries_reason = 'Directional mode'
     else:
@@ -254,30 +379,30 @@ def _build_diagnostics(
 
     if change_4h is not None and abs(change_4h) >= 4:
         last_warning = f'BTC {change_4h:+.2f}% en 4h'
-        if not entries_allowed and entries_reason == 'Todo habilitado':
+        if entries_reason == 'Todo habilitado':
             entries_reason = 'BTC movio mas de 4% en 4h'
-
-    rebalance_status, rebalance_reason = _diagnostic_rebalance_status(
-        spot_real,
-        futures_real,
-        spot_target,
-        futures_target,
-        total_authorized,
-        warning,
-    )
 
     if system_health == 'ERROR':
         last_error = 'BotState generado con health ERROR'
 
     if not entries_allowed:
-        if 'BTC' in entries_reason:
+        if rebalance_info.get('status') == 'PENDING' and rebalance_info.get('direction') == 'SPOT_TO_FUTURES':
+            next_expected_action = 'Esperando rebalance Spot -> Futures'
+        elif rebalance_info.get('status') == 'PENDING' and rebalance_info.get('direction') == 'FUTURES_TO_SPOT':
+            next_expected_action = 'Esperando rebalance Futures -> Spot'
+        elif 'BTC' in entries_reason:
             next_expected_action = 'Trading pausado por BTC'
         elif 'posiciones' in entries_reason.lower():
             next_expected_action = 'Esperando cierre de posicion'
         else:
             next_expected_action = entries_reason
-    elif rebalance_status == 'PENDING':
-        next_expected_action = 'Esperando rebalance'
+    elif rebalance_info.get('status') == 'PENDING':
+        if rebalance_info.get('direction') == 'SPOT_TO_FUTURES':
+            next_expected_action = 'Esperando rebalance Spot -> Futures'
+        elif rebalance_info.get('direction') == 'FUTURES_TO_SPOT':
+            next_expected_action = 'Esperando rebalance Futures -> Spot'
+        else:
+            next_expected_action = 'Esperando rebalance'
     elif force_mode == 'short_only' or (trend == 'bearish' and max_shorts and len(shorts) < max_shorts):
         next_expected_action = 'Esperando señal SHORT'
     elif force_mode == 'long_only' or (trend == 'bullish' and max_longs and len(longs) < max_longs):
@@ -287,10 +412,16 @@ def _build_diagnostics(
 
     return {
         'entries_allowed': bool(entries_allowed),
+        'entries_status': entries_status,
         'entries_reason': entries_reason,
-        'rebalance_status': rebalance_status,
-        'rebalance_reason': rebalance_reason,
+        'long_entries_status': long_status,
+        'long_entries_reason': long_reason,
+        'short_entries_status': short_status,
+        'short_entries_reason': short_reason,
+        'rebalance_status': rebalance_info.get('status'),
+        'rebalance_reason': rebalance_info.get('reason'),
         'next_expected_action': next_expected_action,
+        'capital_note': capital_note,
         'last_warning': last_warning,
         'last_error': last_error,
     }
@@ -383,6 +514,7 @@ def build_bot_state(
     total_limit = get_total_capital_limit()
 
     warning = None
+    capital_note = None
     if total_real is None or total_limit is None or total_limit <= 0:
         total_authorized = None
         if total_limit is None or total_limit <= 0:
@@ -390,7 +522,7 @@ def build_bot_state(
     else:
         total_authorized = min(total_real, total_limit)
         if total_real < total_limit:
-            warning = 'Capital real menor al limite configurado; usando capital real disponible.'
+            capital_note = 'Capital disponible menor al limite configurado; usando capital disponible.'
 
     if spot_target is None or futures_target is None:
         spot_target, futures_target = calculate_targets(total_authorized, btc_ctx, config, rebalance)
@@ -414,6 +546,17 @@ def build_bot_state(
         except Exception:
             max_shorts = None
 
+    rebalance_info = _build_rebalance_diagnostics(
+        spot_real=spot_real,
+        futures_real=futures_real,
+        spot_target=spot_target,
+        futures_target=futures_target,
+        spot_used=spot_used,
+        futures_used=futures_used,
+        total_authorized=total_authorized,
+        capital_note=capital_note or warning,
+    )
+
     diagnostics = _build_diagnostics(
         state=state,
         btc_ctx=btc_ctx,
@@ -422,7 +565,8 @@ def build_bot_state(
         spot_target=spot_target,
         futures_target=futures_target,
         total_authorized=total_authorized,
-        warning=warning,
+        capital_note=capital_note,
+        rebalance_info=rebalance_info,
         longs=longs,
         shorts=shorts,
         max_longs=max_longs,
@@ -459,6 +603,7 @@ def build_bot_state(
             'spot_available_for_bot': _round_or_none(None if spot_target is None else max(0.0, spot_target - spot_used), 4),
             'futures_available_for_bot': _round_or_none(None if futures_target is None else max(0.0, futures_target - futures_used), 4),
             'warning': warning,
+            'note': capital_note,
         },
         'positions': {
             'long': {'current': len(longs), 'max': max_longs},
@@ -478,6 +623,7 @@ def build_bot_state(
             'last_healthcheck': None,
         },
         'diagnostics': diagnostics,
+        'rebalance': rebalance_info,
     }
 
 

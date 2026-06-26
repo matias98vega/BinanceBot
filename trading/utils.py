@@ -2,7 +2,7 @@
 """
 Helpers compartidos: HTTP, firma, alertas, logs, lock.
 """
-import hmac, hashlib, time, urllib.request, urllib.parse, urllib.error
+import hmac, hashlib, time, urllib.request, urllib.parse, urllib.error, re
 import json, os, sys, subprocess, socket
 from datetime import datetime, timezone
 
@@ -287,16 +287,212 @@ def get_active_cooldowns(state):
     return {sym for sym, expiry in cooldowns.items() if expiry == 0 or expiry > now}
 
 # ── Alertas ───────────────────────────────────────────────────────────────────
+
+def _num(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _money(value):
+    value = _num(value)
+    return 'N/D' if value is None else f'{value:.2f} USDT'
+
+
+def _signed_money(value):
+    value = _num(value)
+    if value is None:
+        return 'N/D'
+    return f'{value:+.2f} USDT'
+
+
+def _pct(value):
+    value = _num(value)
+    return 'N/D' if value is None else f'{value:+.2f}%'
+
+
+def _duration_text(entry_time, now=None):
+    entry = _num(entry_time)
+    if entry is None:
+        return None
+    seconds = max(0, int((now or time.time()) - entry))
+    hours, rem = divmod(seconds, 3600)
+    minutes = rem // 60
+    if hours:
+        return f'{hours}h {minutes}m'
+    return f'{minutes}m'
+
+
+def format_trade_open_alert(pos, candidate=None, market_regime=None):
+    pos = pos if isinstance(pos, dict) else {}
+    candidate = candidate if isinstance(candidate, dict) else {}
+    side = str(pos.get('direction') or '').upper()
+    symbol = pos.get('symbol') or 'N/D'
+    entry = _num(pos.get('entry_price'))
+    qty = _num(pos.get('quantity'))
+    tp = _num(pos.get('tp'))
+    sl = _num(pos.get('sl'))
+    leverage = _num(pos.get('leverage')) or 1.0
+    exposure = entry * qty if entry is not None and qty is not None else None
+    capital_used = exposure / leverage if exposure is not None and side == 'SHORT' else exposure
+
+    tp_pct = sl_pct = gain_tp = loss_sl = rr = None
+    if entry and tp is not None and sl is not None and qty is not None:
+        if side == 'SHORT':
+            tp_pct = (tp - entry) / entry * 100
+            sl_pct = (sl - entry) / entry * 100
+            gain_tp = max(0.0, (entry - tp) * qty)
+            loss_sl = -abs((sl - entry) * qty)
+        else:
+            tp_pct = (tp - entry) / entry * 100
+            sl_pct = (sl - entry) / entry * 100
+            gain_tp = max(0.0, (tp - entry) * qty)
+            loss_sl = -abs((entry - sl) * qty)
+        risk = abs(loss_sl or 0)
+        reward = abs(gain_tp or 0)
+        rr = reward / risk if risk > 0 else None
+
+    icon = '\U0001F7E2' if side == 'LONG' else '\U0001F534'
+    title = 'LONG abierto' if side == 'LONG' else 'SHORT abierto'
+    lines = [
+        f'{icon} {title}',
+        '',
+        'Simbolo:',
+        str(symbol),
+        '',
+        'Capital usado:' if side == 'LONG' else 'Margen usado:',
+        _money(capital_used),
+    ]
+    if side == 'SHORT':
+        lines.extend(['', 'Exposicion:', _money(exposure)])
+    lines.extend([
+        '',
+        'Objetivo:',
+        f'TP: {_pct(tp_pct)} -> {_signed_money(gain_tp)}',
+        f'SL: {_pct(sl_pct)} -> {_signed_money(loss_sl)}',
+        '',
+        'Riesgo/beneficio:',
+        f'1 : {rr:.2f}' if rr is not None else 'N/D',
+    ])
+
+    reason = []
+    if candidate.get('score') is not None:
+        reason.append(f'Score {candidate.get("score")}')
+    if market_regime:
+        reason.append(f'mercado {market_regime}')
+    if candidate.get('reasons'):
+        raw_reasons = candidate.get('reasons')
+        if isinstance(raw_reasons, (list, tuple)):
+            reason.append(', '.join(str(r) for r in raw_reasons[:3]))
+        else:
+            reason.append(str(raw_reasons))
+    if reason:
+        lines.extend(['', 'Motivo:', ' / '.join(reason)])
+    return '\n'.join(lines)
+
+
+def format_trade_close_alert(pos, exit_price, exit_reason, pnl_usdt):
+    pos = pos if isinstance(pos, dict) else {}
+    side = str(pos.get('direction') or '').upper() or 'N/D'
+    symbol = pos.get('symbol') or 'N/D'
+    pnl = _num(pnl_usdt)
+    result = 'BREAKEVEN'
+    if pnl is not None and pnl > 0:
+        result = 'WIN'
+    elif pnl is not None and pnl < 0:
+        result = 'LOSS'
+    entry = _num(pos.get('entry_price'))
+    exit_ = _num(exit_price)
+    pnl_pct = None
+    if entry and exit_ is not None:
+        if side == 'SHORT':
+            pnl_pct = (entry - exit_) / entry * 100
+        else:
+            pnl_pct = (exit_ - entry) / entry * 100
+    qty = _num(pos.get('quantity'))
+    leverage = _num(pos.get('leverage')) or 1.0
+    exposure = entry * qty if entry is not None and qty is not None else None
+    capital_used = exposure / leverage if exposure is not None and side == 'SHORT' else exposure
+    icon = '\u2705' if result == 'WIN' else '\u274c' if result == 'LOSS' else '\u26AA'
+    lines = [
+        f'{icon} Trade cerrado',
+        '',
+        'Simbolo:',
+        str(symbol),
+        '',
+        'Direccion:',
+        side,
+        '',
+        'Resultado:',
+        result,
+        '',
+        'PnL:',
+        f'{_signed_money(pnl)} ({_pct(pnl_pct)})',
+    ]
+    if capital_used is not None:
+        lines.extend(['', 'Capital usado:', _money(capital_used)])
+    duration = _duration_text(pos.get('entry_time'))
+    if duration:
+        lines.extend(['', 'Duracion:', duration])
+    lines.extend(['', 'Motivo:', str(exit_reason or 'N/D')])
+    return '\n'.join(lines)
+
+
+def format_rebalance_alert(message):
+    text = str(message or '')
+    lower = text.lower()
+    if 'rebalanceo' not in lower:
+        return text
+    direction = 'N/D'
+    if 'spot' in lower and 'futures' in lower:
+        direction = 'Spot -> Futures' if lower.find('spot') < lower.find('futures') else 'Futures -> Spot'
+    amount = None
+    match = re.search(r'\$?([0-9]+(?:[.,][0-9]+)?)', text)
+    if match:
+        amount = match.group(1).replace(',', '.')
+    if any(token in lower for token in ('error', 'fallo', 'bloqueado')):
+        return '\n'.join([
+            '\U0001F6A8 Rebalance fallo',
+            '',
+            'Direccion:',
+            direction,
+            '',
+            'Monto intentado:',
+            _money(amount),
+            '',
+            'Motivo:',
+            text,
+        ])
+    return '\n'.join([
+        '\U0001F504 Rebalance ejecutado',
+        '',
+        'Direccion:',
+        direction,
+        '',
+        'Transferido:',
+        _money(amount),
+    ])
+
+
 def send_alert(msg):
     try:
         from telegram_alerts import send_telegram_alert
         lower = str(msg).lower()
-        level = 'WARNING'
-        if any(token in lower for token in ('urgente', 'critical', 'crítico', 'error', 'falló', 'fallo', 'emergencia')):
+        level = 'INFO'
+        if any(token in lower for token in ('intervencion urgente', 'sin stops', 'critical', 'critico', 'urgente')):
             level = 'CRITICAL'
-        elif any(token in lower for token in ('sl', 'cerrado', 'pausado', 'blacklist')):
+        elif any(token in lower for token in ('error', 'fallo', 'no pude recolocar', 'requiere intervenci', 'api error', 'binance api')):
             level = 'ERROR'
-        elif any(token in lower for token in ('abierto', 'rebalanceo', 'parcial', 'tp')):
+        elif 'rehabilitado desde blacklist' in lower:
+            level = 'INFO'
+        elif 'agregado a blacklist' in lower or 'auto-blacklist' in lower:
+            level = 'WARNING'
+        elif any(token in lower for token in ('cierre preventivo', 'pausado', 'limite diario', 'rechaz', 'guardrail')):
+            level = 'WARNING'
+        elif any(token in lower for token in ('abierto', 'cerrado', 'rebalanceo', 'parcial', 'tp')):
+            level = 'INFO'
+        elif 'sl' in lower:
             level = 'WARNING'
         send_telegram_alert(level, 'BinanceBot', msg)
     except Exception:

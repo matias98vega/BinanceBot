@@ -240,8 +240,10 @@ def _exposure_metrics():
             'futures_used': capital.get('futures_used'),
             'futures_total': futures_target,
             'warning': capital.get('warning'),
-            'max_exposure_percent': _env_number('BOT_MAX_EXPOSURE_PERCENT'),
-            'max_position_percent': _env_number('BOT_MAX_POSITION_PERCENT'),
+            'note': capital.get('note'),
+            'rebalance': snapshot.get('rebalance') if isinstance(snapshot.get('rebalance'), dict) else {},
+            'max_exposure_percent': capital.get('max_exposure_percent'),
+            'max_position_percent': capital.get('max_position_percent'),
         }
     positions = _positions()
     try:
@@ -279,6 +281,8 @@ def _exposure_metrics():
         'futures_used': futures_used,
         'futures_total': futures_total,
         'warning': None,
+        'note': None,
+        'rebalance': {},
         'max_exposure_percent': _env_number('BOT_MAX_EXPOSURE_PERCENT'),
         'max_position_percent': _env_number('BOT_MAX_POSITION_PERCENT'),
     }
@@ -384,29 +388,51 @@ def _telegram_service_status():
 def _diagnostics():
     snapshot = _bot_state()
     diagnostics = snapshot.get('diagnostics') if isinstance(snapshot.get('diagnostics'), dict) else {}
+    rebalance = snapshot.get('rebalance') if isinstance(snapshot.get('rebalance'), dict) else {}
     return {
         'entries_allowed': diagnostics.get('entries_allowed'),
+        'entries_status': diagnostics.get('entries_status') or ('ENABLED' if diagnostics.get('entries_allowed') is True else 'BLOCKED' if diagnostics.get('entries_allowed') is False else 'UNKNOWN'),
         'entries_reason': diagnostics.get('entries_reason') or 'No disponible',
-        'rebalance_status': diagnostics.get('rebalance_status') or 'UNKNOWN',
-        'rebalance_reason': diagnostics.get('rebalance_reason') or 'No disponible',
+        'long_entries_status': diagnostics.get('long_entries_status') or 'UNKNOWN',
+        'long_entries_reason': diagnostics.get('long_entries_reason') or 'No disponible',
+        'short_entries_status': diagnostics.get('short_entries_status') or 'UNKNOWN',
+        'short_entries_reason': diagnostics.get('short_entries_reason') or 'No disponible',
+        'rebalance': rebalance,
+        'rebalance_status': rebalance.get('status') or diagnostics.get('rebalance_status') or 'UNKNOWN',
+        'rebalance_reason': rebalance.get('reason') or diagnostics.get('rebalance_reason') or 'No disponible',
         'next_expected_action': diagnostics.get('next_expected_action') or 'No disponible',
+        'capital_note': diagnostics.get('capital_note') or 'Ninguna',
         'last_warning': diagnostics.get('last_warning') or 'Ninguno',
         'last_error': diagnostics.get('last_error') or 'Ninguno',
     }
 
 
-def _entries_label(allowed):
-    if allowed is True:
+def _entries_label(status, allowed=None):
+    status = str(status or '').upper()
+    if status == 'ENABLED' or allowed is True:
         return '\u2705 Habilitadas'
-    if allowed is False:
+    if status == 'PARTIAL':
+        return '\u26a0\ufe0f Parcialmente bloqueadas'
+    if status == 'BLOCKED' or allowed is False:
         return '\u274c Bloqueadas'
+    return '\u26aa No disponible'
+
+
+def _side_label(status):
+    status = str(status or '').upper()
+    if status == 'ENABLED':
+        return '\u2705 Habilitados'
+    if status == 'BLOCKED':
+        return '\u26d4 Bloqueados'
+    if status == 'WAITING':
+        return '\u23f3 Esperando capital'
     return '\u26aa No disponible'
 
 
 def _rebalance_label(status):
     labels = {
         'PENDING': '\u23f3 Pendiente',
-        'NOT_REQUIRED': '\u2705 No requerido',
+        'NOT_REQUIRED': '\u2705 Alineado',
         'IN_PROGRESS': '\U0001F504 En progreso',
         'DONE': '\u2705 Completado',
         'BLOCKED': '\u26d4 Bloqueado',
@@ -568,25 +594,40 @@ class CapitalPage(MenuPage):
         metrics = _exposure_metrics()
         max_exposure = metrics.get('max_exposure_percent')
         max_position = metrics.get('max_position_percent')
+        rebalance = metrics.get('rebalance') or {}
+        direction = str(rebalance.get('direction') or 'NONE')
+        direction_label = {
+            'SPOT_TO_FUTURES': 'Spot -> Futures',
+            'FUTURES_TO_SPOT': 'Futures -> Spot',
+            'NONE': 'Ninguno',
+        }.get(direction, direction)
         lines = [
             '\U0001F4B0 Capital',
             '',
-            f'Total real: {_fmt_money(metrics["total_real"])}',
-            f'Total limit: {_fmt_money(metrics["total_limit"])}',
-            f'Total authorized: {_fmt_money(metrics["total_authorized"])}',
+            'Total:',
+            f'Real: {_fmt_money(metrics["total_real"])}',
+            f'Limite: {_fmt_money(metrics["total_limit"])}',
+            f'Autorizado: {_fmt_money(metrics["total_authorized"])}',
             '',
-            f'\U0001F4C8 Longs: {metrics["long_count"]}/{metrics["max_longs"]}',
-            f'Spot real: {_fmt_money(metrics["spot_real"])}',
-            f'Spot target: {_fmt_money(metrics["spot_target"])}',
-            f'Spot used: {_fmt_money(metrics["spot_used"])}',
+            'Spot:',
+            f'Real: {_fmt_money(metrics["spot_real"])}',
+            f'Objetivo: {_fmt_money(metrics["spot_target"])}',
+            f'Usado: {_fmt_money(metrics["spot_used"])}',
             '',
-            f'\U0001F4C9 Shorts: {metrics["short_count"]}/{metrics["max_shorts"]}',
-            f'Futures real: {_fmt_money(metrics["futures_real"])}',
-            f'Futures target: {_fmt_money(metrics["futures_target"])}',
-            f'Futures used: {_fmt_money(metrics["futures_used"])}',
+            'Futures:',
+            f'Real: {_fmt_money(metrics["futures_real"])}',
+            f'Objetivo: {_fmt_money(metrics["futures_target"])}',
+            f'Usado: {_fmt_money(metrics["futures_used"])}',
         ]
+        if rebalance:
+            lines.extend([
+                '',
+                'Rebalance:',
+                f'{_rebalance_label(rebalance.get("status"))} {direction_label}',
+                f'Monto: {_fmt_money(rebalance.get("amount_pending"))}',
+            ])
         if metrics.get('warning'):
-            lines.extend(['', 'Info: capital real menor al limite configurado; usando capital disponible.'])
+            lines.extend(['', 'Info:', metrics.get('warning')])
         risk_lines = []
         if max_exposure is not None:
             risk_lines.append(f'Max exposicion: {max_exposure:.2f}%')
@@ -645,22 +686,39 @@ class DiagnosticsPage(MenuPage):
 
     def render(self):
         diagnostics = _diagnostics()
+        rebalance = diagnostics.get('rebalance') or {}
+        direction = str(rebalance.get('direction') or 'NONE')
+        direction_label = {
+            'SPOT_TO_FUTURES': 'Spot -> Futures',
+            'FUTURES_TO_SPOT': 'Futures -> Spot',
+            'NONE': 'Ninguno',
+        }.get(direction, direction)
         return '\n'.join([
             '\U0001FA7A Diagnostico',
             '',
             'Entradas:',
-            _entries_label(diagnostics.get('entries_allowed')),
+            _entries_label(diagnostics.get('entries_status'), diagnostics.get('entries_allowed')),
             diagnostics.get('entries_reason'),
+            '',
+            'Longs:',
+            _side_label(diagnostics.get('long_entries_status')),
+            diagnostics.get('long_entries_reason'),
+            '',
+            'Shorts:',
+            _side_label(diagnostics.get('short_entries_status')),
+            diagnostics.get('short_entries_reason'),
             '',
             'Rebalance:',
             _rebalance_label(diagnostics.get('rebalance_status')),
+            direction_label,
+            f'Monto pendiente: {_fmt_money(rebalance.get("amount_pending"))}',
             diagnostics.get('rebalance_reason'),
             '',
             'Proxima accion:',
             diagnostics.get('next_expected_action'),
             '',
-            'Warning:',
-            diagnostics.get('last_warning'),
+            'Info:',
+            diagnostics.get('last_warning') or 'Ninguna',
             '',
             'Error:',
             diagnostics.get('last_error'),

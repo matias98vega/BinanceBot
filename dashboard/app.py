@@ -141,6 +141,7 @@ def _status_payload():
             'last_healthcheck': system.get('last_healthcheck') or _mtime_iso(CONFIG.state_file),
             'last_preflight': _mtime_iso(CONFIG.cycle_baseline_file),
             'diagnostics': bot_state.get('diagnostics') or {},
+            'rebalance': bot_state.get('rebalance') or {},
         }
     state = _read_json(CONFIG.state_file, {}) or {}
     return {
@@ -195,6 +196,7 @@ def _metrics_payload():
         positions = bot_state.get('positions') or {}
         pnl = bot_state.get('pnl') or {}
         diagnostics = bot_state.get('diagnostics') or {}
+        rebalance_state = bot_state.get('rebalance') or {}
         trades, corrupt = _merged_trades()
         closed = [t for t in trades.values() if t.get('status') == 'CLOSED']
         open_now = [t for t in trades.values() if t.get('status') == 'OPEN']
@@ -209,6 +211,7 @@ def _metrics_payload():
             'total_real': capital.get('total_real'),
             'total_limit': capital.get('total_limit'),
             'capital_warning': capital.get('warning'),
+            'capital_note': capital.get('note'),
             'long_positions': (positions.get('long') or {}).get('current'),
             'max_long_positions': (positions.get('long') or {}).get('max'),
             'short_positions': (positions.get('short') or {}).get('current'),
@@ -223,6 +226,7 @@ def _metrics_payload():
             'short_win_rate': _win_rate(shorts),
             'corrupt_trade_lines': corrupt,
             'diagnostics': diagnostics,
+            'rebalance': rebalance_state,
         }
     state = _read_json(CONFIG.state_file, {}) or {}
     positions = state.get('positions') if isinstance(state.get('positions'), list) else []
