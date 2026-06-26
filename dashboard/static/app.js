@@ -16,6 +16,7 @@ function number(v, digits = 4) {
 }
 
 function pct(v) {
+  if (v === null || v === undefined || v === '') return 'N/A';
   return `${number(v, 2)}%`;
 }
 

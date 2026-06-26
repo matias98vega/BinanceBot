@@ -33,13 +33,17 @@ def open_long(candidate, state):
     # Reducir riesgo si el token es volátil/riesgoso
     if candidate.get('risky'):
         risk_pct = min(risk_pct, config.RISKY_RISK_FACTOR)
-    capital  = usdt * risk_pct
+    max_longs = utils.get_max_long_positions(spot_total)
+    capital_budget = utils.get_spot_capital_per_position(state, usdt)
+    capital  = min(usdt * risk_pct, capital_budget)
 
     # Dry-run: simular sin ejecutar
     if config.DRY_RUN:
         price = utils.get_spot_price(sym)
         try:
-            ok, limit_msg, _ = capital_manager.validate_spot_order(state, usdt, capital)
+            ok, limit_msg, _ = capital_manager.validate_spot_order(
+                state, spot_total, capital, max_longs
+            )
         except Exception as e:
             return None, f'CAPITAL LIMIT ERROR SPOT: {e}'
         if not ok:
@@ -76,7 +80,9 @@ def open_long(candidate, state):
     if qty * price < min_not:
         return None, f'Notional mínimo no alcanzado: ${qty * price:.2f} < ${min_not}'
     try:
-        ok, limit_msg, _ = capital_manager.validate_spot_order(state, usdt, qty * price)
+        ok, limit_msg, _ = capital_manager.validate_spot_order(
+            state, spot_total, qty * price, max_longs
+        )
     except Exception as e:
         return None, f'CAPITAL LIMIT ERROR SPOT: {e}'
     if not ok:

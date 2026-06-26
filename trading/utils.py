@@ -632,18 +632,39 @@ def get_futures_risk_pct(usdt_available):
 
 def get_futures_capital_per_position(state):
     """
-    Retorna el capital a usar por posición short dividiendo el wallet total
-    equitativamente entre los slots disponibles.
-    Así cada posición usa wallet_total / max_shorts sin importar el orden de entrada.
-    Siempre se reserva al menos 20% del wallet como colchón de mantenimiento.
+    Retorna el capital a usar por posicion short usando el mismo presupuesto
+    por operacion que valida capital_manager.
     """
+    import capital_manager
+
     total, available, _ = get_futures_summary()
-    max_shorts = get_max_short_positions(total)  # ← Usar total, no disponible
-    # Reservar 20% como colchón de mantenimiento ante fluctuaciones
-    usable = total * 0.80
-    capital = usable / max_shorts if max_shorts > 0 else usable
-    # No usar más de lo disponible actualmente
+    limits = capital_manager.get_limits()
+    usable = capital_manager.futures_usable_capital(total, limits)
+    max_shorts = get_max_short_positions(usable)
+    capital = capital_manager.max_margin_per_position(
+        usable, max_shorts, limits.max_exposure_percent
+    )
     return min(capital, available * 0.95)
+
+
+def get_spot_capital_per_position(state, spot_free=None):
+    """
+    Retorna el capital a usar por posicion long usando el mismo presupuesto
+    por operacion que valida capital_manager.
+    """
+    import capital_manager
+
+    if spot_free is None:
+        spot_free = get_usdt_spot()
+    spot_in_pos = capital_manager.open_spot_exposure(state)
+    spot_total = float(spot_free or 0) + spot_in_pos
+    limits = capital_manager.get_limits()
+    usable = capital_manager.spot_usable_capital(spot_total, limits)
+    max_longs = get_max_long_positions(usable)
+    capital = capital_manager.max_margin_per_position(
+        usable, max_longs, limits.max_exposure_percent
+    )
+    return min(capital, float(spot_free or 0) * 0.95)
 
 
 def get_max_short_positions(usdt_available):

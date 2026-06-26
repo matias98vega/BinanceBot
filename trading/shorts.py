@@ -78,6 +78,9 @@ def open_short(candidate, state):
 
     available = utils.get_usdt_futures()
     capital   = utils.get_futures_capital_per_position(state)
+    limits = capital_manager.get_limits()
+    futures_usable = capital_manager.futures_usable_capital(available, limits)
+    max_shorts = utils.get_max_short_positions(futures_usable)
     # Reducir capital si el token es volátil/riesgoso
     if candidate.get('risky'):
         capital = capital * config.RISKY_RISK_FACTOR
@@ -99,11 +102,13 @@ def open_short(candidate, state):
         atr_v = candidate['atr']
         real_sl = utils.round_tick(price + config.SL_ATR_MULT_SHORT * atr_v, tick)
         real_tp = utils.round_tick(price - config.TP_ATR_MULT * atr_v, tick)
-        notional_dry = available * config.FUTURES_RISK_PCT * config.FUTURES_LEVERAGE
+        notional_dry = capital * config.FUTURES_LEVERAGE
         qty_dry = utils.round_step(notional_dry / price, step)
         requested_margin = (qty_dry * price) / config.FUTURES_LEVERAGE
         try:
-            ok, limit_msg, _ = capital_manager.validate_futures_order(state, available, requested_margin)
+            ok, limit_msg, _ = capital_manager.validate_futures_order(
+                state, available, requested_margin, max_shorts
+            )
         except Exception as e:
             return None, f'CAPITAL LIMIT ERROR FUTURES: {e}'
         if not ok:
@@ -129,7 +134,9 @@ def open_short(candidate, state):
         return None, f'Notional mínimo futures no alcanzado: ${qty * price:.2f} < ${min_not}'
     requested_margin = (qty * price) / config.FUTURES_LEVERAGE
     try:
-        ok, limit_msg, _ = capital_manager.validate_futures_order(state, available, requested_margin)
+        ok, limit_msg, _ = capital_manager.validate_futures_order(
+            state, available, requested_margin, max_shorts
+        )
     except Exception as e:
         return None, f'CAPITAL LIMIT ERROR FUTURES: {e}'
     if not ok:

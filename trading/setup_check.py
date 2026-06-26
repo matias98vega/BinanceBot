@@ -132,7 +132,7 @@ def _check_capital_limits():
     if split_ok and getattr(split_result, 'deprecated_split_limits', False):
         warnings.append('BOT_SPOT_CAPITAL_LIMIT_USDT and BOT_FUTURES_CAPITAL_LIMIT_USDT are deprecated; use BOT_TOTAL_CAPITAL_LIMIT_USDT as the source of truth.')
     if split_ok and getattr(split_result, 'default_guardrails', False):
-        warnings.append('BOT_MAX_POSITION_PERCENT or BOT_MAX_EXPOSURE_PERCENT missing; using default guardrails 20/80.')
+        warnings.append('BOT_MAX_EXPOSURE_PERCENT missing or invalid; using default exposure guardrail 80%.')
     elif not split_ok:
         warnings.append(f'Capital guardrail split limits using total fallback: {split_result}')
     return True, '', total_limit, warnings

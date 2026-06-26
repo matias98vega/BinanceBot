@@ -2,6 +2,7 @@
 """Capital limit guardrails for order placement and wallet transfers."""
 import os
 from dataclasses import dataclass
+from typing import Optional
 
 from config_loader import ConfigError, load_dotenv
 
@@ -14,8 +15,8 @@ CAPITAL_ENV_VARS = (
     'BOT_MAX_EXPOSURE_PERCENT',
 )
 
-DEFAULT_MAX_POSITION_PERCENT = 20.0
 DEFAULT_MAX_EXPOSURE_PERCENT = 80.0
+_MAX_POSITION_FROM_DOTENV = False
 
 
 class CapitalLimitError(RuntimeError):
@@ -27,7 +28,7 @@ class CapitalLimits:
     total_capital_limit_usdt: float
     spot_capital_limit_usdt: float
     futures_capital_limit_usdt: float
-    max_position_percent: float
+    max_position_percent: Optional[float]
     max_exposure_percent: float
     deprecated_split_limits: bool = False
     default_guardrails: bool = False
@@ -50,26 +51,31 @@ def _float_env(name, required=True):
 
 
 def get_limits():
+    global _MAX_POSITION_FROM_DOTENV
+    explicit_max_position = os.environ.get('BOT_MAX_POSITION_PERCENT')
     load_dotenv()
+    if explicit_max_position in (None, '') and os.environ.get('BOT_MAX_POSITION_PERCENT') not in (None, ''):
+        _MAX_POSITION_FROM_DOTENV = True
     total_limit = _float_env('BOT_TOTAL_CAPITAL_LIMIT_USDT', required=False)
     spot_limit = _float_env('BOT_SPOT_CAPITAL_LIMIT_USDT', required=False)
     futures_limit = _float_env('BOT_FUTURES_CAPITAL_LIMIT_USDT', required=False)
-    max_position = _float_env('BOT_MAX_POSITION_PERCENT', required=False)
+    max_position = (
+        _float_env('BOT_MAX_POSITION_PERCENT', required=False)
+        if explicit_max_position not in (None, '') and not _MAX_POSITION_FROM_DOTENV else None
+    )
     max_exposure = _float_env('BOT_MAX_EXPOSURE_PERCENT', required=False)
 
     invalid_total_limit = total_limit is None or total_limit <= 0
     if invalid_total_limit:
         total_limit = 0.0
     deprecated_split_limits = spot_limit is not None or futures_limit is not None
-    default_guardrails = max_position is None or max_exposure is None
+    default_guardrails = max_exposure is None
     spot_limit = total_limit
     futures_limit = total_limit
-    if max_position is None:
-        max_position = DEFAULT_MAX_POSITION_PERCENT
     if max_exposure is None:
         max_exposure = DEFAULT_MAX_EXPOSURE_PERCENT
-    if max_position <= 0 or max_position > 100:
-        max_position = DEFAULT_MAX_POSITION_PERCENT
+    if max_position is not None and (max_position <= 0 or max_position > 100):
+        max_position = None
         default_guardrails = True
     if max_exposure <= 0 or max_exposure > 100:
         max_exposure = DEFAULT_MAX_EXPOSURE_PERCENT
@@ -99,7 +105,27 @@ def futures_usable_capital(futures_real_usdt, limits=None):
 
 def max_position_size(usable_capital, limits=None):
     limits = limits or get_limits()
+    if limits.max_position_percent is None:
+        return None
     return max(float(usable_capital or 0), 0.0) * limits.max_position_percent / 100.0
+
+
+def max_margin_per_position(usable_capital, max_positions, max_exposure_percent):
+    """Return the shared per-operation capital budget for a wallet."""
+    capital = max(float(usable_capital or 0), 0.0)
+    slots = _normalise_max_positions(max_positions)
+    exposure_pct = float(max_exposure_percent or DEFAULT_MAX_EXPOSURE_PERCENT)
+    if exposure_pct <= 0 or exposure_pct > 100:
+        exposure_pct = DEFAULT_MAX_EXPOSURE_PERCENT
+    return capital * exposure_pct / 100.0 / slots
+
+
+def _normalise_max_positions(max_positions):
+    try:
+        slots = int(max_positions)
+    except (TypeError, ValueError):
+        slots = 1
+    return max(slots, 1)
 
 
 def max_exposure(usable_capital, limits=None):
@@ -127,22 +153,32 @@ def open_futures_exposure(state):
     return exposure
 
 
-def _validation_payload(wallet, real_balance, usable, current_exposure, requested_size, limits):
+def _validation_payload(wallet, real_balance, usable, current_exposure, requested_size, limits, max_positions):
+    max_per_position = max_margin_per_position(usable, max_positions, limits.max_exposure_percent)
+    optional_position_guardrail = max_position_size(usable, limits)
     return {
         'wallet': wallet,
         'real_balance': round(float(real_balance or 0), 8),
         'usable_capital': round(usable, 8),
         'current_exposure': round(current_exposure, 8),
         'requested_size': round(float(requested_size or 0), 8),
-        'max_position_size': round(max_position_size(usable, limits), 8),
+        'max_positions': _normalise_max_positions(max_positions),
+        'max_position_size': round(max_per_position, 8),
+        'max_margin_per_position': round(max_per_position, 8),
+        'optional_position_guardrail': (
+            round(optional_position_guardrail, 8)
+            if optional_position_guardrail is not None else None
+        ),
         'max_exposure': round(max_exposure(usable, limits), 8),
         'max_position_percent': limits.max_position_percent,
         'max_exposure_percent': limits.max_exposure_percent,
     }
 
 
-def _validate(wallet, real_balance, usable, current_exposure, requested_size, limits):
-    payload = _validation_payload(wallet, real_balance, usable, current_exposure, requested_size, limits)
+def _validate(wallet, real_balance, usable, current_exposure, requested_size, limits, max_positions):
+    payload = _validation_payload(
+        wallet, real_balance, usable, current_exposure, requested_size, limits, max_positions
+    )
     requested = float(requested_size or 0)
     epsilon = 1e-8
 
@@ -154,7 +190,8 @@ def _validate(wallet, real_balance, usable, current_exposure, requested_size, li
         return False, (
             f'CAPITAL LIMIT REJECT {wallet}: requested ${requested:.2f} exceeds '
             f'max position ${payload["max_position_size"]:.2f} '
-            f'({limits.max_position_percent:.2f}% of usable ${usable:.2f})'
+            f'({limits.max_exposure_percent:.2f}% exposure / {payload["max_positions"]} slots '
+            f'of usable ${usable:.2f})'
         ), payload
     if current_exposure + requested > payload['max_exposure'] + epsilon:
         return False, (
@@ -165,16 +202,22 @@ def _validate(wallet, real_balance, usable, current_exposure, requested_size, li
     return True, 'OK', payload
 
 
-def validate_spot_order(state, spot_real_usdt, requested_usdt):
+def validate_spot_order(state, spot_real_usdt, requested_usdt, max_positions=1):
     limits = get_limits()
     usable = spot_usable_capital(spot_real_usdt, limits)
-    return _validate('SPOT', spot_real_usdt, usable, open_spot_exposure(state), requested_usdt, limits)
+    return _validate(
+        'SPOT', spot_real_usdt, usable, open_spot_exposure(state),
+        requested_usdt, limits, max_positions
+    )
 
 
-def validate_futures_order(state, futures_real_usdt, requested_margin_usdt):
+def validate_futures_order(state, futures_real_usdt, requested_margin_usdt, max_positions=1):
     limits = get_limits()
     usable = futures_usable_capital(futures_real_usdt, limits)
-    return _validate('FUTURES', futures_real_usdt, usable, open_futures_exposure(state), requested_margin_usdt, limits)
+    return _validate(
+        'FUTURES', futures_real_usdt, usable, open_futures_exposure(state),
+        requested_margin_usdt, limits, max_positions
+    )
 
 
 def cap_transfer_amount(destination_wallet, current_destination_real, requested_amount):
@@ -208,9 +251,11 @@ def snapshot(spot_real_usdt=None, futures_real_usdt=None):
         'invalid_total_limit': limits.invalid_total_limit,
         'max_position_percent': limits.max_position_percent,
         'max_exposure_percent': limits.max_exposure_percent,
-        'spot_max_position': max_position_size(spot_usable, limits),
+        'spot_max_position': max_margin_per_position(spot_usable, 1, limits.max_exposure_percent),
+        'spot_optional_position_guardrail': max_position_size(spot_usable, limits),
         'spot_max_exposure': max_exposure(spot_usable, limits),
-        'futures_max_position': max_position_size(futures_usable, limits),
+        'futures_max_position': max_margin_per_position(futures_usable, 1, limits.max_exposure_percent),
+        'futures_optional_position_guardrail': max_position_size(futures_usable, limits),
         'futures_max_exposure': max_exposure(futures_usable, limits),
     }
 

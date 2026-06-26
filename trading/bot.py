@@ -434,10 +434,21 @@ def _run():
     )
     try:
         cap = capital_manager.snapshot(spot_total, fut_total)
+        max_position_label = (
+            f'{cap["max_position_percent"]:.2f}%'
+            if cap.get('max_position_percent') is not None else 'off'
+        )
+        spot_max_op = capital_manager.max_margin_per_position(
+            cap['spot_usable'], max_longs, cap['max_exposure_percent']
+        )
+        futures_max_op = capital_manager.max_margin_per_position(
+            cap['futures_usable'], max_shorts, cap['max_exposure_percent']
+        )
         out(
             f'Capital limits: Spot real ${cap["spot_real"]:.2f} usable ${cap["spot_usable"]:.2f} | '
             f'Futures real ${cap["futures_real"]:.2f} usable ${cap["futures_usable"]:.2f} | '
-            f'Max pos {cap["max_position_percent"]:.2f}% | Max exposure {cap["max_exposure_percent"]:.2f}%'
+            f'Max op spot ${spot_max_op:.2f} futures ${futures_max_op:.2f} | '
+            f'Max pos guardrail {max_position_label} | Max exposure {cap["max_exposure_percent"]:.2f}%'
         )
     except Exception as e:
         out(f'Capital limits: WARNING ({e})')
