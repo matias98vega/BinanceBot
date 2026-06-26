@@ -7,6 +7,7 @@ from config_loader import ConfigError, load_dotenv
 
 
 CAPITAL_ENV_VARS = (
+    'BOT_TOTAL_CAPITAL_LIMIT_USDT',
     'BOT_SPOT_CAPITAL_LIMIT_USDT',
     'BOT_FUTURES_CAPITAL_LIMIT_USDT',
     'BOT_MAX_POSITION_PERCENT',
@@ -20,15 +21,19 @@ class CapitalLimitError(RuntimeError):
 
 @dataclass(frozen=True)
 class CapitalLimits:
+    total_capital_limit_usdt: float
     spot_capital_limit_usdt: float
     futures_capital_limit_usdt: float
     max_position_percent: float
     max_exposure_percent: float
+    deprecated_split_limits: bool = False
 
 
-def _float_env(name):
+def _float_env(name, required=True):
     raw = os.environ.get(name)
     if raw is None or raw == '':
+        if not required:
+            return None
         raise CapitalLimitError(f'Missing required environment variable: {name}')
     try:
         value = float(raw)
@@ -39,11 +44,19 @@ def _float_env(name):
 
 def get_limits():
     load_dotenv()
-    spot_limit = _float_env('BOT_SPOT_CAPITAL_LIMIT_USDT')
-    futures_limit = _float_env('BOT_FUTURES_CAPITAL_LIMIT_USDT')
+    total_limit = _float_env('BOT_TOTAL_CAPITAL_LIMIT_USDT')
+    spot_limit = _float_env('BOT_SPOT_CAPITAL_LIMIT_USDT', required=False)
+    futures_limit = _float_env('BOT_FUTURES_CAPITAL_LIMIT_USDT', required=False)
     max_position = _float_env('BOT_MAX_POSITION_PERCENT')
     max_exposure = _float_env('BOT_MAX_EXPOSURE_PERCENT')
 
+    if total_limit <= 0:
+        raise CapitalLimitError('BOT_TOTAL_CAPITAL_LIMIT_USDT must be > 0')
+    deprecated_split_limits = spot_limit is not None or futures_limit is not None
+    if spot_limit is None:
+        spot_limit = total_limit
+    if futures_limit is None:
+        futures_limit = total_limit
     if spot_limit <= 0:
         raise CapitalLimitError('BOT_SPOT_CAPITAL_LIMIT_USDT must be > 0')
     if futures_limit <= 0:
@@ -54,10 +67,12 @@ def get_limits():
         raise CapitalLimitError('BOT_MAX_EXPOSURE_PERCENT must be > 0 and <= 100')
 
     return CapitalLimits(
+        total_capital_limit_usdt=total_limit,
         spot_capital_limit_usdt=spot_limit,
         futures_capital_limit_usdt=futures_limit,
         max_position_percent=max_position,
         max_exposure_percent=max_exposure,
+        deprecated_split_limits=deprecated_split_limits,
     )
 
 
@@ -176,6 +191,8 @@ def snapshot(spot_real_usdt=None, futures_real_usdt=None):
         'futures_usable': futures_usable,
         'spot_capital_limit_usdt': limits.spot_capital_limit_usdt,
         'futures_capital_limit_usdt': limits.futures_capital_limit_usdt,
+        'total_capital_limit_usdt': limits.total_capital_limit_usdt,
+        'deprecated_split_limits': limits.deprecated_split_limits,
         'max_position_percent': limits.max_position_percent,
         'max_exposure_percent': limits.max_exposure_percent,
         'spot_max_position': max_position_size(spot_usable, limits),

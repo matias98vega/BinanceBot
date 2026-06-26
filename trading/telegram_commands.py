@@ -19,6 +19,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(BASE_DIR)
 CONFIG = load_config(require_api=False)
 OFFSET_FILE = os.path.join(BASE_DIR, 'telegram_offset.json')
+BOT_STATE_FILE = os.path.join(BASE_DIR, 'bot_state.json')
 UY_TZ = timezone(timedelta(hours=-3), 'UY')
 
 
@@ -41,6 +42,7 @@ def _env_diagnostic():
             print(f'- {path}')
     else:
         print('- none')
+    print(f'BOT_TOTAL_CAPITAL_LIMIT_USDT present: {bool(os.environ.get("BOT_TOTAL_CAPITAL_LIMIT_USDT"))}')
     print(f'BOT_SPOT_CAPITAL_LIMIT_USDT present: {bool(os.environ.get("BOT_SPOT_CAPITAL_LIMIT_USDT"))}')
     print(f'TELEGRAM_BOT_TOKEN present: {bool(os.environ.get("TELEGRAM_BOT_TOKEN"))}')
     print(f'TELEGRAM_CHAT_ID present: {bool(os.environ.get("TELEGRAM_CHAT_ID"))}')
@@ -168,6 +170,11 @@ def _state():
     return data if isinstance(data, dict) else {}
 
 
+def _bot_state():
+    data = _read_json(BOT_STATE_FILE, {}) or {}
+    return data if isinstance(data, dict) else {}
+
+
 def _positions():
     positions = _state().get('positions')
     return positions if isinstance(positions, list) else []
@@ -198,6 +205,25 @@ def _config_int(name, default):
 
 
 def _exposure_metrics():
+    snapshot = _bot_state()
+    capital = snapshot.get('capital') if isinstance(snapshot.get('capital'), dict) else None
+    positions_state = snapshot.get('positions') if isinstance(snapshot.get('positions'), dict) else None
+    if capital and positions_state:
+        long_state = positions_state.get('long') or {}
+        short_state = positions_state.get('short') or {}
+        return {
+            'long_count': long_state.get('current', 0),
+            'short_count': short_state.get('current', 0),
+            'max_longs': long_state.get('max', 'N/A'),
+            'max_shorts': short_state.get('max', 'N/A'),
+            'spot_used': capital.get('spot_used'),
+            'spot_total': capital.get('spot_target'),
+            'futures_used': capital.get('futures_used'),
+            'futures_total': capital.get('futures_target'),
+            'warning': capital.get('warning'),
+            'max_exposure_percent': _env_number('BOT_MAX_EXPOSURE_PERCENT'),
+            'max_position_percent': _env_number('BOT_MAX_POSITION_PERCENT'),
+        }
     positions = _positions()
     try:
         limits = _capital_limits()
@@ -226,7 +252,18 @@ def _exposure_metrics():
         'spot_total': spot_total,
         'futures_used': futures_used,
         'futures_total': futures_total,
+        'warning': None,
+        'max_exposure_percent': _env_number('BOT_MAX_EXPOSURE_PERCENT'),
+        'max_position_percent': _env_number('BOT_MAX_POSITION_PERCENT'),
     }
+
+
+def _env_number(name):
+    load_dotenv()
+    try:
+        return float(os.environ.get(name, ''))
+    except ValueError:
+        return None
 
 
 def _merged_trades():
@@ -277,10 +314,16 @@ def _health_summary():
 
 
 def _bot_status():
+    system = _bot_state().get('system')
+    if isinstance(system, dict) and system.get('bot'):
+        return system.get('bot')
     return 'ONLINE' if (_is_recent(CONFIG.decision_snapshots_file, 15 * 60) or _is_recent(CONFIG.analytics_file, 15 * 60)) else 'OFFLINE'
 
 
 def _guardian_status():
+    system = _bot_state().get('system')
+    if isinstance(system, dict) and system.get('guardian'):
+        return system.get('guardian')
     return 'ONLINE' if _is_recent(CONFIG.state_file, 15 * 60) else 'OFFLINE'
 
 
@@ -388,11 +431,16 @@ class HomePage(MenuPage):
 
     def render(self):
         state = _state()
+        snapshot = _bot_state()
+        system = snapshot.get('system') if isinstance(snapshot.get('system'), dict) else {}
+        pnl = snapshot.get('pnl') if isinstance(snapshot.get('pnl'), dict) else {}
         health, _, _ = _health_summary()
+        if system.get('health'):
+            health = system.get('health')
         bot = _bot_status()
         guardian = _guardian_status()
         metrics = _exposure_metrics()
-        return '\n'.join([
+        lines = [
             f'{_status_icon(bot)} Bot: {bot}',
             f'{_status_icon(guardian)} Guardian: {guardian}',
             f'❤️ Healthcheck: {health}',
@@ -403,11 +451,14 @@ class HomePage(MenuPage):
             f'📉 Shorts: {metrics["short_count"]}/{metrics["max_shorts"]}',
             f'💵 Futures: {_fmt_money(metrics["futures_used"])} / {_fmt_money(metrics["futures_total"])}',
             '',
-            f'📊 PnL hoy: {_fmt_pnl(state.get("daily_pnl_usdt", 0))}',
+            f'📊 PnL hoy: {_fmt_pnl(pnl.get("today", state.get("daily_pnl_usdt", 0)))}',
             '',
             '🕒 Última ejecución',
-            _mtime_uy(CONFIG.state_file),
-        ])
+            _fmt_uy(system.get('last_execution')) if system.get('last_execution') else _mtime_uy(CONFIG.state_file),
+        ]
+        if metrics.get('warning'):
+            lines.extend(['', '⚠️ Capital real menor al límite configurado.'])
+        return '\n'.join(lines)
 
     def keyboard(self):
         return [
@@ -422,19 +473,9 @@ class CapitalPage(MenuPage):
     page_id = 'capital'
 
     def render(self):
-        try:
-            limits = capital_manager.get_limits()
-        except Exception as exc:
-            missing = str(exc).replace('Missing required environment variable:', '').strip()
-            return '\n'.join([
-                '💰 Capital',
-                '',
-                '⚠️ Configuración incompleta',
-                f'Falta: {missing or exc}',
-                '',
-                '────────────',
-            ])
         metrics = _exposure_metrics()
+        max_exposure = metrics.get('max_exposure_percent')
+        max_position = metrics.get('max_position_percent')
         return '\n'.join([
             '💰 Capital',
             '',
@@ -445,8 +486,8 @@ class CapitalPage(MenuPage):
             f'💵 Futures: {_fmt_money(metrics["futures_used"])} / {_fmt_money(metrics["futures_total"])}',
             '',
             '⚙️ Riesgo',
-            f'Máx exposición: {limits.max_exposure_percent:.2f}%',
-            f'Máx por operación: {limits.max_position_percent:.2f}%',
+            f'Máx exposición: {max_exposure:.2f}%' if max_exposure is not None else 'Máx exposición: N/A',
+            f'Máx por operación: {max_position:.2f}%' if max_position is not None else 'Máx por operación: N/A',
         ])
 
 

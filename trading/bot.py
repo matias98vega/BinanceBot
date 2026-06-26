@@ -10,7 +10,7 @@ try:
 except Exception:
     pass
 sys.path.insert(0, os.path.dirname(__file__))
-import config, utils, market, longs, shorts, rebalance, capital_manager
+import config, utils, market, longs, shorts, rebalance, capital_manager, bot_state
 from analytics import AnalyticsLogger, DecisionSnapshotLogger
 from telegram_alerts import send_telegram_alert
 
@@ -86,6 +86,23 @@ def _safe_log_decision_snapshot(btc_ctx, spot_total_capital, spot_balance, futur
         pass
 
 
+def _safe_persist_bot_state(state, btc_ctx=None, spot_real=None, futures_real=None,
+                            max_longs=None, max_shorts=None, system_health='OK'):
+    path, error = bot_state.safe_persist_bot_state(
+        state=state,
+        btc_ctx=btc_ctx,
+        spot_real=spot_real,
+        futures_real=futures_real,
+        max_longs=max_longs,
+        max_shorts=max_shorts,
+        system_health=system_health,
+        bot_status='ONLINE' if system_health != 'ERROR' else 'UNKNOWN',
+    )
+    if error:
+        out(f'BotState write warning: {error}')
+    return path
+
+
 def main():
     lock = utils.acquire_lock()
     if not lock:
@@ -102,6 +119,11 @@ def main():
         else:
             print(f'\u274c Error inesperado: {e}')
             send_telegram_alert('CRITICAL', 'Bot error inesperado', str(e))
+            try:
+                state = utils.load_state()
+                bot_state.safe_persist_bot_state(state=state, system_health='ERROR', bot_status='UNKNOWN')
+            except Exception:
+                pass
             import traceback; traceback.print_exc()
     finally:
         utils.release_lock(lock)
@@ -144,6 +166,7 @@ def _run():
     # â”€â”€ Pausa global â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if state.get('status') == 'paused':
         out(f'â¸ï¸ Bot pausado (lÃ­mite diario). PnL hoy: {state.get("daily_pnl_usdt", 0):+.4f} USDT')
+        _safe_persist_bot_state(state, system_health='WARNING')
         utils.save_state(state)
         return
 
@@ -162,6 +185,7 @@ def _run():
             )
         except Exception:
             pass
+        _safe_persist_bot_state(state, system_health='WARNING')
         utils.save_state(state)
         return
 
@@ -170,6 +194,7 @@ def _run():
     if pause_until > 0 and int(time.time()) < pause_until:
         remaining_h = (pause_until - int(time.time())) / 3600
         out(f'â¸ï¸ Bot pausado (circuit breaker). Restan {remaining_h:.1f}h')
+        _safe_persist_bot_state(state, system_health='WARNING')
         utils.save_state(state)
         return
     elif pause_until > 0 and int(time.time()) >= pause_until:
@@ -418,6 +443,15 @@ def _run():
         out(f'Capital limits: ERROR ({e})')
     out(f'\nðŸ’¼ Longs: {long_count_final}/{max_longs} | Shorts: {short_count_final}/{max_shorts} | Spot: ${spot_used:.2f}/${spot_total:.2f} | Futures: ${short_notional:.2f}/${fut_total:.2f}')
     out(f'ðŸ“Š PnL total: {state["total_pnl_usdt"]:+.4f} USDT | Hoy: {state["daily_pnl_usdt"]:+.4f} USDT')
+    _safe_persist_bot_state(
+        state,
+        btc_ctx=btc_ctx,
+        spot_real=spot_total,
+        futures_real=fut_total,
+        max_longs=max_longs,
+        max_shorts=max_shorts,
+        system_health='OK',
+    )
 
     # â”€â”€ Limpieza semanal de polvo â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     _maybe_clean_dust(state)

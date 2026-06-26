@@ -20,6 +20,7 @@ import capital_manager  # noqa: E402
 
 
 CONFIG = load_config(require_api=False)
+BOT_STATE_FILE = os.path.join(TRADING_DIR, 'bot_state.json')
 HOST = os.environ.get('DASHBOARD_HOST', '127.0.0.1')
 PORT = int(os.environ.get('DASHBOARD_PORT', '8080'))
 
@@ -129,6 +130,17 @@ def _last_error():
 
 
 def _status_payload():
+    bot_state = _read_json(BOT_STATE_FILE, {}) or {}
+    system = bot_state.get('system') if isinstance(bot_state, dict) else {}
+    if isinstance(system, dict) and system:
+        return {
+            'bot': system.get('bot') or 'UNKNOWN',
+            'guardian': system.get('guardian') or _fmt_status(_is_recent(CONFIG.state_file, 15 * 60)),
+            'last_execution': system.get('last_execution') or _mtime_iso(CONFIG.state_file),
+            'last_snapshot': system.get('last_snapshot') or _mtime_iso(CONFIG.decision_snapshots_file),
+            'last_healthcheck': system.get('last_healthcheck') or _mtime_iso(CONFIG.state_file),
+            'last_preflight': _mtime_iso(CONFIG.cycle_baseline_file),
+        }
     state = _read_json(CONFIG.state_file, {}) or {}
     return {
         'bot': _fmt_status(_is_recent(CONFIG.decision_snapshots_file, 15 * 60) or _is_recent(CONFIG.analytics_file, 15 * 60)),
@@ -176,6 +188,39 @@ def _snapshots_payload(limit=10):
 
 
 def _metrics_payload():
+    bot_state = _read_json(BOT_STATE_FILE, {}) or {}
+    if isinstance(bot_state, dict) and bot_state.get('capital'):
+        capital = bot_state.get('capital') or {}
+        positions = bot_state.get('positions') or {}
+        pnl = bot_state.get('pnl') or {}
+        trades, corrupt = _merged_trades()
+        closed = [t for t in trades.values() if t.get('status') == 'CLOSED']
+        open_now = [t for t in trades.values() if t.get('status') == 'OPEN']
+        longs = [t for t in closed if str(t.get('side', '')).upper() == 'LONG']
+        shorts = [t for t in closed if str(t.get('side', '')).upper() == 'SHORT']
+        return {
+            'capital_current': capital.get('total_authorized'),
+            'spot_capital_limit_usdt': capital.get('spot_target'),
+            'futures_capital_limit_usdt': capital.get('futures_target'),
+            'spot_used': capital.get('spot_used'),
+            'futures_used': capital.get('futures_used'),
+            'total_real': capital.get('total_real'),
+            'total_limit': capital.get('total_limit'),
+            'capital_warning': capital.get('warning'),
+            'long_positions': (positions.get('long') or {}).get('current'),
+            'max_long_positions': (positions.get('long') or {}).get('max'),
+            'short_positions': (positions.get('short') or {}).get('current'),
+            'max_short_positions': (positions.get('short') or {}).get('max'),
+            'pnl_total': pnl.get('total'),
+            'win_rate': _win_rate(closed),
+            'profit_factor': _profit_factor(closed),
+            'open_trades': len(open_now),
+            'closed_trades': len(closed),
+            'state_open_positions': len(_read_json(CONFIG.state_file, {}).get('positions', []) if isinstance(_read_json(CONFIG.state_file, {}), dict) else []),
+            'long_win_rate': _win_rate(longs),
+            'short_win_rate': _win_rate(shorts),
+            'corrupt_trade_lines': corrupt,
+        }
     state = _read_json(CONFIG.state_file, {}) or {}
     positions = state.get('positions') if isinstance(state.get('positions'), list) else []
     trades, corrupt = _merged_trades()

@@ -40,6 +40,8 @@ Completar `.env`:
 ```dotenv
 BINANCE_API_KEY=
 BINANCE_API_SECRET=
+BOT_TOTAL_CAPITAL_LIMIT_USDT=50
+# Deprecated temporalmente:
 BOT_SPOT_CAPITAL_LIMIT_USDT=50
 BOT_FUTURES_CAPITAL_LIMIT_USDT=25
 BOT_MAX_POSITION_PERCENT=20
@@ -48,7 +50,7 @@ BOT_MAX_EXPOSURE_PERCENT=80
 
 No versionar `.env`.
 
-Los limites de capital son obligatorios. El bot calcula el tamano de orden con la logica existente, pero antes de enviar una orden valida que no supere el capital autorizado, el maximo por posicion y la exposicion maxima configurada.
+`BOT_TOTAL_CAPITAL_LIMIT_USDT` es la fuente principal de capital autorizado. Si el capital real es menor al limite configurado, el bot usa el capital real disponible y registra una advertencia suave. Las variables Spot/Futures separadas quedan temporalmente como deprecated para guardrails existentes.
 
 ## Checks antes de operar
 
@@ -59,7 +61,7 @@ python trading/post_cycle_check.py --save-baseline
 ```
 
 `setup_check.py` verifica Python, dependencias, `.env`, archivos, permisos, ping HTTPS a Binance y autenticacion de API. No abre operaciones.
-Tambien valida los limites de capital y muestra capital real vs capital usable para Spot/Futures.
+Tambien valida el limite total de capital y muestra capital real vs capital autorizado.
 
 `preflight_check.py` ejecuta healthcheck, validacion de observabilidad y analizadores locales.
 

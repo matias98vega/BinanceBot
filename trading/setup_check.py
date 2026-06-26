@@ -12,6 +12,7 @@ import urllib.request
 
 from config_loader import ENV_FILES, ConfigError, load_config, validate_environment
 import capital_manager
+import bot_state
 from telegram_alerts import send_telegram_alert
 
 
@@ -123,10 +124,16 @@ def _check_api_auth(config):
 
 
 def _check_capital_limits():
-    ok, result = capital_manager.validate_environment()
+    ok, error, total_limit = bot_state.validate_total_capital_limit()
     if not ok:
-        return False, result, None
-    return True, '', result
+        return False, error, None, []
+    warnings = []
+    split_ok, split_result = capital_manager.validate_environment()
+    if split_ok and getattr(split_result, 'deprecated_split_limits', False):
+        warnings.append('BOT_SPOT_CAPITAL_LIMIT_USDT and BOT_FUTURES_CAPITAL_LIMIT_USDT are deprecated; use BOT_TOTAL_CAPITAL_LIMIT_USDT as the source of truth.')
+    elif not split_ok:
+        warnings.append(f'Capital guardrail split limits using total fallback: {split_result}')
+    return True, '', total_limit, warnings
 
 
 def _get_capital_balances(config, api_ok):
@@ -165,8 +172,8 @@ def main():
     if config is None:
         config = load_config(require_api=False)
 
-    capital_ok, capital_error, limits = _check_capital_limits()
-    checks['Capital Limits'] = capital_ok
+    capital_ok, capital_error, total_limit, capital_warnings = _check_capital_limits()
+    checks['Capital Limit'] = capital_ok
 
     files_ok, missing_files, unwritable_files = _check_files(config)
     checks['Files'] = files_ok
@@ -183,9 +190,14 @@ def main():
     checks['API Authentication'] = api_ok
 
     spot_real, futures_real, balance_error = _get_capital_balances(config, api_ok and env_ok)
-    cap_snapshot = None
+    total_real = None
+    total_authorized = None
+    capital_warning = ''
     if capital_ok and spot_real is not None and futures_real is not None:
-        cap_snapshot = capital_manager.snapshot(spot_real, futures_real)
+        total_real = spot_real + futures_real
+        total_authorized = min(total_real, total_limit)
+        if total_real < total_limit:
+            capital_warning = 'real below configured limit'
 
     ready = all(checks.values())
 
@@ -193,13 +205,10 @@ def main():
     print(f'Python ............ {_status(checks["Python"])}')
     print(f'Dependencies ...... {_status(checks["Dependencies"])}')
     print(f'Environment ....... {_status(checks["Environment"])}')
-    print(f'Capital Limits .... {_status(checks["Capital Limits"])}')
-    print(f'Spot real ......... {_fmt_money(spot_real)}')
-    print(f'Spot usable ....... {_fmt_money(cap_snapshot["spot_usable"] if cap_snapshot else None)}')
-    print(f'Futures real ...... {_fmt_money(futures_real)}')
-    print(f'Futures usable .... {_fmt_money(cap_snapshot["futures_usable"] if cap_snapshot else None)}')
-    print(f'Max position % .... {limits.max_position_percent if capital_ok else "N/A"}')
-    print(f'Max exposure % .... {limits.max_exposure_percent if capital_ok else "N/A"}')
+    print(f'Capital limit ..... {_status(checks["Capital Limit"])}')
+    print(f'Total real ........ {_fmt_money(total_real)}')
+    print(f'Total authorized .. {_fmt_money(total_authorized)}')
+    print(f'Capital warning ... {capital_warning or "N/A"}')
     print(f'Files ............. {_status(checks["Files"])}')
     print(f'Binance Ping ...... {_status(checks["Binance Ping"])}')
     print(f'API Authentication. {_status(checks["API Authentication"])}')
@@ -216,6 +225,7 @@ def main():
         details.append(env_error)
     if capital_error:
         details.append(capital_error)
+    details.extend(capital_warnings)
     if balance_error:
         details.append('Capital balance lookup: ' + balance_error)
     if missing_files:

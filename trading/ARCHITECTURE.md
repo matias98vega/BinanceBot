@@ -62,6 +62,7 @@ Este documento describe la arquitectura actual del bot. Es una referencia de man
 - `market.py`, `longs.py`, `shorts.py`, `rebalance.py` y `sl_guardian.py` usan `utils.py` para hablar con Binance.
 - `config.py` es leido por todos los modulos principales.
 - `state.json` es la fuente local de posiciones abiertas y acumuladores.
+- `bot_state.json` es el snapshot persistido de lectura para capital, posiciones, PnL y estado de sistema. Telegram y Dashboard deben leerlo primero para no recalcular capital.
 - `trades_log.txt` es el log humano historico.
 - `trade_analytics.jsonl` es el log estructurado append-only para analitica.
 - `decision_snapshots.jsonl` es el log estructurado append-only de decisiones aceptadas, rechazadas y skipped.
@@ -96,6 +97,14 @@ Archivo JSON mutable. Se carga con `utils.load_state()` y se guarda con `utils.s
 - Campos auxiliares: blacklist review, limpieza de polvo, historial SL por simbolo.
 
 No se debe usar como historico completo de trades cerrados; solo representa estado operativo actual.
+
+### `bot_state.json`
+
+Snapshot JSON local generado por `bot_state.py` y persistido por `bot.py` al final del ciclo, o en salidas tempranas relevantes. No abre ordenes, no cierra posiciones y no modifica la estrategia.
+
+Incluye regimen de mercado, modo direccional, capital real total, limite total, capital autorizado efectivo, targets Spot/Futures, capital usado, posiciones Long/Short actuales y maximas, PnL y estado de sistema.
+
+`BOT_TOTAL_CAPITAL_LIMIT_USDT` es la fuente principal de capital autorizado. El capital autorizado efectivo es `min(total_real, BOT_TOTAL_CAPITAL_LIMIT_USDT)`. Si el capital real es menor al limite, se guarda una advertencia suave en `capital.warning`, pero no se considera error operativo.
 
 ### `trades_log.txt`
 

@@ -11,6 +11,7 @@ trading/trades_log.txt
 trading/analysis_log.txt
 trading/trade_analytics.jsonl
 trading/decision_snapshots.jsonl
+trading/bot_state.json
 trading/.cycle_baseline.json
 trading/telegram_offset.json
 trading/reports/
