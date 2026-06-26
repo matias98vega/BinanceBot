@@ -1,0 +1,18 @@
+[Unit]
+Description=BinanceBot read-only Telegram commands
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=binancebot
+Group=binancebot
+# Template path: if the project is not in /opt/BinanceBot, update WorkingDirectory and ExecStart.
+WorkingDirectory=/opt/BinanceBot
+Environment=PYTHONIOENCODING=utf-8
+ExecStart=/opt/BinanceBot/.venv/bin/python /opt/BinanceBot/trading/telegram_commands.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

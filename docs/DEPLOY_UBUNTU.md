@@ -149,6 +149,7 @@ sudo cp deploy/systemd/binancebot.timer /etc/systemd/system/
 sudo cp deploy/systemd/binancebot-guardian.service /etc/systemd/system/
 sudo cp deploy/systemd/binancebot-guardian.timer /etc/systemd/system/
 sudo cp deploy/systemd/binancebot-dashboard.service /etc/systemd/system/
+sudo cp deploy/systemd/binancebot-telegram.service /etc/systemd/system/
 ```
 
 Editar si hace falta:
@@ -157,6 +158,7 @@ Editar si hace falta:
 sudo nano /etc/systemd/system/binancebot.service
 sudo nano /etc/systemd/system/binancebot-guardian.service
 sudo nano /etc/systemd/system/binancebot-dashboard.service
+sudo nano /etc/systemd/system/binancebot-telegram.service
 ```
 
 Si el proyecto no esta en `/opt/BinanceBot`, cambiar estos campos:
@@ -164,7 +166,8 @@ Si el proyecto no esta en `/opt/BinanceBot`, cambiar estos campos:
 - `WorkingDirectory=/opt/BinanceBot`,
 - `ExecStart=/opt/BinanceBot/scripts/run_once.sh`,
 - `ExecStart=/opt/BinanceBot/.venv/bin/python /opt/BinanceBot/trading/sl_guardian.py`,
-- `ExecStart=/opt/BinanceBot/.venv/bin/python /opt/BinanceBot/dashboard/app.py`.
+- `ExecStart=/opt/BinanceBot/.venv/bin/python /opt/BinanceBot/dashboard/app.py`,
+- `ExecStart=/opt/BinanceBot/.venv/bin/python /opt/BinanceBot/trading/telegram_commands.py`.
 
 Tambien verificar:
 
@@ -183,6 +186,7 @@ Activar timers:
 sudo systemctl enable --now binancebot.timer
 sudo systemctl enable --now binancebot-guardian.timer
 sudo systemctl enable --now binancebot-dashboard.service
+sudo systemctl enable --now binancebot-telegram.service
 ```
 
 ## 12. Timers propuestos
@@ -240,6 +244,13 @@ journalctl -u binancebot-dashboard.service -n 100 --no-pager
 journalctl -u binancebot-dashboard.service -f
 ```
 
+Logs Telegram:
+
+```bash
+journalctl -u binancebot-telegram.service -n 100 --no-pager
+journalctl -u binancebot-telegram.service -f
+```
+
 Detener timers:
 
 ```bash
@@ -268,6 +279,7 @@ Ejecutar servicio manualmente:
 sudo systemctl start binancebot.service
 sudo systemctl start binancebot-guardian.service
 sudo systemctl start binancebot-dashboard.service
+sudo systemctl start binancebot-telegram.service
 ```
 
 Ver ultimas ejecuciones:
@@ -326,7 +338,62 @@ No implementar esto hasta necesitar acceso remoto. Diseno recomendado:
 - No exponer Flask/http.server directo a Internet.
 - No abrir `8080` en firewall publico.
 
-## 17. Seguridad
+## 17. Telegram comandos solo lectura
+
+Configurar en `.env`:
+
+```dotenv
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+```
+
+Instalar servicio:
+
+```bash
+sudo cp deploy/systemd/binancebot-telegram.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now binancebot-telegram.service
+```
+
+Probar desde el chat autorizado:
+
+```text
+/status
+/help
+/menu
+```
+
+Comandos disponibles:
+
+Estado:
+
+- `/status`
+- `/health`
+- `/capital`
+- `/positions`
+
+Trading:
+
+- `/lasttrades`
+- `/snapshots`
+
+Sistema:
+
+- `/help`
+- `/menu`
+
+Proximamente:
+
+- `/pnl`
+- `/stats`
+- `/logs`
+- `/version`
+
+`/menu` muestra una botonera inline para ejecutar consultas desde el celular sin escribir comandos. Los botones disponibles son Estado, Health, Capital, Posiciones, Ultimos trades, Snapshots y Ayuda.
+
+El servicio es solo lectura: no abre ordenes, no cierra ordenes, no pausa/reanuda y no modifica `state.json`. Solo escribe `trading/telegram_offset.json` para recordar el ultimo update procesado.
+
+## 18. Seguridad
 
 - No ejecutar como root.
 - Mantener `.env` con permisos `600`.
