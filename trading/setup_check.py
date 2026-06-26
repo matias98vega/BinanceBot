@@ -12,6 +12,7 @@ import urllib.request
 
 from config_loader import ENV_FILES, ConfigError, load_config, validate_environment
 import capital_manager
+from telegram_alerts import send_telegram_alert
 
 
 REQUIRED_PYTHON = (3, 10)
@@ -230,6 +231,9 @@ def main():
         print('Details:')
         for detail in details:
             print(f'- {detail}')
+
+    if not ready:
+        send_telegram_alert('ERROR', 'Setup check NOT READY', '\n'.join(details) if details else 'Setup check failed')
 
     return 0 if ready else 1
 

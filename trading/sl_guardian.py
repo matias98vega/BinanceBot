@@ -62,6 +62,7 @@ def _run():
                     msg = f'🛡️ GUARDIAN SL LONG {sym}: precio {price:.4f} <= SL {sl:.4f} → cerrando{partial_info}'
                     print(msg)
                     critical_alerts.append(msg)
+                    utils.send_alert(msg)
                     _close_spot_market(sym, qty)
                     pnl = (price - entry) * qty
                     triggered.append((pos.get('id'), sym, 'long', price, pnl))
@@ -94,6 +95,7 @@ def _run():
                         msg = f'\ud83d\udee1\ufe0f GUARDIAN SL SHORT {sym}: precio {price:.4f} >= SL {sl:.4f} \u2192 cerrando{partial_info}'
                         print(msg)
                         critical_alerts.append(msg)
+                        utils.send_alert(msg)
                         pnl = _close_fut_market(sym, qty, entry, price)
                         # Cancelar TP y SL nativo si existen
                         tp_id = pos.get('tp_order_id', '')
@@ -117,6 +119,7 @@ def _run():
                         msg = f'🛡️ SL nativo ejecutado {sym} → limpiando state'
                         print(msg)
                         critical_alerts.append(msg)
+                        utils.send_alert(msg)
                         pnl = (entry - price) * qty * (1 - config.FUTURES_FEE_RATE * 2)
                         # Cancelar TP
                         tp_id = pos.get('tp_order_id', '')

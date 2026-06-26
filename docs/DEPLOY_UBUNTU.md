@@ -148,6 +148,7 @@ sudo cp deploy/systemd/binancebot.service /etc/systemd/system/
 sudo cp deploy/systemd/binancebot.timer /etc/systemd/system/
 sudo cp deploy/systemd/binancebot-guardian.service /etc/systemd/system/
 sudo cp deploy/systemd/binancebot-guardian.timer /etc/systemd/system/
+sudo cp deploy/systemd/binancebot-dashboard.service /etc/systemd/system/
 ```
 
 Editar si hace falta:
@@ -155,13 +156,15 @@ Editar si hace falta:
 ```bash
 sudo nano /etc/systemd/system/binancebot.service
 sudo nano /etc/systemd/system/binancebot-guardian.service
+sudo nano /etc/systemd/system/binancebot-dashboard.service
 ```
 
 Si el proyecto no esta en `/opt/BinanceBot`, cambiar estos campos:
 
 - `WorkingDirectory=/opt/BinanceBot`,
 - `ExecStart=/opt/BinanceBot/scripts/run_once.sh`,
-- `ExecStart=/opt/BinanceBot/.venv/bin/python /opt/BinanceBot/trading/sl_guardian.py`.
+- `ExecStart=/opt/BinanceBot/.venv/bin/python /opt/BinanceBot/trading/sl_guardian.py`,
+- `ExecStart=/opt/BinanceBot/.venv/bin/python /opt/BinanceBot/dashboard/app.py`.
 
 Tambien verificar:
 
@@ -179,6 +182,7 @@ Activar timers:
 ```bash
 sudo systemctl enable --now binancebot.timer
 sudo systemctl enable --now binancebot-guardian.timer
+sudo systemctl enable --now binancebot-dashboard.service
 ```
 
 ## 12. Timers propuestos
@@ -229,6 +233,13 @@ journalctl -u binancebot-guardian.service -n 100 --no-pager
 journalctl -u binancebot-guardian.service -f
 ```
 
+Logs dashboard:
+
+```bash
+journalctl -u binancebot-dashboard.service -n 100 --no-pager
+journalctl -u binancebot-dashboard.service -f
+```
+
 Detener timers:
 
 ```bash
@@ -256,6 +267,7 @@ Ejecutar servicio manualmente:
 ```bash
 sudo systemctl start binancebot.service
 sudo systemctl start binancebot-guardian.service
+sudo systemctl start binancebot-dashboard.service
 ```
 
 Ver ultimas ejecuciones:
@@ -283,10 +295,42 @@ Checks:
 .venv/bin/python trading/analyze_decisions.py
 ```
 
-## 15. Seguridad
+## 15. Dashboard local como servicio
+
+El dashboard se ejecuta solo en loopback por defecto:
+
+```ini
+Environment=DASHBOARD_HOST=127.0.0.1
+Environment=DASHBOARD_PORT=8080
+```
+
+Instalar y probar:
+
+```bash
+sudo cp deploy/systemd/binancebot-dashboard.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now binancebot-dashboard.service
+curl http://127.0.0.1:8080/api/status
+```
+
+No abrir el puerto `8080` al publico. El dashboard lee estado local del bot y debe quedar accesible solo por SSH tunnel, VPN o reverse proxy protegido.
+
+## 16. Dashboard detras de Nginx/HTTPS
+
+No implementar esto hasta necesitar acceso remoto. Diseno recomendado:
+
+- Mantener `DASHBOARD_HOST=127.0.0.1`.
+- Nginx escucha en `443` y hace proxy a `http://127.0.0.1:8080`.
+- Activar Basic Auth en Nginx.
+- Usar HTTPS con Certbot.
+- No exponer Flask/http.server directo a Internet.
+- No abrir `8080` en firewall publico.
+
+## 17. Seguridad
 
 - No ejecutar como root.
 - Mantener `.env` con permisos `600`.
 - Usar API keys con permisos minimos.
 - Restringir IP de API key si Binance y el VPS lo permiten.
 - No subir `state.json`, `.env`, logs ni analytics privados a repos publicos.
+- No publicar `TELEGRAM_BOT_TOKEN` ni `TELEGRAM_CHAT_ID`.

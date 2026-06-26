@@ -5,6 +5,7 @@ import os
 import time
 from collections import defaultdict
 from config_loader import load_config
+from telegram_alerts import send_telegram_alert
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -184,6 +185,14 @@ def main():
     print('')
     print('Final status:')
     print(final_status)
+
+    if final_status in {'WARNING', 'ERROR'}:
+        parts = []
+        if warnings:
+            parts.append('Warnings: ' + '; '.join(warnings))
+        if errors:
+            parts.append('Errors: ' + '; '.join(errors))
+        send_telegram_alert(final_status, f'Healthcheck {final_status}', '\n'.join(parts) or final_status)
 
 
 if __name__ == '__main__':

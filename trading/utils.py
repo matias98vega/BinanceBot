@@ -289,6 +289,19 @@ def get_active_cooldowns(state):
 # ── Alertas ───────────────────────────────────────────────────────────────────
 def send_alert(msg):
     try:
+        from telegram_alerts import send_telegram_alert
+        lower = str(msg).lower()
+        level = 'WARNING'
+        if any(token in lower for token in ('urgente', 'critical', 'crítico', 'error', 'falló', 'fallo', 'emergencia')):
+            level = 'CRITICAL'
+        elif any(token in lower for token in ('sl', 'cerrado', 'pausado', 'blacklist')):
+            level = 'ERROR'
+        elif any(token in lower for token in ('abierto', 'rebalanceo', 'parcial', 'tp')):
+            level = 'WARNING'
+        send_telegram_alert(level, 'BinanceBot', msg)
+    except Exception:
+        pass
+    try:
         subprocess.run([
             'openclaw', 'message', 'send',
             '--channel', 'jarvis',

@@ -3,6 +3,7 @@
 import os
 import subprocess
 import sys
+from telegram_alerts import send_telegram_alert
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -69,7 +70,11 @@ def main():
     print(f'- observability: {statuses["observability"]}')
     print(f'- analyze_trades: {statuses["analyze_trades"]}')
     print(f'- analyze_decisions: {statuses["analyze_decisions"]}')
-    print(f'- final_status: {_final_status(statuses)}')
+    final_status = _final_status(statuses)
+    print(f'- final_status: {final_status}')
+    if final_status in {'WARNING', 'ERROR'}:
+        message = '\n'.join(f'{name}: {status}' for name, status in statuses.items())
+        send_telegram_alert(final_status, f'Preflight {final_status}', message)
     return 0
 
 

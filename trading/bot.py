@@ -12,6 +12,7 @@ except Exception:
 sys.path.insert(0, os.path.dirname(__file__))
 import config, utils, market, longs, shorts, rebalance, capital_manager
 from analytics import AnalyticsLogger, DecisionSnapshotLogger
+from telegram_alerts import send_telegram_alert
 
 OUTPUT = []
 ANALYTICS = AnalyticsLogger()
@@ -100,6 +101,7 @@ def main():
             print(f'\u26a0\ufe0f Rate limit de Binance alcanzado. El pr\u00f3ximo ciclo reintenta.')
         else:
             print(f'\u274c Error inesperado: {e}')
+            send_telegram_alert('CRITICAL', 'Bot error inesperado', str(e))
             import traceback; traceback.print_exc()
     finally:
         utils.release_lock(lock)

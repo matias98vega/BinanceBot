@@ -1,0 +1,20 @@
+[Unit]
+Description=BinanceBot local dashboard
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=binancebot
+Group=binancebot
+# Template path: if the project is not in /opt/BinanceBot, update WorkingDirectory and ExecStart.
+WorkingDirectory=/opt/BinanceBot
+Environment=PYTHONIOENCODING=utf-8
+Environment=DASHBOARD_HOST=127.0.0.1
+Environment=DASHBOARD_PORT=8080
+ExecStart=/opt/BinanceBot/.venv/bin/python /opt/BinanceBot/dashboard/app.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
