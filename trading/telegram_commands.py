@@ -3,14 +3,15 @@
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from config_loader import load_config, load_dotenv
+from config_loader import ENV_FILES, load_config, load_dotenv
 import capital_manager
 
 
@@ -18,6 +19,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(BASE_DIR)
 CONFIG = load_config(require_api=False)
 OFFSET_FILE = os.path.join(BASE_DIR, 'telegram_offset.json')
+UY_TZ = timezone(timedelta(hours=-3), 'UY')
 
 
 def _env():
@@ -26,6 +28,22 @@ def _env():
         os.environ.get('TELEGRAM_BOT_TOKEN', '').strip(),
         os.environ.get('TELEGRAM_CHAT_ID', '').strip(),
     )
+
+
+def _env_diagnostic():
+    load_dotenv()
+    detected = [path for path in ENV_FILES if os.path.exists(path)]
+    print('TELEGRAM COMMANDS DIAGNOSTIC')
+    print(f'cwd: {os.getcwd()}')
+    print('env files detected:')
+    if detected:
+        for path in detected:
+            print(f'- {path}')
+    else:
+        print('- none')
+    print(f'BOT_SPOT_CAPITAL_LIMIT_USDT present: {bool(os.environ.get("BOT_SPOT_CAPITAL_LIMIT_USDT"))}')
+    print(f'TELEGRAM_BOT_TOKEN present: {bool(os.environ.get("TELEGRAM_BOT_TOKEN"))}')
+    print(f'TELEGRAM_CHAT_ID present: {bool(os.environ.get("TELEGRAM_CHAT_ID"))}')
 
 
 def _read_json(path, default=None):
@@ -68,6 +86,35 @@ def _mtime_iso(path):
 def _mtime_short(path):
     value = _mtime_iso(path)
     return value.replace('T', ' ') if value else 'N/A'
+
+
+def _parse_time(value):
+    if value in (None, ''):
+        return None
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value, timezone.utc)
+    text = str(value).strip()
+    try:
+        if text.isdigit():
+            return datetime.fromtimestamp(int(text), timezone.utc)
+        return datetime.fromisoformat(text.replace('Z', '+00:00'))
+    except Exception:
+        return None
+
+
+def _fmt_uy(value):
+    dt = _parse_time(value)
+    if not dt:
+        return 'N/A'
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(UY_TZ).strftime('%d/%m %H:%M UY')
+
+
+def _mtime_uy(path):
+    if not os.path.exists(path):
+        return 'N/A'
+    return _fmt_uy(os.path.getmtime(path))
 
 
 def _is_recent(path, max_age_seconds):
@@ -124,6 +171,62 @@ def _state():
 def _positions():
     positions = _state().get('positions')
     return positions if isinstance(positions, list) else []
+
+
+def _capital_limits():
+    return capital_manager.get_limits()
+
+
+def _max_longs(spot_total):
+    return _config_int('MAX_LONG_POSITIONS', 2)
+
+
+def _max_shorts(futures_total):
+    return _config_int('MAX_SHORT_POSITIONS', 2)
+
+
+def _config_int(name, default):
+    try:
+        with open(os.path.join(BASE_DIR, 'config.py'), encoding='utf-8') as f:
+            text = f.read()
+        match = re.search(rf'^\s*{re.escape(name)}\s*=\s*([0-9]+)', text, re.MULTILINE)
+        if match:
+            return int(match.group(1))
+    except Exception:
+        pass
+    return default
+
+
+def _exposure_metrics():
+    positions = _positions()
+    try:
+        limits = _capital_limits()
+        spot_total = limits.spot_capital_limit_usdt
+        futures_total = limits.futures_capital_limit_usdt
+    except Exception:
+        spot_total = None
+        futures_total = None
+
+    long_positions = [p for p in positions if isinstance(p, dict) and p.get('direction') == 'long']
+    short_positions = [p for p in positions if isinstance(p, dict) and p.get('direction') == 'short']
+    spot_used = sum(float(p.get('entry_price') or 0) * float(p.get('quantity') or 0) for p in long_positions)
+    futures_used = 0.0
+    for pos in short_positions:
+        leverage = float(pos.get('leverage') or 1)
+        if leverage <= 0:
+            leverage = 1.0
+        futures_used += float(pos.get('entry_price') or 0) * float(pos.get('quantity') or 0) / leverage
+
+    return {
+        'long_count': len(long_positions),
+        'short_count': len(short_positions),
+        'max_longs': _max_longs(spot_total) if spot_total is not None else 'N/A',
+        'max_shorts': _max_shorts(futures_total) if futures_total is not None else 'N/A',
+        'spot_used': spot_used,
+        'spot_total': spot_total,
+        'futures_used': futures_used,
+        'futures_total': futures_total,
+    }
 
 
 def _merged_trades():
@@ -231,7 +334,14 @@ def _git_deploy_time():
 
 def _systemd_active_since(service):
     value = _run_local(['systemctl', 'show', service, '--property=ActiveEnterTimestamp', '--value'])
-    return value if value and value != 'N/A' else 'N/A'
+    if not value or value == 'N/A':
+        return 'N/A'
+    try:
+        clean = ' '.join(value.split()[1:])
+        dt = datetime.strptime(clean, '%Y-%m-%d %H:%M:%S %Z').replace(tzinfo=timezone.utc)
+        return _fmt_uy(dt)
+    except Exception:
+        return value
 
 
 def _server_uptime():
@@ -281,22 +391,22 @@ class HomePage(MenuPage):
         health, _, _ = _health_summary()
         bot = _bot_status()
         guardian = _guardian_status()
+        metrics = _exposure_metrics()
         return '\n'.join([
-            '🤖 BinanceBot',
-            '',
             f'{_status_icon(bot)} Bot: {bot}',
             f'{_status_icon(guardian)} Guardian: {guardian}',
-            '',
-            f'💰 Capital: {_fmt_money(state.get("daily_start_capital"))}',
-            f'📂 Posiciones abiertas: {len(_positions())}',
-            f'📈 PnL hoy: {_fmt_pnl(state.get("daily_pnl_usdt", 0))}',
-            '',
-            f'🕒 Última ejecución: {_mtime_short(CONFIG.state_file)}',
             f'❤️ Healthcheck: {health}',
             '',
-            '────────────',
+            f'📈 Longs: {metrics["long_count"]}/{metrics["max_longs"]}',
+            f'💵 Spot: {_fmt_money(metrics["spot_used"])} / {_fmt_money(metrics["spot_total"])}',
             '',
-            'Seleccione una opción:',
+            f'📉 Shorts: {metrics["short_count"]}/{metrics["max_shorts"]}',
+            f'💵 Futures: {_fmt_money(metrics["futures_used"])} / {_fmt_money(metrics["futures_total"])}',
+            '',
+            f'📊 PnL hoy: {_fmt_pnl(state.get("daily_pnl_usdt", 0))}',
+            '',
+            '🕒 Última ejecución',
+            _mtime_uy(CONFIG.state_file),
         ])
 
     def keyboard(self):
@@ -324,24 +434,19 @@ class CapitalPage(MenuPage):
                 '',
                 '────────────',
             ])
+        metrics = _exposure_metrics()
         return '\n'.join([
             '💰 Capital',
             '',
-            '💵 Spot',
-            'Real: N/A',
-            f'Límite: {_fmt_money(limits.spot_capital_limit_usdt)}',
-            'Disponible: N/A',
+            f'📈 Longs: {metrics["long_count"]}/{metrics["max_longs"]}',
+            f'💵 Spot: {_fmt_money(metrics["spot_used"])} / {_fmt_money(metrics["spot_total"])}',
             '',
-            '📈 Futures',
-            'Real: N/A',
-            f'Límite: {_fmt_money(limits.futures_capital_limit_usdt)}',
-            'Disponible: N/A',
+            f'📉 Shorts: {metrics["short_count"]}/{metrics["max_shorts"]}',
+            f'💵 Futures: {_fmt_money(metrics["futures_used"])} / {_fmt_money(metrics["futures_total"])}',
             '',
-            '📊 Configuración',
+            '⚙️ Riesgo',
             f'Máx exposición: {limits.max_exposure_percent:.2f}%',
-            f'Máx posición: {limits.max_position_percent:.2f}%',
-            '',
-            '────────────',
+            f'Máx por operación: {limits.max_position_percent:.2f}%',
         ])
 
 
@@ -383,7 +488,7 @@ class HealthPage(MenuPage):
         lines.append('')
         lines.append('Errores:')
         lines.extend([f'- {e}' for e in errors[:6]] or ['- none'])
-        lines.extend(['', f'Última verificación: {_mtime_short(CONFIG.state_file)}', '', '────────────'])
+        lines.extend(['', f'Última verificación: {_mtime_uy(CONFIG.state_file)}', '', '────────────'])
         return '\n'.join(lines)
 
 
@@ -404,7 +509,7 @@ class TradesPage(MenuPage):
                 pnl = 0
             icon = '🟢' if pnl >= 0 else '🔴'
             lines.append(
-                f'{icon} {trade.get("symbol")} {trade.get("side")} | '
+                f'{icon} {_fmt_uy(trade.get("exit_time"))} | {trade.get("symbol")} {trade.get("side")} | '
                 f'{_fmt_pnl(trade.get("pnl_usdt"))} | {_fmt(trade.get("exit_reason"))}'
             )
         lines.extend(['', '────────────'])
@@ -428,6 +533,7 @@ class SnapshotsPage(MenuPage):
             regime = str(snapshot.get('market_regime') or 'N/A').capitalize()
             icon = '🟥' if regime.lower() == 'bearish' else '🟩' if regime.lower() == 'bullish' else '🟨'
             lines.append(
+                f'📸 {_fmt_uy(snapshot.get("timestamp"))}\n'
                 f'{icon} {regime} | 🎯 {len(candidates)} | '
                 f'✅ {counts["accepted"]} | 🚫 {counts["rejected"]} | ⏭ {counts["skipped"]}'
             )
@@ -645,6 +751,8 @@ def _process_updates(token, allowed_chat_id, once=False):
 
 
 def run(once=False):
+    if once:
+        _env_diagnostic()
     token, chat_id = _env()
     if not token or not chat_id:
         print('Telegram commands inactive: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing')
