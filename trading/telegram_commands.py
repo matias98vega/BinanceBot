@@ -398,11 +398,15 @@ def _diagnostics():
 
 def _entries_label(status, allowed=None):
     status = str(status or '').upper()
-    if status == 'ENABLED' or allowed is True:
+    if status == 'ENABLED':
         return '\u2705 Habilitadas'
     if status == 'PARTIAL':
         return '\u26a0\ufe0f Parcialmente bloqueadas'
-    if status == 'BLOCKED' or allowed is False:
+    if status == 'BLOCKED':
+        return '\u274c Bloqueadas'
+    if allowed is True:
+        return '\u2705 Habilitadas'
+    if allowed is False:
         return '\u274c Bloqueadas'
     return '\u26aa No disponible'
 

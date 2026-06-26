@@ -204,8 +204,10 @@ def _build_rebalance_diagnostics(spot_real, futures_real, spot_target, futures_t
     try:
         import rebalance
         threshold = float(getattr(rebalance, 'REBALANCE_MIN_USDT', 2.0))
+        wallet_min = float(getattr(rebalance, 'REBALANCE_MIN_WALLET', 3.0))
     except Exception:
         threshold = 2.0
+        wallet_min = 3.0
 
     spot_real = float(spot_real)
     futures_real = float(futures_real)
@@ -221,6 +223,14 @@ def _build_rebalance_diagnostics(spot_real, futures_real, spot_target, futures_t
     futures_free_est = max(0.0, futures_real - float(futures_used or 0))
     if spot_real > spot_target and futures_real < futures_target:
         amount = min(spot_real - spot_target, futures_target - futures_real)
+        if amount <= max(threshold, wallet_min):
+            payload.update({
+                'status': 'NOT_REQUIRED',
+                'direction': 'NONE',
+                'amount_pending': 0.0,
+                'reason': 'Capital alineado respetando minimo de wallet',
+            })
+            return payload
         status = 'PENDING'
         reason = 'Esperando rebalance Spot -> Futures'
         if spot_free_est < min(amount, threshold):
@@ -235,6 +245,14 @@ def _build_rebalance_diagnostics(spot_real, futures_real, spot_target, futures_t
         return payload
     if futures_real > futures_target and spot_real < spot_target:
         amount = min(futures_real - futures_target, spot_target - spot_real)
+        if amount <= max(threshold, wallet_min):
+            payload.update({
+                'status': 'NOT_REQUIRED',
+                'direction': 'NONE',
+                'amount_pending': 0.0,
+                'reason': 'Capital alineado respetando minimo de wallet',
+            })
+            return payload
         status = 'PENDING'
         reason = 'Esperando rebalance Futures -> Spot'
         if futures_free_est < min(amount, threshold):
@@ -248,10 +266,20 @@ def _build_rebalance_diagnostics(spot_real, futures_real, spot_target, futures_t
         })
         return payload
 
+    pending = max(spot_diff, futures_diff)
+    if pending <= max(threshold, wallet_min):
+        payload.update({
+            'status': 'NOT_REQUIRED',
+            'direction': 'NONE',
+            'amount_pending': 0.0,
+            'reason': 'Capital alineado respetando minimo de wallet',
+        })
+        return payload
+
     payload.update({
         'status': 'PENDING',
         'direction': 'NONE',
-        'amount_pending': _round_or_none(max(spot_diff, futures_diff), 4),
+        'amount_pending': _round_or_none(pending, 4),
         'reason': 'Capital fuera de target',
     })
     return payload
