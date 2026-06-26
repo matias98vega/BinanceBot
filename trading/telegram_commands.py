@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -196,6 +197,59 @@ def _version():
     return 'N/A'
 
 
+def _run_local(args):
+    try:
+        proc = subprocess.run(
+            args,
+            cwd=PROJECT_DIR,
+            text=True,
+            capture_output=True,
+            timeout=3,
+            check=False,
+        )
+        if proc.returncode == 0:
+            return (proc.stdout or '').strip() or 'N/A'
+    except Exception:
+        pass
+    return 'N/A'
+
+
+def _git_commit():
+    return _run_local(['git', 'rev-parse', '--short', 'HEAD'])
+
+
+def _git_deploy_time():
+    value = _run_local(['git', 'log', '-1', '--format=%ci'])
+    if value == 'N/A':
+        return value
+    try:
+        dt = datetime.strptime(value, '%Y-%m-%d %H:%M:%S %z')
+        return dt.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+    except Exception:
+        return value
+
+
+def _systemd_active_since(service):
+    value = _run_local(['systemctl', 'show', service, '--property=ActiveEnterTimestamp', '--value'])
+    return value if value and value != 'N/A' else 'N/A'
+
+
+def _server_uptime():
+    try:
+        with open('/proc/uptime', encoding='utf-8') as f:
+            seconds = float(f.read().split()[0])
+        days = int(seconds // 86400)
+        hours = int((seconds % 86400) // 3600)
+        minutes = int((seconds % 3600) // 60)
+        if days:
+            return f'{days}d {hours}h {minutes}m'
+        if hours:
+            return f'{hours}h {minutes}m'
+        return f'{minutes}m'
+    except Exception:
+        return 'N/A'
+
+
 def _button(text, data):
     return {'text': text, 'callback_data': data}
 
@@ -260,28 +314,32 @@ class CapitalPage(MenuPage):
     def render(self):
         try:
             limits = capital_manager.get_limits()
-            spot_limit = _fmt_money(limits.spot_capital_limit_usdt)
-            fut_limit = _fmt_money(limits.futures_capital_limit_usdt)
-            max_pos = f'{limits.max_position_percent:.2f}%'
-            max_exp = f'{limits.max_exposure_percent:.2f}%'
         except Exception as exc:
-            spot_limit = fut_limit = max_pos = max_exp = f'Error: {exc}'
+            missing = str(exc).replace('Missing required environment variable:', '').strip()
+            return '\n'.join([
+                '💰 Capital',
+                '',
+                '⚠️ Configuración incompleta',
+                f'Falta: {missing or exc}',
+                '',
+                '────────────',
+            ])
         return '\n'.join([
             '💰 Capital',
             '',
             '💵 Spot',
-            f'Real: N/A',
-            f'Límite: {spot_limit}',
+            'Real: N/A',
+            f'Límite: {_fmt_money(limits.spot_capital_limit_usdt)}',
             'Disponible: N/A',
             '',
             '📈 Futures',
             'Real: N/A',
-            f'Límite: {fut_limit}',
+            f'Límite: {_fmt_money(limits.futures_capital_limit_usdt)}',
             'Disponible: N/A',
             '',
             '📊 Configuración',
-            f'Máx exposición: {max_exp}',
-            f'Máx posición: {max_pos}',
+            f'Máx exposición: {limits.max_exposure_percent:.2f}%',
+            f'Máx posición: {limits.max_position_percent:.2f}%',
             '',
             '────────────',
         ])
@@ -369,14 +427,10 @@ class SnapshotsPage(MenuPage):
                     counts[candidate.get('decision')] += 1
             regime = str(snapshot.get('market_regime') or 'N/A').capitalize()
             icon = '🟥' if regime.lower() == 'bearish' else '🟩' if regime.lower() == 'bullish' else '🟨'
-            lines.extend([
-                f'{icon} {regime}',
-                f'🎯 Candidatos: {len(candidates)}',
-                f'✅ Aceptados: {counts["accepted"]}',
-                f'⏭ Omitidos: {counts["skipped"]}',
-                f'🚫 Rechazados: {counts["rejected"]}',
-                '',
-            ])
+            lines.append(
+                f'{icon} {regime} | 🎯 {len(candidates)} | '
+                f'✅ {counts["accepted"]} | 🚫 {counts["rejected"]} | ⏭ {counts["skipped"]}'
+            )
         lines.append('────────────')
         return '\n'.join(lines)
 
@@ -388,6 +442,8 @@ class SystemPage(MenuPage):
         bot = _bot_status()
         guardian = _guardian_status()
         dashboard = 'ONLINE' if _is_recent(CONFIG.state_file, 15 * 60) else 'N/A'
+        dashboard_since = _systemd_active_since('binancebot-dashboard.service')
+        telegram_since = _systemd_active_since('binancebot-telegram.service')
         return '\n'.join([
             '⚙ Sistema',
             '',
@@ -395,8 +451,11 @@ class SystemPage(MenuPage):
             f'{_status_icon(guardian)} Guardian: {guardian}',
             f'Dashboard: {dashboard}',
             f'Versión: {_version()}',
-            f'Último deploy: N/A',
-            f'Uptime: N/A',
+            f'Commit: {_git_commit()}',
+            f'Deploy: {_git_deploy_time()}',
+            f'Dashboard desde: {dashboard_since}',
+            f'Telegram desde: {telegram_since}',
+            f'Servidor uptime: {_server_uptime()}',
             '',
             '────────────',
         ])
@@ -536,7 +595,11 @@ def _answer_callback_query(token, callback_query_id):
 
 def _process_updates(token, allowed_chat_id, once=False):
     offset = _load_offset()
-    params = {'timeout': 0 if once else 25}
+    params = {
+        'timeout': 0 if once else 25,
+        'limit': 20,
+        'allowed_updates': json.dumps(['message', 'edited_message', 'callback_query']),
+    }
     if offset:
         params['offset'] = offset
     try:
@@ -564,15 +627,18 @@ def _process_updates(token, allowed_chat_id, once=False):
             _answer_callback_query(token, callback.get('id'))
             response = _dispatch_callback(callback.get('data'))
             _edit_message(token, chat_id, message.get('message_id'), response)
+            _save_offset(update_id + 1)
             continue
 
         message = update.get('message') or update.get('edited_message') or {}
         chat = message.get('chat') or {}
         chat_id = str(chat.get('id', ''))
         if chat_id != str(allowed_chat_id):
+            _save_offset(update_id + 1)
             continue
         response = _dispatch_text(message.get('text') or '')
         _send_message(token, chat_id, response)
+        _save_offset(update_id + 1)
 
     if max_update_id >= 0:
         _save_offset(max_update_id + 1)
@@ -587,7 +653,6 @@ def run(once=False):
         _process_updates(token, chat_id, once=once)
         if once:
             break
-        time.sleep(1)
     return 0
 
 

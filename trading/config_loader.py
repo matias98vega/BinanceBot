@@ -50,7 +50,8 @@ def load_dotenv():
                 key, value = line.split('=', 1)
                 key = key.strip()
                 value = value.strip().strip('"').strip("'")
-                os.environ.setdefault(key, value)
+                if os.environ.get(key) in (None, ''):
+                    os.environ[key] = value
     return loaded
 
 
