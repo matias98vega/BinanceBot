@@ -216,8 +216,15 @@ def _exposure_metrics():
             'short_count': short_state.get('current', 0),
             'max_longs': long_state.get('max', 'N/A'),
             'max_shorts': short_state.get('max', 'N/A'),
+            'total_real': capital.get('total_real'),
+            'total_limit': capital.get('total_limit'),
+            'total_authorized': capital.get('total_authorized'),
+            'spot_real': capital.get('spot_real'),
+            'spot_target': capital.get('spot_target'),
             'spot_used': capital.get('spot_used'),
             'spot_total': capital.get('spot_target'),
+            'futures_real': capital.get('futures_real'),
+            'futures_target': capital.get('futures_target'),
             'futures_used': capital.get('futures_used'),
             'futures_total': capital.get('futures_target'),
             'warning': capital.get('warning'),
@@ -248,8 +255,15 @@ def _exposure_metrics():
         'short_count': len(short_positions),
         'max_longs': _max_longs(spot_total) if spot_total is not None else 'N/A',
         'max_shorts': _max_shorts(futures_total) if futures_total is not None else 'N/A',
+        'total_real': None,
+        'total_limit': None,
+        'total_authorized': None,
+        'spot_real': None,
+        'spot_target': spot_total,
         'spot_used': spot_used,
         'spot_total': spot_total,
+        'futures_real': None,
+        'futures_target': futures_total,
         'futures_used': futures_used,
         'futures_total': futures_total,
         'warning': None,
@@ -328,7 +342,7 @@ def _guardian_status():
 
 
 def _status_icon(status):
-    return '🟢' if status in {'ONLINE', 'OK'} else '🟡' if status == 'WARNING' else '🔴'
+    return '\U0001F7E2' if status in {'ONLINE', 'OK'} else '\U0001F7E1' if status == 'WARNING' else '\U0001F534'
 
 
 def _version():
@@ -443,29 +457,31 @@ class HomePage(MenuPage):
         lines = [
             f'{_status_icon(bot)} Bot: {bot}',
             f'{_status_icon(guardian)} Guardian: {guardian}',
-            f'❤️ Healthcheck: {health}',
+            f'\u2764\ufe0f Healthcheck: {health}',
             '',
-            f'📈 Longs: {metrics["long_count"]}/{metrics["max_longs"]}',
-            f'💵 Spot: {_fmt_money(metrics["spot_used"])} / {_fmt_money(metrics["spot_total"])}',
+            f'\U0001F4C8 Longs: {metrics["long_count"]}/{metrics["max_longs"]}',
+            f'\U0001F4B5 Spot real: {_fmt_money(metrics["spot_real"])}',
+            f'\U0001F3AF Spot target: {_fmt_money(metrics["spot_target"])}',
             '',
-            f'📉 Shorts: {metrics["short_count"]}/{metrics["max_shorts"]}',
-            f'💵 Futures: {_fmt_money(metrics["futures_used"])} / {_fmt_money(metrics["futures_total"])}',
+            f'\U0001F4C9 Shorts: {metrics["short_count"]}/{metrics["max_shorts"]}',
+            f'\U0001F4B5 Futures real: {_fmt_money(metrics["futures_real"])}',
+            f'\U0001F3AF Futures target: {_fmt_money(metrics["futures_target"])}',
             '',
-            f'📊 PnL hoy: {_fmt_pnl(pnl.get("today", state.get("daily_pnl_usdt", 0)))}',
+            f'\U0001F4CA PnL hoy: {_fmt_pnl(pnl.get("today", state.get("daily_pnl_usdt", 0)))}',
             '',
-            '🕒 Última ejecución',
+            '\U0001F552 Ultima ejecucion',
             _fmt_uy(system.get('last_execution')) if system.get('last_execution') else _mtime_uy(CONFIG.state_file),
         ]
         if metrics.get('warning'):
-            lines.extend(['', '⚠️ Capital real menor al límite configurado.'])
+            lines.extend(['', '\u26a0\ufe0f Capital real menor al limite configurado.'])
         return '\n'.join(lines)
 
     def keyboard(self):
         return [
-            [_button('💰 Capital', 'capital'), _button('📂 Posiciones', 'positions')],
-            [_button('📈 Trades', 'trades'), _button('❤️ Salud', 'health')],
-            [_button('📸 Snapshots', 'snapshots'), _button('⚙ Sistema', 'system')],
-            [_button('🔄 Actualizar', 'r:home')],
+            [_button('\U0001F4B0 Capital', 'capital'), _button('\U0001F4C2 Posiciones', 'positions')],
+            [_button('\U0001F4C8 Trades', 'trades'), _button('\u2764\ufe0f Salud', 'health')],
+            [_button('\U0001F4F8 Snapshots', 'snapshots'), _button('\u2699 Sistema', 'system')],
+            [_button('\U0001F504 Actualizar', 'r:home')],
         ]
 
 
@@ -477,17 +493,26 @@ class CapitalPage(MenuPage):
         max_exposure = metrics.get('max_exposure_percent')
         max_position = metrics.get('max_position_percent')
         return '\n'.join([
-            '💰 Capital',
+            '\U0001F4B0 Capital',
             '',
-            f'📈 Longs: {metrics["long_count"]}/{metrics["max_longs"]}',
-            f'💵 Spot: {_fmt_money(metrics["spot_used"])} / {_fmt_money(metrics["spot_total"])}',
+            f'Total real: {_fmt_money(metrics["total_real"])}',
+            f'Total limit: {_fmt_money(metrics["total_limit"])}',
+            f'Total authorized: {_fmt_money(metrics["total_authorized"])}',
             '',
-            f'📉 Shorts: {metrics["short_count"]}/{metrics["max_shorts"]}',
-            f'💵 Futures: {_fmt_money(metrics["futures_used"])} / {_fmt_money(metrics["futures_total"])}',
+            f'\U0001F4C8 Longs: {metrics["long_count"]}/{metrics["max_longs"]}',
+            f'Spot real: {_fmt_money(metrics["spot_real"])}',
+            f'Spot target: {_fmt_money(metrics["spot_target"])}',
+            f'Spot used: {_fmt_money(metrics["spot_used"])}',
             '',
-            '⚙️ Riesgo',
-            f'Máx exposición: {max_exposure:.2f}%' if max_exposure is not None else 'Máx exposición: N/A',
-            f'Máx por operación: {max_position:.2f}%' if max_position is not None else 'Máx por operación: N/A',
+            f'\U0001F4C9 Shorts: {metrics["short_count"]}/{metrics["max_shorts"]}',
+            f'Futures real: {_fmt_money(metrics["futures_real"])}',
+            f'Futures target: {_fmt_money(metrics["futures_target"])}',
+            f'Futures used: {_fmt_money(metrics["futures_used"])}',
+            f'Warning: {metrics["warning"] or "N/A"}',
+            '',
+            '\u2699\ufe0f Riesgo',
+            f'Max exposicion: {max_exposure:.2f}%' if max_exposure is not None else 'Max exposicion: N/A',
+            f'Max por operacion: {max_position:.2f}%' if max_position is not None else 'Max por operacion: N/A',
         ])
 
 

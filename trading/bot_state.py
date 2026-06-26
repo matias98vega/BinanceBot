@@ -6,6 +6,7 @@ change trading decisions.
 """
 import json
 import os
+import subprocess
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -41,6 +42,59 @@ def _env_float(name):
         return float(raw)
     except ValueError:
         return None
+
+
+def _systemctl_value(args):
+    try:
+        proc = subprocess.run(
+            ['systemctl', *args],
+            text=True,
+            capture_output=True,
+            timeout=2,
+            check=False,
+        )
+        if proc.returncode == 0:
+            return (proc.stdout or '').strip()
+    except Exception:
+        pass
+    return None
+
+
+def _systemd_unit_online(service_name, timer_name=None):
+    service_active = _systemctl_value(['is-active', service_name])
+    if service_active == 'active':
+        return 'ONLINE'
+
+    if timer_name:
+        timer_active = _systemctl_value(['is-active', timer_name])
+        timer_enabled = _systemctl_value(['is-enabled', timer_name])
+        next_elapse = _systemctl_value(['show', timer_name, '--property=NextElapseUSecRealtime', '--value'])
+        if timer_active == 'active' or timer_enabled == 'enabled':
+            return 'ONLINE'
+        if next_elapse and next_elapse.lower() not in {'n/a', '0'}:
+            return 'ONLINE'
+
+    if service_active in {'inactive', 'failed'}:
+        return 'OFFLINE'
+    if timer_name:
+        timer_active = _systemctl_value(['is-active', timer_name])
+        timer_enabled = _systemctl_value(['is-enabled', timer_name])
+        if timer_active in {'inactive', 'failed'} or timer_enabled in {'disabled', 'masked'}:
+            return 'OFFLINE'
+    return 'UNKNOWN'
+
+
+def _wallet_max_positions(target_capital, configured_max, dynamic_value):
+    target = _float_or_none(target_capital)
+    if target is not None and target <= 0:
+        return 0
+    if dynamic_value is None:
+        return configured_max
+    try:
+        dynamic_int = int(dynamic_value)
+    except (TypeError, ValueError):
+        return configured_max
+    return max(0, min(dynamic_int, configured_max))
 
 
 def get_total_capital_limit():
@@ -144,16 +198,28 @@ def build_bot_state(
 
     if max_longs is None:
         try:
-            max_longs = utils.get_max_long_positions(spot_target if spot_target is not None else (spot_real or 0))
+            max_longs = _wallet_max_positions(
+                spot_target,
+                getattr(config, 'MAX_LONG_POSITIONS', 2),
+                utils.get_max_long_positions(spot_target if spot_target is not None else (spot_real or 0)),
+            )
         except Exception:
             max_longs = None
     if max_shorts is None:
         try:
-            max_shorts = utils.get_max_short_positions(futures_target if futures_target is not None else (futures_real or 0))
+            max_shorts = _wallet_max_positions(
+                futures_target,
+                getattr(config, 'MAX_SHORT_POSITIONS', 2),
+                utils.get_max_short_positions(futures_target if futures_target is not None else (futures_real or 0)),
+            )
         except Exception:
             max_shorts = None
 
     last_execution = state.get('last_update') or _now_iso()
+    if guardian_status == 'UNKNOWN':
+        guardian_status = _systemd_unit_online('binancebot-guardian.service', 'binancebot-guardian.timer')
+    if dashboard_status == 'UNKNOWN':
+        dashboard_status = _systemd_unit_online('binancebot-dashboard.service')
     return {
         'timestamp': _now_iso(),
         'timezone': 'America/Montevideo',

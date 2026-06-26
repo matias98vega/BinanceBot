@@ -14,6 +14,9 @@ CAPITAL_ENV_VARS = (
     'BOT_MAX_EXPOSURE_PERCENT',
 )
 
+DEFAULT_MAX_POSITION_PERCENT = 20.0
+DEFAULT_MAX_EXPOSURE_PERCENT = 80.0
+
 
 class CapitalLimitError(RuntimeError):
     pass
@@ -27,6 +30,8 @@ class CapitalLimits:
     max_position_percent: float
     max_exposure_percent: float
     deprecated_split_limits: bool = False
+    default_guardrails: bool = False
+    invalid_total_limit: bool = False
 
 
 def _float_env(name, required=True):
@@ -44,22 +49,26 @@ def _float_env(name, required=True):
 
 def get_limits():
     load_dotenv()
-    total_limit = _float_env('BOT_TOTAL_CAPITAL_LIMIT_USDT')
+    total_limit = _float_env('BOT_TOTAL_CAPITAL_LIMIT_USDT', required=False)
     spot_limit = _float_env('BOT_SPOT_CAPITAL_LIMIT_USDT', required=False)
     futures_limit = _float_env('BOT_FUTURES_CAPITAL_LIMIT_USDT', required=False)
-    max_position = _float_env('BOT_MAX_POSITION_PERCENT')
-    max_exposure = _float_env('BOT_MAX_EXPOSURE_PERCENT')
+    max_position = _float_env('BOT_MAX_POSITION_PERCENT', required=False)
+    max_exposure = _float_env('BOT_MAX_EXPOSURE_PERCENT', required=False)
 
-    if total_limit <= 0:
-        raise CapitalLimitError('BOT_TOTAL_CAPITAL_LIMIT_USDT must be > 0')
+    invalid_total_limit = total_limit is None or total_limit <= 0
+    if invalid_total_limit:
+        total_limit = 0.0
     deprecated_split_limits = spot_limit is not None or futures_limit is not None
-    if spot_limit is None:
-        spot_limit = total_limit
-    if futures_limit is None:
-        futures_limit = total_limit
-    if spot_limit <= 0:
+    default_guardrails = max_position is None or max_exposure is None
+    spot_limit = total_limit
+    futures_limit = total_limit
+    if max_position is None:
+        max_position = DEFAULT_MAX_POSITION_PERCENT
+    if max_exposure is None:
+        max_exposure = DEFAULT_MAX_EXPOSURE_PERCENT
+    if not invalid_total_limit and spot_limit <= 0:
         raise CapitalLimitError('BOT_SPOT_CAPITAL_LIMIT_USDT must be > 0')
-    if futures_limit <= 0:
+    if not invalid_total_limit and futures_limit <= 0:
         raise CapitalLimitError('BOT_FUTURES_CAPITAL_LIMIT_USDT must be > 0')
     if max_position <= 0 or max_position > 100:
         raise CapitalLimitError('BOT_MAX_POSITION_PERCENT must be > 0 and <= 100')
@@ -73,6 +82,8 @@ def get_limits():
         max_position_percent=max_position,
         max_exposure_percent=max_exposure,
         deprecated_split_limits=deprecated_split_limits,
+        default_guardrails=default_guardrails,
+        invalid_total_limit=invalid_total_limit,
     )
 
 
@@ -193,6 +204,8 @@ def snapshot(spot_real_usdt=None, futures_real_usdt=None):
         'futures_capital_limit_usdt': limits.futures_capital_limit_usdt,
         'total_capital_limit_usdt': limits.total_capital_limit_usdt,
         'deprecated_split_limits': limits.deprecated_split_limits,
+        'default_guardrails': limits.default_guardrails,
+        'invalid_total_limit': limits.invalid_total_limit,
         'max_position_percent': limits.max_position_percent,
         'max_exposure_percent': limits.max_exposure_percent,
         'spot_max_position': max_position_size(spot_usable, limits),

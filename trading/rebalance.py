@@ -19,7 +19,7 @@ Filosofía de cambio de tendencia:
   para saber hacia dónde ir, pero solo transfiere lo que está disponible ahora.
 """
 
-import sys, os
+import sys, os, logging
 sys.path.insert(0, os.path.dirname(__file__))
 import utils, config, market, capital_manager
 
@@ -32,6 +32,18 @@ RATIO_VERY_BULLISH_SPOT    = 0.80   # spot recibe 80% cuando alcista >3 días co
 VERY_BULLISH_DAYS          = 3.0    # umbral de días consecutivos alcistas
 REBALANCE_MIN_USDT         = 2.0    # no transferir menos de $2
 REBALANCE_MIN_WALLET       = 3.0    # no dejar ninguna wallet con menos de $3 libres
+
+
+def _rebalance_log(message):
+    line = f'REBALANCE {message}'
+    try:
+        logging.warning(line)
+    except Exception:
+        pass
+    try:
+        print(line)
+    except Exception:
+        pass
 
 
 def _capital_total(state):
@@ -137,6 +149,10 @@ def rebalance(state, btc_ctx=None):
     total_free = spot_free + fut_free
 
     if total_free < REBALANCE_MIN_WALLET * 2:
+        _rebalance_log(
+            f'SKIP: reason=free capital below wallet minimum regime={trend} '
+            f'total_free={total_free:.2f} spot_free={spot_free:.2f} fut_free={fut_free:.2f}'
+        )
         return False, f'Capital libre insuficiente para rebalancear (${total_free:.2f})'
 
     # ── Targets calculados sobre capital TOTAL ────────────────────────────────
@@ -186,8 +202,17 @@ def rebalance(state, btc_ctx=None):
     # Capital actual real (libre + en posiciones) por wallet
     # spot_actual y fut_actual ya calculados arriba desde _capital_total
     diff_fut = target_fut - fut_actual   # positivo = futures tiene menos de lo que debería
+    _rebalance_log(
+        f'CHECK: regime={trend} total={total_capital:.2f} spot_free={spot_free:.2f} '
+        f'spot_actual={spot_actual:.2f} fut_actual={fut_actual:.2f} fut_free={fut_free:.2f} '
+        f'target_fut={target_fut:.2f} diff_fut={diff_fut:.2f}'
+    )
 
     if abs(diff_fut) < REBALANCE_MIN_USDT:
+        _rebalance_log(
+            f'SKIP: reason=balances aligned regime={trend} spot_actual={spot_actual:.2f} '
+            f'fut_actual={fut_actual:.2f} diff_fut={diff_fut:.2f}'
+        )
         return False, f'Balances ya alineados ({trend}): spot=${spot_actual:.2f} fut=${fut_actual:.2f}'
 
     # ── Cambio de tendencia: rebalanceo PACIENTE ──────────────────────────────
@@ -200,13 +225,17 @@ def rebalance(state, btc_ctx=None):
     if diff_fut > 0:
         # Necesitamos más capital en futures (bearish) — mover Spot → Futures
         amount = round(min(diff_fut, spot_free - REBALANCE_MIN_WALLET), 2)
+        _rebalance_log(f'CHECK: direction=Spot->Futures calculated_amount={amount:.2f}')
         try:
             capped_amount = capital_manager.cap_transfer_amount('FUTURES', fut_actual, amount)
         except Exception as e:
+            _rebalance_log(f'SKIP: reason=capital_manager error direction=Spot->Futures error={e}')
             return False, f'Capital limit: rebalanceo Spot->Futures bloqueado ({e})'
         if capped_amount < amount:
+            _rebalance_log(f'CHECK: capital_manager capped Spot->Futures requested={amount:.2f} capped={capped_amount:.2f}')
             amount = round(capped_amount, 2)
             if amount < REBALANCE_MIN_USDT:
+                _rebalance_log('SKIP: reason=capital_manager cap_transfer_amount returned 0')
                 return False, 'Capital limit: no se transfiere a Futures porque la wallet destino ya alcanzo el limite configurado'
         if amount < REBALANCE_MIN_USDT:
             if trend_flipped and longs_open:
@@ -215,12 +244,15 @@ def rebalance(state, btc_ctx=None):
                     f'⏳ Tendencia viró a BEARISH — esperando cierre de {len(longs_open)} long(s) ' 
                     f'para liberar capital spot. Rebalanceo progresivo en curso.'
                 )
+            _rebalance_log(f'SKIP: reason=insufficient spot free spot_free={spot_free:.2f} amount={amount:.2f}')
             return False, f'No hay suficiente USDT libre en spot para transferir (${spot_free:.2f})'
 
         if longs_open and spot_free - amount < REBALANCE_MIN_WALLET:
+            _rebalance_log(f'SKIP: reason=active longs count={len(longs_open)} spot_free={spot_free:.2f} amount={amount:.2f}')
             return False, f'No se puede reducir spot: hay {len(longs_open)} long(s) activo(s)'
 
         try:
+            _rebalance_log(f'TRANSFER: {amount:.2f} Spot -> Futures')
             utils.spot_signed('POST', '/sapi/v1/asset/transfer', {
                 'type': 'MAIN_UMFUTURE', 'asset': 'USDT', 'amount': str(amount),
             })
@@ -237,13 +269,17 @@ def rebalance(state, btc_ctx=None):
     else:
         # Necesitamos más capital en spot (bullish) — mover Futures → Spot
         amount = round(min(-diff_fut, fut_free - REBALANCE_MIN_WALLET), 2)
+        _rebalance_log(f'CHECK: direction=Futures->Spot calculated_amount={amount:.2f}')
         try:
             capped_amount = capital_manager.cap_transfer_amount('SPOT', spot_actual, amount)
         except Exception as e:
+            _rebalance_log(f'SKIP: reason=capital_manager error direction=Futures->Spot error={e}')
             return False, f'Capital limit: rebalanceo Futures->Spot bloqueado ({e})'
         if capped_amount < amount:
+            _rebalance_log(f'CHECK: capital_manager capped Futures->Spot requested={amount:.2f} capped={capped_amount:.2f}')
             amount = round(capped_amount, 2)
             if amount < REBALANCE_MIN_USDT:
+                _rebalance_log('SKIP: reason=capital_manager cap_transfer_amount returned 0')
                 return False, 'Capital limit: no se transfiere a Spot porque la wallet destino ya alcanzo el limite configurado'
         if amount < REBALANCE_MIN_USDT:
             if trend_flipped and shorts_open:
@@ -252,15 +288,18 @@ def rebalance(state, btc_ctx=None):
                     f'⏳ Tendencia viró a BULLISH — esperando cierre de {len(shorts_open)} short(s) '
                     f'para liberar capital futures. Rebalanceo progresivo en curso.'
                 )
+            _rebalance_log(f'SKIP: reason=insufficient futures free fut_free={fut_free:.2f} amount={amount:.2f}')
             return False, f'No hay suficiente USDT libre en futures para transferir (${fut_free:.2f})'
 
         if shorts_open and fut_free - amount < REBALANCE_MIN_WALLET:
+            _rebalance_log(f'SKIP: reason=active shorts count={len(shorts_open)} fut_free={fut_free:.2f} amount={amount:.2f}')
             return False, (
                 f'⏳ Futures ocupado ({len(shorts_open)} short(s) con margen). '
                 f'Transferiré ${amount:.2f} cuando cierren posiciones.'
             )
 
         try:
+            _rebalance_log(f'TRANSFER: {amount:.2f} Futures -> Spot')
             utils.spot_signed('POST', '/sapi/v1/asset/transfer', {
                 'type': 'UMFUTURE_MAIN', 'asset': 'USDT', 'amount': str(amount),
             })
