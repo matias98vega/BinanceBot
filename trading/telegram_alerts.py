@@ -13,6 +13,19 @@ from config_loader import PROJECT_DIR, load_dotenv
 
 ALERT_STATE_FILE = os.path.join(PROJECT_DIR, 'trading', 'telegram_alert_state.json')
 DEFAULT_COOLDOWN_SECONDS = 1800
+DEFAULT_NOTIFY_FLAGS = {
+    'OPEN': True,
+    'CLOSE': True,
+    'TP': True,
+    'SL': True,
+    'PARTIAL': True,
+    'REBALANCE': True,
+    'BLACKLIST': False,
+    'SNAPSHOT': False,
+    'WARNING': True,
+    'ERROR': True,
+    'CRITICAL': True,
+}
 
 LEVELS = {
     'INFO': 10,
@@ -27,6 +40,17 @@ def _env_bool(name, default=False):
     if raw is None or raw == '':
         return default
     return raw.strip().lower() in {'1', 'true', 'yes', 'y', 'on'}
+
+
+def notification_enabled(kind, level=None):
+    load_dotenv()
+    key = str(kind or level or 'INFO').strip().upper()
+    if key in {'INFO'}:
+        return True
+    if key not in DEFAULT_NOTIFY_FLAGS and level:
+        key = str(level).strip().upper()
+    default = DEFAULT_NOTIFY_FLAGS.get(key, True)
+    return _env_bool(f'TELEGRAM_NOTIFY_{key}', default)
 
 
 def _level_value(level):
@@ -149,7 +173,7 @@ def _send_raw(token, chat_id, text):
     return bool(payload.get('ok'))
 
 
-def send_telegram_alert(level, title, message):
+def send_telegram_alert(level, title, message, notification_type=None):
     """
     Send a Telegram alert if enabled and above threshold.
     Returns True only when Telegram accepts the request. Never raises.
@@ -160,6 +184,8 @@ def send_telegram_alert(level, title, message):
         if level not in LEVELS:
             level = 'INFO'
         if not enabled:
+            return False
+        if not notification_enabled(notification_type, level):
             return False
         if _level_value(level) < _level_value(min_level):
             return False

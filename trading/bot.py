@@ -304,6 +304,7 @@ def _run():
             _handle_close(state, pos, action, price_close, pnl, btc_ctx)
         elif action == 'updated':
             out(f'ðŸ”„ {direction.upper()} {sym} actualizado (trailing stop)')
+            utils.send_alert(f'⚠️ {direction.upper()} {sym} actualizado: protección/trailing restablecido.')
             positions_to_keep.append(pos)
         else:
             # hold â€” mostrar estado

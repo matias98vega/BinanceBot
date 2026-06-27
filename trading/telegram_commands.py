@@ -142,11 +142,115 @@ def _fmt_pnl(value):
         return 'N/A'
 
 
+def _fmt_pct_plain(value):
+    try:
+        return f'{float(value):.1f}%'
+    except (TypeError, ValueError):
+        return 'N/A'
+
+
 def _fmt_price(value):
     try:
         return f'{float(value):.4f}'
     except (TypeError, ValueError):
         return 'N/A'
+
+
+def _display_capacity(current, maximum):
+    try:
+        current_i = int(current)
+    except (TypeError, ValueError):
+        current_i = 0
+    try:
+        max_i = int(maximum)
+    except (TypeError, ValueError):
+        return str(maximum)
+    return max(current_i, max_i)
+
+
+def _public_price(symbol, direction):
+    if not symbol:
+        return None
+    base = CONFIG.futures_base if str(direction).lower() == 'short' else CONFIG.spot_base
+    try:
+        qs = urllib.parse.urlencode({'symbol': symbol})
+        with urllib.request.urlopen(f'{base}/api/v3/ticker/price?{qs}' if 'fapi' not in base else f'{base}/fapi/v1/ticker/price?{qs}', timeout=4) as r:
+            data = json.loads(r.read())
+        return float(data.get('price'))
+    except Exception:
+        return None
+
+
+def _position_view(pos):
+    direction = str(pos.get('direction', '')).lower()
+    side = direction.upper()
+    symbol = pos.get('symbol') or 'N/D'
+    icon = '🟢' if direction == 'long' else '🔴'
+    entry = _to_float(pos.get('entry_price'))
+    qty = _to_float(pos.get('quantity'))
+    tp = _to_float(pos.get('tp'))
+    sl = _to_float(pos.get('sl'))
+    price = _public_price(symbol, direction) or _to_float(pos.get('current_price')) or entry
+    duration = _duration_short(pos.get('entry_time'))
+
+    pnl = pnl_pct = tp_dist = sl_dist = tp_gain = sl_loss = None
+    if entry and price and qty:
+        if direction == 'short':
+            pnl = (entry - price) * qty
+            pnl_pct = (entry - price) / entry * 100
+        else:
+            pnl = (price - entry) * qty
+            pnl_pct = (price - entry) / entry * 100
+    if price and qty and tp is not None and sl is not None:
+        if direction == 'short':
+            tp_dist = max(0.0, (price - tp) / price * 100)
+            sl_dist = max(0.0, (sl - price) / price * 100)
+            tp_gain = max(0.0, (price - tp) * qty)
+            sl_loss = -abs((sl - price) * qty)
+        else:
+            tp_dist = max(0.0, (tp - price) / price * 100)
+            sl_dist = max(0.0, (price - sl) / price * 100)
+            tp_gain = max(0.0, (tp - price) * qty)
+            sl_loss = -abs((price - sl) * qty)
+
+    return '\n'.join([
+        f'{icon} {symbol} {side}',
+        f'⏱ {duration}',
+        '',
+        'PnL:',
+        f'{_fmt_pnl(pnl)} ({_fmt_pct_plain(pnl_pct)})',
+        '',
+        '🎯 TP',
+        _fmt_pct_plain(tp_dist),
+        f'({_fmt_pnl(tp_gain)})',
+        '',
+        '🛑 SL',
+        _fmt_pct_plain(sl_dist),
+        f'({_fmt_pnl(sl_loss)})',
+    ])
+
+
+def _to_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _duration_short(entry_time):
+    dt = _parse_time(entry_time)
+    if dt is None:
+        value = _to_float(entry_time)
+        if value is not None:
+            dt = datetime.fromtimestamp(value, timezone.utc)
+    if dt is None:
+        return 'N/A'
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    seconds = max(0, int((datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds()))
+    hours, rem = divmod(seconds, 3600)
+    minutes = rem // 60
+    return f'{hours}h {minutes}m' if hours else f'{minutes}m'
 
 
 def _load_offset():
@@ -572,18 +676,21 @@ class HomePage(MenuPage):
         bot = _bot_status()
         guardian = _guardian_status()
         metrics = _exposure_metrics()
+        max_longs = _display_capacity(metrics["long_count"], metrics["max_longs"])
+        max_shorts = _display_capacity(metrics["short_count"], metrics["max_shorts"])
         lines = [
             f'{_status_icon(bot)} Bot: {bot}',
             f'{_status_icon(guardian)} Guardian: {guardian}',
             f'\u2764\ufe0f Healthcheck: {health}',
             '',
-            f'\U0001F4C8 Longs: {metrics["long_count"]}/{metrics["max_longs"]}',
-            f'\U0001F4B5 Spot: {_fmt_money(metrics["spot_real"])}',
+            f'PnL hoy: {_fmt_pnl(pnl.get("today", state.get("daily_pnl_usdt", 0)))}',
+            f'PnL total: {_fmt_pnl(pnl.get("total", state.get("total_pnl_usdt", 0)))}',
             '',
-            f'\U0001F4C9 Shorts: {metrics["short_count"]}/{metrics["max_shorts"]}',
-            f'\U0001F4B5 Futures: {_fmt_money(metrics["futures_real"])}',
+            f'Longs: {metrics["long_count"]}/{max_longs}',
+            f'Spot: {_fmt_money(metrics["spot_used"])} / {_fmt_money(metrics["spot_target"])}',
             '',
-            f'\U0001F4CA PnL hoy: {_fmt_pnl(pnl.get("today", state.get("daily_pnl_usdt", 0)))}',
+            f'Shorts: {metrics["short_count"]}/{max_shorts}',
+            f'Futures: {_fmt_money(metrics["futures_used"])} / {_fmt_money(metrics["futures_target"])}',
             '',
             '\U0001F552 Ultimo ciclo',
             _fmt_uy(system.get('last_execution')) if system.get('last_execution') else _mtime_uy(CONFIG.state_file),
@@ -662,16 +769,8 @@ class PositionsPage(MenuPage):
         if not positions:
             lines.append('✅ No existen posiciones abiertas.')
         for pos in positions[:8]:
-            direction = str(pos.get('direction', '')).upper()
-            icon = '🟢' if direction == 'LONG' else '🔴'
-            lines.extend([
-                f'{icon} {pos.get("symbol")} {direction}',
-                f'Entrada: {_fmt_price(pos.get("entry_price"))}',
-                f'Cantidad: {_fmt(pos.get("quantity"))}',
-                f'PnL: {_fmt_money(pos.get("unrealized_pnl"))}',
-                '',
-            ])
-        lines.extend(['', '────────────'])
+            lines.append(_position_view(pos))
+            lines.extend(['', '─' * 12, ''])
         return '\n'.join(lines)
 
 
@@ -700,10 +799,29 @@ class DiagnosticsPage(MenuPage):
 
     def render(self):
         diagnostics = _diagnostics()
+        metrics = _exposure_metrics()
         rebalance = diagnostics.get('rebalance') or {}
         direction_label = _direction_label(rebalance.get('direction'))
+        max_longs = _display_capacity(metrics["long_count"], metrics["max_longs"])
+        max_shorts = _display_capacity(metrics["short_count"], metrics["max_shorts"])
         return '\n'.join([
             '\U0001FA7A Diagnostico',
+            '',
+            'Capacidad',
+            '',
+            'Spot:',
+            f'{_fmt_money(metrics["spot_used"])} / {_fmt_money(metrics["spot_target"])}',
+            '',
+            'Futures:',
+            f'{_fmt_money(metrics["futures_used"])} / {_fmt_money(metrics["futures_target"])}',
+            '',
+            'Posiciones posibles:',
+            '',
+            'Longs:',
+            f'{metrics["long_count"]}/{max_longs}',
+            '',
+            'Shorts:',
+            f'{metrics["short_count"]}/{max_shorts}',
             '',
             'Entradas:',
             _entries_label(diagnostics.get('entries_status'), diagnostics.get('entries_allowed')),
@@ -780,7 +898,7 @@ class SnapshotsPage(MenuPage):
                 f'{icon} {regime} | 🎯 {len(candidates)} | '
                 f'✅ {counts["accepted"]} | 🚫 {counts["rejected"]} | ⏭ {counts["skipped"]}'
             )
-        lines.append('────────────')
+            lines.extend(['', '─' * 12, ''])
         return '\n'.join(lines)
 
 

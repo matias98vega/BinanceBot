@@ -179,7 +179,7 @@ def _wallet_max_positions(target_capital, configured_max, dynamic_value):
         dynamic_int = int(dynamic_value)
     except (TypeError, ValueError):
         return configured_max
-    return max(0, min(dynamic_int, configured_max))
+    return max(0, dynamic_int)
 
 
 def _rebalance_wallet_min(default=0.0):

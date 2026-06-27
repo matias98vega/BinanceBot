@@ -55,11 +55,35 @@ def safe_order_context(params):
     return {k: v for k, v in params.items() if k not in sensitive and 'key' not in k.lower() and 'secret' not in k.lower()}
 
 
+def interpret_binance_error(details, params=None):
+    code = details.get('code') if isinstance(details, dict) else None
+    msg = str((details or {}).get('msg') or (details or {}).get('raw_body') or '').lower()
+    params = params if isinstance(params, dict) else {}
+    if code in (-1013, -1111) or 'lot_size' in msg or 'step size' in msg or 'quantity' in msg:
+        return 'LOT_SIZE/precision/quantity'
+    if 'price_filter' in msg or 'tick size' in msg or 'price' in msg and params.get('price'):
+        return 'PRICE_FILTER/price precision'
+    if 'min_notional' in msg or 'notional' in msg:
+        return 'MIN_NOTIONAL'
+    if 'would immediately trigger' in msg or 'stop' in msg and params.get('stopPrice'):
+        return 'STOP_PRICE would trigger / invalid stop'
+    if 'reduceonly' in msg or 'reduce only' in msg:
+        return 'reduceOnly conflict'
+    if 'insufficient' in msg or code == -2019:
+        return 'insufficient balance/margin'
+    if 'position' in msg:
+        return 'position state/conflict'
+    if code in (-2010, -2021):
+        return 'order rejected by Binance filters'
+    return 'unknown'
+
+
 def log_binance_http_error(operation, symbol=None, side=None, order_type=None, params=None, error=None):
     details = extract_http_error_details(error) if error is not None else {}
     context = safe_order_context(params or {})
+    interpreted = interpret_binance_error(details, context)
     logging.error(
-        'BINANCE HTTP ERROR operation=%s symbol=%s side=%s type=%s status=%s code=%s msg=%s params=%s raw_body=%s',
+        'BINANCE HTTP ERROR operation=%s symbol=%s side=%s type=%s status=%s code=%s msg=%s interpreted=%s params=%s raw_body=%s',
         operation,
         symbol or context.get('symbol'),
         side or context.get('side'),
@@ -67,9 +91,11 @@ def log_binance_http_error(operation, symbol=None, side=None, order_type=None, p
         details.get('status'),
         details.get('code'),
         details.get('msg'),
+        interpreted,
         context,
         details.get('raw_body'),
     )
+    details['interpreted_reason'] = interpreted
     return details
 
 
@@ -430,23 +456,17 @@ def format_trade_open_alert(pos, candidate=None, market_regime=None):
     lines = [
         f'{icon} {title}',
         '',
-        'Simbolo:',
         str(symbol),
         '',
-        'Capital usado:' if side == 'LONG' else 'Margen usado:',
+        'Capital:' if side == 'LONG' else 'Margen:',
         _money(capital_used),
+        '',
+        'SL:',
+        _pct(sl_pct),
+        '',
+        'TP:',
+        _pct(tp_pct),
     ]
-    if side == 'SHORT':
-        lines.extend(['', 'Exposicion:', _money(exposure)])
-    lines.extend([
-        '',
-        'Objetivo:',
-        f'TP: {_pct(tp_pct)} -> {_signed_money(gain_tp)}',
-        f'SL: {_pct(sl_pct)} -> {_signed_money(loss_sl)}',
-        '',
-        'Riesgo/beneficio:',
-        f'1 : {rr:.2f}' if rr is not None else 'N/D',
-    ])
 
     reason = []
     if candidate.get('score') is not None:
@@ -552,21 +572,43 @@ def send_alert(msg):
         from telegram_alerts import send_telegram_alert
         lower = str(msg).lower()
         level = 'INFO'
+        kind = 'INFO'
         if any(token in lower for token in ('intervencion urgente', 'sin stops', 'critical', 'critico', 'urgente')):
             level = 'CRITICAL'
+            kind = 'CRITICAL'
         elif any(token in lower for token in ('error', 'fallo', 'no pude recolocar', 'requiere intervenci', 'api error', 'binance api')):
             level = 'ERROR'
+            kind = 'ERROR'
         elif 'rehabilitado desde blacklist' in lower:
             level = 'INFO'
+            kind = 'BLACKLIST'
         elif 'agregado a blacklist' in lower or 'auto-blacklist' in lower:
             level = 'WARNING'
+            kind = 'BLACKLIST'
         elif any(token in lower for token in ('cierre preventivo', 'pausado', 'limite diario', 'rechaz', 'guardrail')):
             level = 'WARNING'
+            kind = 'WARNING'
+        elif 'rebalanceo' in lower:
+            level = 'INFO'
+            kind = 'REBALANCE'
+        elif 'parcial' in lower:
+            level = 'INFO'
+            kind = 'PARTIAL'
+        elif 'abierto' in lower:
+            level = 'INFO'
+            kind = 'OPEN'
+        elif 'cerrado' in lower:
+            level = 'INFO'
+            kind = 'CLOSE'
+        elif 'tp' in lower:
+            level = 'INFO'
+            kind = 'TP'
         elif any(token in lower for token in ('abierto', 'cerrado', 'rebalanceo', 'parcial', 'tp')):
             level = 'INFO'
         elif 'sl' in lower:
             level = 'WARNING'
-        send_telegram_alert(level, 'BinanceBot', msg)
+            kind = 'SL'
+        send_telegram_alert(level, 'BinanceBot', msg, notification_type=kind)
     except Exception:
         pass
     try:
