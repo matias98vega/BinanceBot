@@ -408,7 +408,10 @@ def _build_diagnostics(
         long_reason = 'Sin capital objetivo para Longs'
     elif max_longs is not None and len(longs) >= max_longs:
         long_status = 'BLOCKED'
-        long_reason = 'Maximo de Longs alcanzado'
+        if len(longs) > max_longs:
+            long_reason = f'Sobrecapacidad actual: Longs {len(longs)}/{max_longs}. No se abriran nuevos longs hasta normalizar.'
+        else:
+            long_reason = 'Maximo de Longs alcanzado'
 
     if directional and trend == 'bullish':
         short_status = 'BLOCKED'
@@ -421,7 +424,10 @@ def _build_diagnostics(
         short_reason = 'Sin capital objetivo para Shorts'
     elif max_shorts is not None and len(shorts) >= max_shorts:
         short_status = 'BLOCKED'
-        short_reason = 'Maximo de Shorts alcanzado'
+        if len(shorts) > max_shorts:
+            short_reason = f'Sobrecapacidad actual: Shorts {len(shorts)}/{max_shorts}. No se abriran nuevos shorts hasta normalizar.'
+        else:
+            short_reason = 'Maximo de Shorts alcanzado'
 
     if (
         rebalance_info.get('status') in {'PENDING', 'BLOCKED'}
@@ -664,7 +670,8 @@ def build_bot_state(
     spot_reserved = _reserved_wallet_amount(spot_real, spot_target, wallet_min)
     futures_reserved = _reserved_wallet_amount(futures_real, futures_target, wallet_min)
 
-    last_execution = state.get('last_update') or _now_iso()
+    cycle_timestamp = _now_iso()
+    last_execution = cycle_timestamp
     live_system = get_system_statuses()
     if live_system.get('bot') != 'UNKNOWN':
         bot_status = live_system.get('bot')
@@ -673,7 +680,7 @@ def build_bot_state(
     if live_system.get('dashboard') != 'UNKNOWN':
         dashboard_status = live_system.get('dashboard')
     return {
-        'timestamp': _now_iso(),
+        'timestamp': cycle_timestamp,
         'timezone': 'America/Montevideo',
         'market': {
             'regime': btc_ctx.get('trend') if isinstance(btc_ctx, dict) else 'unknown',

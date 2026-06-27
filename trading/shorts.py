@@ -68,7 +68,7 @@ def _get_fill_price(order_id, symbol, fallback):
     return fallback
 
 
-def open_short(candidate, state):
+def open_short(candidate, state, max_shorts=None):
     """
     Abre una posición short en futures.
     TP: orden LIMIT reduceOnly.
@@ -80,7 +80,10 @@ def open_short(candidate, state):
     capital   = utils.get_futures_capital_per_position(state)
     limits = capital_manager.get_limits()
     futures_usable = capital_manager.futures_usable_capital(available, limits)
-    max_shorts = utils.get_max_short_positions(futures_usable)
+    max_shorts = max_shorts if max_shorts is not None else utils.get_max_short_positions(futures_usable)
+    ok_capacity, capacity_msg, _, _ = utils.validate_position_capacity(state, 'short', max_shorts)
+    if not ok_capacity:
+        return None, capacity_msg
     # Reducir capital si el token es volátil/riesgoso
     if candidate.get('risky'):
         capital = capital * config.RISKY_RISK_FACTOR
@@ -148,22 +151,23 @@ def open_short(candidate, state):
     order = None
     last_err = None
     for _attempt in range(4):
+        order_params = {
+            'symbol':   sym,
+            'side':     'SELL',
+            'type':     'MARKET',
+            'quantity': str(qty),
+        }
         try:
-            order = utils.fut_signed('POST', '/fapi/v1/order', {
-                'symbol':   sym,
-                'side':     'SELL',
-                'type':     'MARKET',
-                'quantity': str(qty),
-            })
+            order = utils.fut_signed('POST', '/fapi/v1/order', order_params)
             break  # éxito
         except _ue.HTTPError as e:
-            last_err = utils._binance_error_msg(e)
+            details = utils.log_binance_http_error('futures market sell', sym, 'SELL', 'MARKET', order_params, e)
+            last_err = (
+                f'HTTP {details.get("status")} code={details.get("code")} msg={details.get("msg")}'
+                if details.get('code') is not None or details.get('msg') else str(e)
+            )
             # Errores no retriables: balance insuficiente, par inválido, etc.
-            import json as _j
-            try:
-                _code = _j.loads(e.read().decode()).get('code', 0)
-            except Exception:
-                _code = 0
+            _code = details.get('code') or 0
             if _code in (-2019, -1121, -1100, -1102):  # errores definitivos
                 break
             if _attempt < 3:

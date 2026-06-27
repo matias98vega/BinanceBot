@@ -14,14 +14,86 @@ def _binance_error_msg(http_err):
     Lee el body de un HTTPError de Binance y retorna un string legible.
     Ejemplo: 'code=-2019 msg=Margin is insufficient.'
     """
+    details = extract_http_error_details(http_err)
+    if details.get('code') is not None or details.get('msg'):
+        return f'HTTP {details["status"]} code={details.get("code", "?")} msg={details.get("msg", "")}'
+    if details.get('raw_body'):
+        return f'HTTP {details["status"]} body={details["raw_body"]}'
+    return str(http_err)
+
+
+def extract_http_error_details(http_err):
+    status = getattr(http_err, 'code', None) or getattr(http_err, 'status', None)
+    raw_body = ''
     try:
-        body = http_err.read()
-        data = json.loads(body)
-        code = data.get('code', '?')
-        msg  = data.get('msg', str(http_err))
-        return f'code={code} msg={msg}'
+        raw = http_err.read()
+        raw_body = raw.decode('utf-8', errors='replace') if isinstance(raw, bytes) else str(raw)
     except Exception:
-        return str(http_err)
+        raw_body = ''
+    details = {
+        'status': status,
+        'reason': getattr(http_err, 'reason', None),
+        'code': None,
+        'msg': None,
+        'raw_body': raw_body[:1000] if raw_body else '',
+    }
+    if raw_body:
+        try:
+            data = json.loads(raw_body)
+            if isinstance(data, dict):
+                details['code'] = data.get('code')
+                details['msg'] = data.get('msg')
+        except Exception:
+            pass
+    return details
+
+
+def safe_order_context(params):
+    if not isinstance(params, dict):
+        return {}
+    sensitive = {'signature', 'timestamp', 'recvWindow'}
+    return {k: v for k, v in params.items() if k not in sensitive and 'key' not in k.lower() and 'secret' not in k.lower()}
+
+
+def log_binance_http_error(operation, symbol=None, side=None, order_type=None, params=None, error=None):
+    details = extract_http_error_details(error) if error is not None else {}
+    context = safe_order_context(params or {})
+    logging.error(
+        'BINANCE HTTP ERROR operation=%s symbol=%s side=%s type=%s status=%s code=%s msg=%s params=%s raw_body=%s',
+        operation,
+        symbol or context.get('symbol'),
+        side or context.get('side'),
+        order_type or context.get('type'),
+        details.get('status'),
+        details.get('code'),
+        details.get('msg'),
+        context,
+        details.get('raw_body'),
+    )
+    return details
+
+
+def count_positions(state, direction):
+    return sum(
+        1 for p in state.get('positions', [])
+        if isinstance(p, dict) and p.get('direction') == direction
+    )
+
+
+def capacity_reject_message(direction, count, max_positions):
+    label = 'longs' if direction == 'long' else 'shorts'
+    return f'CAPACITY LIMIT REJECT: {label} {count}/{max_positions}'
+
+
+def validate_position_capacity(state, direction, max_positions):
+    try:
+        limit = int(max_positions)
+    except (TypeError, ValueError):
+        limit = 0
+    count = count_positions(state, direction)
+    if limit <= 0 or count >= limit:
+        return False, capacity_reject_message(direction, count, limit), count, limit
+    return True, 'OK', count, limit
 
 
 # ── HTTP con retry ────────────────────────────────────────────────────────────

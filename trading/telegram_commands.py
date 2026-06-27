@@ -585,7 +585,7 @@ class HomePage(MenuPage):
             '',
             f'\U0001F4CA PnL hoy: {_fmt_pnl(pnl.get("today", state.get("daily_pnl_usdt", 0)))}',
             '',
-            '\U0001F552 Ultima ejecucion',
+            '\U0001F552 Ultimo ciclo',
             _fmt_uy(system.get('last_execution')) if system.get('last_execution') else _mtime_uy(CONFIG.state_file),
         ]
         return '\n'.join(lines)

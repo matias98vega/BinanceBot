@@ -319,6 +319,7 @@ def _run():
     state['positions'] = positions_to_keep
 
     if state.get('status') == 'paused':
+        _safe_persist_bot_state(state, btc_ctx=btc_ctx, system_health='WARNING')
         utils.save_state(state)
         return
 
@@ -337,6 +338,15 @@ def _run():
     fut_free       = utils.get_usdt_futures()
     max_longs      = utils.get_max_long_positions(spot_total_capital)
     max_shorts     = utils.get_max_short_positions(fut_free)
+
+    if long_count >= max_longs:
+        out(f'CAPACITY LIMIT REJECT: longs {long_count}/{max_longs}')
+        if long_count > max_longs:
+            out(f'Sobrecapacidad actual: Longs {long_count}/{max_longs}. No se abrirán nuevos longs hasta normalizar.')
+    if short_count >= max_shorts:
+        out(f'CAPACITY LIMIT REJECT: shorts {short_count}/{max_shorts}')
+        if short_count > max_shorts:
+            out(f'Sobrecapacidad actual: Shorts {short_count}/{max_shorts}. No se abrirán nuevos shorts hasta normalizar.')
 
     # Mostrar cooldowns activos si hay
     if cooldowns:
@@ -368,11 +378,13 @@ def _run():
 
         if best_long:
             out(f'ðŸ” Candidato LONG: {best_long["symbol"]} score={best_long["score"]} RSI={best_long["rsi"]:.0f} reasons={best_long["reasons"]}')
-            pos, msg = longs.open_long(best_long, state)
+            pos, msg = longs.open_long(best_long, state, max_longs=max_longs)
             if pos:
                 state['positions'].append(pos)
                 _safe_log_open(pos, best_long, btc_ctx, spot_total_capital)
                 out(msg)
+                if pos.get('protection_warning'):
+                    utils.send_alert(f'⚠️ {pos["symbol"]}: {pos["protection_warning"]}. Recovery automatico pendiente.')
                 utils.send_alert(utils.format_trade_open_alert(pos, best_long, btc_ctx.get('trend')))
             else:
                 out(f'âš ï¸ LONG no abierto: {msg}')
@@ -394,7 +406,7 @@ def _run():
 
         if best_short:
             out(f'ðŸ” Candidato SHORT: {best_short["symbol"]} score={best_short["score"]} RSI={best_short["rsi"]:.0f} reasons={best_short["reasons"]}')
-            pos, msg = shorts.open_short(best_short, state)
+            pos, msg = shorts.open_short(best_short, state, max_shorts=max_shorts)
             if pos:
                 state['positions'].append(pos)
                 _safe_log_open(pos, best_short, btc_ctx, fut_free)

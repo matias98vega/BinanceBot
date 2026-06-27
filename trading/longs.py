@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import utils, config, capital_manager
 
 
-def open_long(candidate, state):
+def open_long(candidate, state, max_longs=None):
     """
     Abre una posición long en spot para el candidato dado.
     Retorna (posición dict, mensaje) o (None, error_msg).
@@ -33,7 +33,10 @@ def open_long(candidate, state):
     # Reducir riesgo si el token es volátil/riesgoso
     if candidate.get('risky'):
         risk_pct = min(risk_pct, config.RISKY_RISK_FACTOR)
-    max_longs = utils.get_max_long_positions(spot_total)
+    max_longs = max_longs if max_longs is not None else utils.get_max_long_positions(spot_total)
+    ok_capacity, capacity_msg, _, _ = utils.validate_position_capacity(state, 'long', max_longs)
+    if not ok_capacity:
+        return None, capacity_msg
     capital_budget = utils.get_spot_capital_per_position(state, usdt)
     capital  = min(usdt * risk_pct, capital_budget)
 
@@ -96,15 +99,18 @@ def open_long(candidate, state):
     buy = None
     last_err = None
     for _attempt in range(4):
+        params = {
+            'symbol':   sym,
+            'side':     'BUY',
+            'type':     'MARKET',
+            'quantity': str(qty),
+        }
         try:
-            buy = utils.spot_signed('POST', '/api/v3/order', {
-                'symbol':   sym,
-                'side':     'BUY',
-                'type':     'MARKET',
-                'quantity': str(qty),
-            })
+            buy = utils.spot_signed('POST', '/api/v3/order', params)
             break  # éxito
         except Exception as e:
+            if hasattr(e, 'code'):
+                utils.log_binance_http_error('spot market buy', sym, 'BUY', 'MARKET', params, e)
             last_err = e
             if _attempt < 3:
                 _delay = 10 * (2 ** _attempt)  # 10s, 20s, 40s
@@ -134,7 +140,7 @@ def open_long(candidate, state):
                 real_sl = utils.round_tick(actual_price * (1 - config.SL_MIN_DIST_PCT / 100), tick)
 
             real_sl_limit = utils.round_tick(real_sl * 0.999, tick)
-            oco = utils.spot_signed('POST', '/api/v3/order/oco', {
+            oco_params = {
                 'symbol':               sym,
                 'side':                 'SELL',
                 'quantity':             str(qty_for_oco),
@@ -142,27 +148,60 @@ def open_long(candidate, state):
                 'stopPrice':            str(real_sl),
                 'stopLimitPrice':       str(real_sl_limit),
                 'stopLimitTimeInForce': 'GTC',
-            })
+            }
+            oco = utils.spot_signed('POST', '/api/v3/order/oco', oco_params)
             oco_id   = str(oco.get('orderListId', ''))
             oco_oids = [str(o['orderId']) for o in oco.get('orders', [])]
             break
         except Exception as e:
             oco_err = e
+            if hasattr(e, 'code'):
+                details = utils.log_binance_http_error('spot OCO create', sym, 'SELL', 'OCO', oco_params, e)
+                oco_err = (
+                    f'HTTP {details.get("status")} code={details.get("code")} msg={details.get("msg")}'
+                    if details.get('code') is not None or details.get('msg') else str(e)
+                )
             time.sleep(2 ** attempt)
 
     # Si OCO falló, vender en mercado (emergencia)
     if not oco_id:
+        sell_params = {
+            'symbol':   sym,
+            'side':     'SELL',
+            'type':     'MARKET',
+            'quantity': str(qty_for_oco),
+        }
         try:
-            utils.spot_signed('POST', '/api/v3/order', {
-                'symbol':   sym,
-                'side':     'SELL',
-                'type':     'MARKET',
-                'quantity': str(qty_for_oco),
-            })
+            utils.spot_signed('POST', '/api/v3/order', sell_params)
             return None, f'OCO falló ({oco_err}), posición cerrada en emergencia'
         except Exception as e2:
-            utils.send_alert(f'🚨 {sym} comprado SIN OCO y sell emergencia falló: {e2}. INTERVENCIÓN URGENTE.')
-            return None, f'EMERGENCIA: {e2}'
+            sell_err = e2
+            if hasattr(e2, 'code'):
+                details = utils.log_binance_http_error('spot emergency sell', sym, 'SELL', 'MARKET', sell_params, e2)
+                sell_err = (
+                    f'HTTP {details.get("status")} code={details.get("code")} msg={details.get("msg")}'
+                    if details.get('code') is not None or details.get('msg') else str(e2)
+                )
+            pos = {
+                'id':                f'long_{sym}_{int(time.time())}_UNPROTECTED',
+                'direction':         'long',
+                'symbol':            sym,
+                'entry_price':       actual_price,
+                'quantity':          qty_for_oco,
+                'sl':                real_sl,
+                'tp':                real_tp,
+                'atr':               candidate['atr'],
+                'oco_order_list_id': '',
+                'oco_order_ids':     [],
+                'entry_time':        int(time.time()),
+                'partial_taken':     False,
+                'trail_peak':        actual_price,
+                'protection_warning': f'OCO inicial fallo ({oco_err}); sell emergencia fallo ({sell_err})',
+            }
+            return pos, (
+                f'⚠️ LONG {sym} abierto sin OCO inicial; sell emergencia fallo. '
+                f'Recovery automatico intentara recolocar OCO. Motivo: {oco_err}'
+            )
 
     pos = {
         'id':                f'long_{sym}_{int(time.time())}',
@@ -348,7 +387,7 @@ def _recolocar_oco(pos, state):
         sl_r = utils.round_tick(sl, tick)
         tp_r = utils.round_tick(tp, tick)
         sl_limit_r = utils.round_tick(sl_r * 0.999, tick)
-        oco = utils.spot_signed('POST', '/api/v3/order/oco', {
+        oco_params = {
             'symbol':               sym,
             'side':                 'SELL',
             'quantity':             str(qty),
@@ -356,11 +395,20 @@ def _recolocar_oco(pos, state):
             'stopPrice':            str(sl_r),
             'stopLimitPrice':       str(sl_limit_r),
             'stopLimitTimeInForce': 'GTC',
-        })
+        }
+        oco = utils.spot_signed('POST', '/api/v3/order/oco', oco_params)
         pos['oco_order_list_id'] = str(oco.get('orderListId', ''))
         pos['oco_order_ids']     = [str(o['orderId']) for o in oco.get('orders', [])]
-        utils.send_alert(f'⚠️ OCO recolocado para {sym}')
+        pos.pop('protection_warning', None)
+        utils.send_alert(f'⚠️ OCO inicial falló para {sym}, recuperación automática exitosa. Protección restablecida.')
         return 'updated', price_now, 0
     except Exception as e:
-        utils.send_alert(f'🚨 No pude recolocar OCO para {sym}: {e}')
+        reason = str(e)
+        if hasattr(e, 'code'):
+            details = utils.log_binance_http_error('spot OCO recovery', sym, 'SELL', 'OCO', locals().get('oco_params', {}), e)
+            reason = details.get('msg') or details.get('raw_body') or reason
+        utils.send_alert(
+            f'🚨 {sym} LONG sigue SIN OCO. Cantidad={qty}. Motivo Binance={reason}. '
+            f'Acción requerida: revisar/cerrar o proteger manualmente.'
+        )
         return 'hold', price_now, 0
