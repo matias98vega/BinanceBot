@@ -104,14 +104,16 @@ def _bot_systemd_status():
         return 'RUNNING'
     if service_active == 'failed' or timer_active == 'failed':
         return 'OFFLINE'
-    if timer_exists and timer_active == 'active' and timer_enabled == 'enabled' and _timer_has_next_run(timer):
+    if not service_exists and not timer_exists:
+        return 'OFFLINE'
+    if timer_exists and timer_active == 'active':
+        return 'ONLINE'
+    if timer_exists and timer_enabled == 'enabled' and _timer_has_next_run(timer):
         return 'ONLINE'
     if timer_exists and timer_active in {'inactive', 'unknown'} and timer_enabled in {'disabled', 'masked'}:
         return 'PAUSED'
-    if timer_exists and timer_enabled in {'disabled', 'masked'}:
+    if service_exists and service_active in {'inactive', 'unknown'}:
         return 'PAUSED'
-    if not service_exists and not timer_exists:
-        return 'OFFLINE'
     return 'OFFLINE'
 
 
