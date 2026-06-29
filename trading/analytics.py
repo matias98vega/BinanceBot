@@ -264,6 +264,26 @@ class AnalyticsLogger:
                 pnl_usdt=record.get('pnl_usdt'),
                 fees=extra.get('fees') if isinstance(extra, dict) else None,
             )
+            try:
+                import analytics_engine
+                analytics_engine.update_trade({
+                    'trade_id': record.get('trade_id'),
+                    'symbol': record.get('symbol'),
+                    'side': record.get('side'),
+                    'opened_at': record.get('entry_time'),
+                    'closed_at': record.get('exit_time'),
+                    'entry_price': record.get('entry_price'),
+                    'exit_price': record.get('exit_price'),
+                    'exit_reason': record.get('exit_reason'),
+                    'pnl_usdt': record.get('pnl_usdt'),
+                    'pnl_pct': record.get('pnl_pct'),
+                    'duration_minutes': record.get('duration_minutes'),
+                    'status': 'CLOSED',
+                    'result': 'WIN' if (record.get('pnl_usdt') or 0) > 0 else 'LOSS' if (record.get('pnl_usdt') or 0) < 0 else 'BREAKEVEN',
+                })
+            except Exception as exc:
+                import logging
+                logging.warning('analytics_engine incremental update failed: %s', exc)
         except Exception as exc:
             import logging
             logging.warning('history trade close write failed: %s', exc)

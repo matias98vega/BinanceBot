@@ -132,6 +132,16 @@ Guia de alto nivel de los modulos principales.
 
 **Lo usan:** `analytics.py`, tests y futuras herramientas offline. No lo usa la estrategia para decidir.
 
+## `trading/analytics_engine.py`
+
+**Proposito:** motor analitico pasivo e indice precalculado.
+
+**Responsabilidades:** reconstruir `data/history/stats.json` desde `trades.jsonl`, `decisions.jsonl` y `snapshots.jsonl`; actualizar agregados ante cierres nuevos; exponer getters de estadisticas generales, por simbolo, direccion, motivo de salida y tiempo.
+
+**Consume:** `data/history/*.jsonl`.
+
+**Lo usan:** actualmente tests y `analytics.py` para update incremental pasivo. En futuras iteraciones lo leeran Telegram y Dashboard. No lo usa la estrategia para decidir.
+
 ## `trading/utils.py`
 
 **Proposito:** capa compartida de infraestructura.

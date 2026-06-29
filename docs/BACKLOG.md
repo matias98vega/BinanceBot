@@ -21,6 +21,7 @@ Este backlog agrupa trabajo pendiente. No implica autorizacion para modificar es
 | Auditoria de permisos API en setup | Media | Baja | Detectar claves sin permisos adecuados |
 | Playbooks de recuperacion manual | Media | Baja | Reducir improvisacion ante fallos |
 | Rotacion de `data/history/*.jsonl` | Media | Baja | Evitar crecimiento indefinido de memoria historica |
+| Validacion periodica de consistencia `stats.json` vs JSONL | Media | Baja | Detectar indices stale o corruptos |
 
 ## UI
 
@@ -55,6 +56,7 @@ Este backlog agrupa trabajo pendiente. No implica autorizacion para modificar es
 |---|---|---:|---|
 | Win rate y profit factor por regimen | Alta | Media | Medir si el contexto BTC agrega valor |
 | Drawdown diario/semanal | Alta | Baja | Medir riesgo acumulado |
+| Drawdown detallado intradia con curva de equity completa | Media | Media | Mejor lectura de riesgo temporal |
 | Distribucion de tiempo en posicion | Media | Baja | Evaluar stale exits |
 | Analisis de SL/TP distance vs resultado | Media | Media | Entender sensibilidad de salidas |
 

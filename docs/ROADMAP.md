@@ -21,6 +21,7 @@ El sistema ya cuenta con:
 - Analytics append-only en `trading/analytics.py`.
 - Snapshots de decisiones en `trading/decision_snapshots.jsonl`.
 - Memoria historica pasiva en `data/history/*.jsonl`.
+- Analytics Engine pasivo con `data/history/stats.json`.
 - Healthcheck, preflight, post-cycle y validadores de observabilidad.
 - Tests unitarios para capital, rebalance, hardening de trades y notificaciones.
 
@@ -35,6 +36,7 @@ El sistema ya cuenta con:
 | Mejorar diagnostico de errores Binance HTTP | Alta | Wrapper HTTP actual | Implementado parcialmente |
 | Profundizar tests de recovery Long Spot | Alta | Hardening OCO actual | Implementado base |
 | Consolidar memoria historica JSONL | Alta | `history.py` y analytics | Implementado base |
+| Construir Analytics Engine pasivo | Alta | Historia JSONL | Implementado base |
 | Validar cierre preventivo BTC con orden real de salida | Alta | Auditoria de `bot.py` | Pendiente |
 | Separar estado observable de calculos de presentacion | Media | `bot_state.py` actual | En desarrollo |
 | Revisar documentos legacy | Media | Docs canonicas | En curso |
@@ -86,6 +88,7 @@ El sistema ya cuenta con:
 - Dashboard local con estado, trades, snapshots, health y metricas.
 - Analytics estructurada y snapshots de decisiones.
 - Persistencia historica JSONL de trades, decisiones y snapshots.
+- Estadisticas precalculadas en `data/history/stats.json`.
 - Validadores de observabilidad y healthcheck local.
 - Hardening Long Spot para no proteger/vender mas que balance real disponible.
 
