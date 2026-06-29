@@ -37,6 +37,7 @@ El sistema ya cuenta con:
 | Profundizar tests de recovery Long Spot | Alta | Hardening OCO actual | Implementado base |
 | Consolidar memoria historica JSONL | Alta | `history.py` y analytics | Implementado base |
 | Construir Analytics Engine pasivo | Alta | Historia JSONL | Implementado base |
+| Integrar Analytics Engine en Telegram | Alta | `stats.json` | Implementado base |
 | Validar cierre preventivo BTC con orden real de salida | Alta | Auditoria de `bot.py` | Pendiente |
 | Separar estado observable de calculos de presentacion | Media | `bot_state.py` actual | En desarrollo |
 | Revisar documentos legacy | Media | Docs canonicas | En curso |
@@ -83,7 +84,7 @@ El sistema ya cuenta con:
 - Rebalance automatico entre Spot y Futures.
 - Reserva minima de wallet configurable, default `0`.
 - Guardrails de capital por exposicion y slots.
-- Telegram read-only con menu, capital, posiciones, health, diagnostico, trades y snapshots.
+- Telegram read-only con menu, capital, posiciones, health, diagnostico, trades, snapshots y estadisticas.
 - Notificaciones Telegram configurables por tipo.
 - Dashboard local con estado, trades, snapshots, health y metricas.
 - Analytics estructurada y snapshots de decisiones.

@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from config_loader import ENV_FILES, load_config, load_dotenv
 import capital_manager
 import bot_state as bot_state_module
+import analytics_engine
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -140,6 +141,30 @@ def _fmt_pnl(value):
         return f'{float(value):+.2f} USDT'
     except (TypeError, ValueError):
         return 'N/A'
+
+
+def _fmt_number(value, digits=2):
+    if value is None:
+        return 'N/A'
+    try:
+        return f'{float(value):.{digits}f}'
+    except (TypeError, ValueError):
+        return 'N/A'
+
+
+def _fmt_count(value):
+    try:
+        return str(int(value or 0))
+    except (TypeError, ValueError):
+        return '0'
+
+
+def _fmt_ratio(value):
+    return 'N/A' if value is None else _fmt_number(value, 2)
+
+
+def _fmt_stat_pct(value):
+    return f'{_fmt_number(value, 1)}%'
 
 
 def _fmt_pct_plain(value):
@@ -643,6 +668,54 @@ def _button(text, data):
     return {'text': text, 'callback_data': data}
 
 
+def _stats_payload():
+    warning = None
+    stats_file = analytics_engine.DEFAULT_STATS_FILE
+    if not os.path.exists(stats_file):
+        warning = 'Stats no existia; reconstruido desde historial.'
+    else:
+        try:
+            with open(stats_file, encoding='utf-8') as f:
+                json.load(f)
+        except Exception:
+            warning = 'WARNING: stats.json corrupto; reconstruido desde historial.'
+    try:
+        stats = analytics_engine.load_stats()
+    except Exception as exc:
+        return analytics_engine._empty_stats(), f'WARNING: no pude cargar estadisticas ({exc}).'
+    return stats, warning
+
+
+def _stats_warning_lines(warning):
+    return [warning, ''] if warning else []
+
+
+def _bucket_line(label, bucket, include_duration=False):
+    parts = [
+        f'{label}:',
+        f'Trades {_fmt_count(bucket.get("trades"))}',
+        f'WR {_fmt_stat_pct(bucket.get("win_rate"))}',
+        f'PnL {_fmt_pnl(bucket.get("pnl_total"))}',
+        f'PF {_fmt_ratio(bucket.get("profit_factor"))}',
+        f'Exp {_fmt_pnl(bucket.get("expectancy"))}',
+    ]
+    if include_duration:
+        parts.append(f'Dur {_fmt_number(bucket.get("duration_average_minutes"), 1)}m')
+    return ' | '.join(parts)
+
+
+def _pnl_for_period(stats, key):
+    today = datetime.now(UY_TZ)
+    if key == 'day':
+        return stats.get('general', {}).get('pnl_daily', {}).get(today.date().isoformat(), 0)
+    if key == 'week':
+        iso = today.isocalendar()
+        return stats.get('general', {}).get('pnl_weekly', {}).get(f'{iso.year}-W{iso.week:02d}', 0)
+    if key == 'month':
+        return stats.get('general', {}).get('pnl_monthly', {}).get(f'{today.year:04d}-{today.month:02d}', 0)
+    return 0
+
+
 def _nav_keyboard(page_id):
     if page_id == 'home':
         return [[_button('🔄 Actualizar', 'r:home')]]
@@ -702,7 +775,7 @@ class HomePage(MenuPage):
             [_button('\U0001F4B0 Capital', 'capital'), _button('\U0001F4C2 Posiciones', 'positions')],
             [_button('\U0001F4C8 Trades', 'trades'), _button('\u2764\ufe0f Salud', 'health')],
             [_button('\U0001FA7A Diagnostico', 'diagnostics'), _button('\U0001F4F8 Snapshots', 'snapshots')],
-            [_button('\u2699 Sistema', 'system')],
+            [_button('\U0001F4CA Estadisticas', 'stats'), _button('\u2699 Sistema', 'system')],
             [_button('\U0001F504 Actualizar', 'r:home')],
         ]
 
@@ -902,6 +975,189 @@ class SnapshotsPage(MenuPage):
         return '\n'.join(lines)
 
 
+class StatsMenuPage(MenuPage):
+    page_id = 'stats'
+
+    def render(self):
+        stats, warning = _stats_payload()
+        general = stats.get('general', {})
+        lines = ['\U0001F4CA Estadisticas', '']
+        lines.extend(_stats_warning_lines(warning))
+        lines.extend([
+            f'Trades: {_fmt_count(general.get("total_trades"))}',
+            f'Cerrados: {_fmt_count(general.get("closed_trades"))}',
+            f'Win Rate: {_fmt_stat_pct(general.get("win_rate"))}',
+            f'PnL total: {_fmt_pnl(general.get("pnl_total"))}',
+            '',
+            'Seleccione una vista.',
+        ])
+        return '\n'.join(lines)
+
+    def keyboard(self):
+        return [
+            [_button('\U0001F4C8 General', 'stats_general'), _button('\U0001FA99 Simbolos', 'stats_symbols')],
+            [_button('\U0001F535 Long/Short', 'stats_directions'), _button('\U0001F4C8 Regimen', 'stats_regimes')],
+            [_button('\u23F0 Temporal', 'stats_time'), _button('\U0001F6AA Salidas', 'stats_exits')],
+            [_button('\U0001F4F7 Historial', 'stats_history')],
+            [_button('\u25C0 Menu', 'home'), _button('\U0001F504 Actualizar', 'r:stats')],
+        ]
+
+
+class StatsGeneralPage(MenuPage):
+    page_id = 'stats_general'
+
+    def render(self):
+        stats, warning = _stats_payload()
+        general = stats.get('general', {})
+        best = general.get('best_trade') or {}
+        worst = general.get('worst_trade') or {}
+        lines = ['\U0001F4C8 Resumen General', '']
+        lines.extend(_stats_warning_lines(warning))
+        lines.extend([
+            f'Trades totales: {_fmt_count(general.get("total_trades"))}',
+            f'Abiertos: {_fmt_count(general.get("open_trades"))}',
+            f'Cerrados: {_fmt_count(general.get("closed_trades"))}',
+            '',
+            f'Win: {_fmt_count(general.get("win"))}',
+            f'Loss: {_fmt_count(general.get("loss"))}',
+            f'Breakeven: {_fmt_count(general.get("breakeven"))}',
+            f'Win Rate: {_fmt_stat_pct(general.get("win_rate"))}',
+            f'Profit Factor: {_fmt_ratio(general.get("profit_factor"))}',
+            f'Expectancy: {_fmt_pnl(general.get("expectancy"))}',
+            '',
+            f'PnL total: {_fmt_pnl(general.get("pnl_total"))}',
+            f'PnL hoy: {_fmt_pnl(_pnl_for_period(stats, "day"))}',
+            f'PnL semana: {_fmt_pnl(_pnl_for_period(stats, "week"))}',
+            f'PnL mes: {_fmt_pnl(_pnl_for_period(stats, "month"))}',
+            f'Duracion promedio: {_fmt_number(general.get("duration_average_minutes"), 1)}m',
+            '',
+            f'Mejor: {_fmt(best.get("symbol"))} {_fmt_pnl(best.get("pnl_usdt"))} ({_fmt_stat_pct(best.get("pnl_pct"))})',
+            f'Peor: {_fmt(worst.get("symbol"))} {_fmt_pnl(worst.get("pnl_usdt"))} ({_fmt_stat_pct(worst.get("pnl_pct"))})',
+            f'Drawdown: {_fmt_pnl(general.get("max_drawdown_usdt"))}',
+        ])
+        return '\n'.join(lines)
+
+    def keyboard(self):
+        return [[_button('\u25C0 Estadisticas', 'stats')], [_button('\U0001F504 Actualizar', f'r:{self.page_id}')]]
+
+
+class StatsSymbolsPage(MenuPage):
+    page_id = 'stats_symbols'
+
+    def render(self):
+        stats, warning = _stats_payload()
+        ranking = stats.get('symbol_ranking') or []
+        lines = ['\U0001FA99 Por simbolo', '']
+        lines.extend(_stats_warning_lines(warning))
+        if not ranking:
+            lines.append('Sin estadisticas por simbolo.')
+        for item in ranking:
+            lines.append(_bucket_line(item.get('symbol') or 'UNKNOWN', item))
+        return '\n'.join(lines)
+
+    def keyboard(self):
+        return [[_button('\u25C0 Estadisticas', 'stats')], [_button('\U0001F504 Actualizar', f'r:{self.page_id}')]]
+
+
+class StatsDirectionsPage(MenuPage):
+    page_id = 'stats_directions'
+
+    def render(self):
+        stats, warning = _stats_payload()
+        data = stats.get('by_direction') or {}
+        lines = ['\U0001F535 LONG vs SHORT', '']
+        lines.extend(_stats_warning_lines(warning))
+        for key in ('LONG', 'SHORT'):
+            lines.append(_bucket_line(key, data.get(key, {}), include_duration=True))
+        return '\n'.join(lines)
+
+    def keyboard(self):
+        return [[_button('\u25C0 Estadisticas', 'stats')], [_button('\U0001F504 Actualizar', f'r:{self.page_id}')]]
+
+
+class StatsRegimesPage(MenuPage):
+    page_id = 'stats_regimes'
+
+    def render(self):
+        stats, warning = _stats_payload()
+        data = stats.get('by_regime') or {}
+        labels = [('BULL', 'Bull'), ('BEAR', 'Bear'), ('SIDEWAYS', 'Sideways'), ('NEUTRAL', 'Neutral'), ('UNKNOWN', 'Unknown')]
+        lines = ['\U0001F4C8 Por regimen', '']
+        lines.extend(_stats_warning_lines(warning))
+        for key, label in labels:
+            bucket = data.get(key, {})
+            lines.append(f'{label}: Trades {_fmt_count(bucket.get("trades"))} | WR {_fmt_stat_pct(bucket.get("win_rate"))} | PnL {_fmt_pnl(bucket.get("pnl_total"))}')
+        return '\n'.join(lines)
+
+    def keyboard(self):
+        return [[_button('\u25C0 Estadisticas', 'stats')], [_button('\U0001F504 Actualizar', f'r:{self.page_id}')]]
+
+
+class StatsTimePage(MenuPage):
+    page_id = 'stats_time'
+
+    def render(self):
+        stats, warning = _stats_payload()
+        time_stats = stats.get('time') or {}
+        lines = ['\u23F0 Temporal', '']
+        lines.extend(_stats_warning_lines(warning))
+        sections = [('hour', 'Hora'), ('day', 'Dia'), ('week', 'Semana'), ('month', 'Mes')]
+        for key, label in sections:
+            lines.append(label)
+            rows = time_stats.get(key) or {}
+            if not rows:
+                lines.append('- sin datos')
+            for period, bucket in sorted(rows.items(), reverse=True)[:12]:
+                lines.append(f'{period}: {_fmt_pnl(bucket.get("pnl_total"))} | T {_fmt_count(bucket.get("closed"))} | WR {_fmt_stat_pct(bucket.get("win_rate"))}')
+            lines.append('')
+        return '\n'.join(lines).rstrip()
+
+    def keyboard(self):
+        return [[_button('\u25C0 Estadisticas', 'stats')], [_button('\U0001F504 Actualizar', f'r:{self.page_id}')]]
+
+
+class StatsExitsPage(MenuPage):
+    page_id = 'stats_exits'
+
+    def render(self):
+        stats, warning = _stats_payload()
+        data = stats.get('by_exit_reason') or {}
+        total = sum((bucket or {}).get('closed', 0) for bucket in data.values()) or 0
+        labels = [('TP', 'TP'), ('SL', 'SL'), ('TRAILING', 'Trailing'), ('PARTIAL', 'Partial'), ('RECOVERY', 'Recovery'), ('EMERGENCY', 'Emergency'), ('MANUAL', 'Manual'), ('STALE', 'Stale')]
+        lines = ['\U0001F6AA Motivos de salida', '']
+        lines.extend(_stats_warning_lines(warning))
+        for key, label in labels:
+            count = (data.get(key) or {}).get('closed', 0)
+            pct = (count / total * 100) if total else 0
+            lines.append(f'{label}: {_fmt_count(count)} | {_fmt_stat_pct(pct)}')
+        return '\n'.join(lines)
+
+    def keyboard(self):
+        return [[_button('\u25C0 Estadisticas', 'stats')], [_button('\U0001F504 Actualizar', f'r:{self.page_id}')]]
+
+
+class StatsHistoryPage(MenuPage):
+    page_id = 'stats_history'
+
+    def render(self):
+        stats, warning = _stats_payload()
+        hist = stats.get('history') or {}
+        lines = ['\U0001F4F7 Historial', '']
+        lines.extend(_stats_warning_lines(warning))
+        lines.extend([
+            f'Trades registrados: {_fmt_count(hist.get("trades_registered"))}',
+            f'Snapshots registrados: {_fmt_count(hist.get("snapshots_registered"))}',
+            f'Decisiones registradas: {_fmt_count(hist.get("decisions_registered"))}',
+            '',
+            f'Primer registro: {_fmt_uy(hist.get("first_record"))}',
+            f'Ultimo registro: {_fmt_uy(hist.get("last_record"))}',
+        ])
+        return '\n'.join(lines)
+
+    def keyboard(self):
+        return [[_button('\u25C0 Estadisticas', 'stats')], [_button('\U0001F504 Actualizar', f'r:{self.page_id}')]]
+
+
 class SystemPage(MenuPage):
     page_id = 'system'
 
@@ -938,6 +1194,14 @@ MENU_PAGES = {
     'diagnostics': DiagnosticsPage(),
     'trades': TradesPage(),
     'snapshots': SnapshotsPage(),
+    'stats': StatsMenuPage(),
+    'stats_general': StatsGeneralPage(),
+    'stats_symbols': StatsSymbolsPage(),
+    'stats_directions': StatsDirectionsPage(),
+    'stats_regimes': StatsRegimesPage(),
+    'stats_time': StatsTimePage(),
+    'stats_exits': StatsExitsPage(),
+    'stats_history': StatsHistoryPage(),
     'system': SystemPage(),
 }
 
@@ -951,6 +1215,8 @@ COMMAND_ALIASES = {
     '/diagnostics': 'diagnostics',
     '/lasttrades': 'trades',
     '/snapshots': 'snapshots',
+    '/stats': 'stats',
+    '/estadisticas': 'stats',
 }
 
 
@@ -973,6 +1239,7 @@ def command_help():
         '/positions',
         '/lasttrades',
         '/snapshots',
+        '/stats',
         '',
         'Todos los comandos son solo lectura.',
     ])
@@ -1021,18 +1288,42 @@ def _telegram_request(token, method, params=None, timeout=20):
     return json.loads(body) if body else {}
 
 
+def _split_text(text, limit=3900):
+    text = text or ''
+    if len(text) <= limit:
+        return [text]
+    chunks = []
+    current = ''
+    for line in text.splitlines():
+        candidate = f'{current}\n{line}' if current else line
+        if len(candidate) <= limit:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+        while len(line) > limit:
+            chunks.append(line[:limit])
+            line = line[limit:]
+        current = line
+    if current:
+        chunks.append(current)
+    return chunks or ['']
+
+
 def _send_message(token, chat_id, response):
     if not response:
         return
     try:
-        params = {
-            'chat_id': chat_id,
-            'text': response.get('text', '')[:3900],
-            'disable_web_page_preview': 'true',
-        }
-        if response.get('reply_markup'):
-            params['reply_markup'] = json.dumps(response['reply_markup'], separators=(',', ':'))
-        _telegram_request(token, 'sendMessage', params, timeout=8)
+        chunks = _split_text(response.get('text', ''))
+        for index, chunk in enumerate(chunks):
+            params = {
+                'chat_id': chat_id,
+                'text': chunk,
+                'disable_web_page_preview': 'true',
+            }
+            if index == len(chunks) - 1 and response.get('reply_markup'):
+                params['reply_markup'] = json.dumps(response['reply_markup'], separators=(',', ':'))
+            _telegram_request(token, 'sendMessage', params, timeout=8)
     except Exception as exc:
         print(f'Telegram sendMessage failed: {exc}', file=sys.stderr)
 
@@ -1041,15 +1332,25 @@ def _edit_message(token, chat_id, message_id, response):
     if not response:
         return
     try:
+        chunks = _split_text(response.get('text', ''))
         params = {
             'chat_id': chat_id,
             'message_id': message_id,
-            'text': response.get('text', '')[:3900],
+            'text': chunks[0],
             'disable_web_page_preview': 'true',
         }
-        if response.get('reply_markup'):
+        if len(chunks) == 1 and response.get('reply_markup'):
             params['reply_markup'] = json.dumps(response['reply_markup'], separators=(',', ':'))
         _telegram_request(token, 'editMessageText', params, timeout=8)
+        for index, chunk in enumerate(chunks[1:], start=1):
+            params = {
+                'chat_id': chat_id,
+                'text': chunk,
+                'disable_web_page_preview': 'true',
+            }
+            if index == len(chunks) - 1 and response.get('reply_markup'):
+                params['reply_markup'] = json.dumps(response['reply_markup'], separators=(',', ':'))
+            _telegram_request(token, 'sendMessage', params, timeout=8)
     except Exception as exc:
         message = str(exc)
         if 'message is not modified' not in message.lower():

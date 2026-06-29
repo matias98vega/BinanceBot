@@ -173,6 +173,8 @@ telegram_commands.py
 
 Telegram no modifica `state.json`, no abre ordenes y no cierra ordenes. Las alertas salientes se centralizan en `telegram_alerts.py` y respetan variables `TELEGRAM_NOTIFY_*`.
 
+La seccion `Estadisticas` de Telegram lee exclusivamente `data/history/stats.json` mediante `analytics_engine.py`. Si el indice no existe o esta corrupto, el engine lo reconstruye desde JSONL; Telegram no consulta `trades.jsonl` directamente.
+
 ## Flujo Healthcheck
 
 ```text
@@ -216,7 +218,7 @@ Estos scripts no abren ordenes ni cambian estrategia.
 | `history.py` | Memoria historica pasiva de trades, decisiones y snapshots | JSONL en `data/history/` | `analytics.py`, tests, futuras herramientas offline |
 | `analytics_engine.py` | Indice estadistico pasivo precalculado desde historia JSONL | `data/history/*.jsonl`, `stats.json` | futuras consultas Telegram/dashboard, tests |
 | `bot_state.py` | Snapshot observable de estado/capital/sistema | `state`, `capital_manager`, `rebalance`, systemd | `bot.py`, Telegram, dashboard |
-| `telegram_commands.py` | Menu y comandos read-only | `bot_state`, JSONL, `state` | servicio Telegram |
+| `telegram_commands.py` | Menu y comandos read-only | `bot_state`, JSONL, `state`, `analytics_engine` | servicio Telegram |
 | `telegram_alerts.py` | Alertas configurables por tipo | env, Telegram API | `utils`/flujos de alerta |
 | `healthcheck.py` | Salud local del estado y observabilidad | archivos locales | preflight/manual |
 | `dashboard/app.py` | API y UI local read-only | `bot_state`, JSONL, analytics | servicio dashboard |

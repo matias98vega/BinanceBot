@@ -38,6 +38,7 @@ Este backlog agrupa trabajo pendiente. No implica autorizacion para modificar es
 |---|---|---:|---|
 | Pagina `/timeline` | Alta | Media | Ver eventos recientes desde celular |
 | Notificaciones de recovery/critical mas claras | Alta | Baja | Mejor respuesta operativa |
+| Paginacion avanzada de rankings estadisticos Telegram | Media | Media | Navegar historiales largos sin mensajes extensos |
 | Healthcheck resumido periodico configurable | Media | Media | Detectar degradacion sin revisar manualmente |
 | Comandos de diagnostico no mutantes | Media | Media | Investigar sin tocar estado ni ordenes |
 

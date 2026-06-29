@@ -87,6 +87,13 @@ def _empty_stats():
         'snapshots': {
             'total': 0,
         },
+        'history': {
+            'trades_registered': 0,
+            'decisions_registered': 0,
+            'snapshots_registered': 0,
+            'first_record': None,
+            'last_record': None,
+        },
         'trade_index': {},
         'processed_closed_trade_ids': [],
     }
@@ -398,6 +405,9 @@ def _stats_from_sources(trades_file, decisions_file, snapshots_file):
     stats['source']['invalid_trade_lines'] = invalid_trades
     stats['source']['invalid_decision_lines'] = invalid_decisions
     stats['source']['invalid_snapshot_lines'] = invalid_snapshots
+    stats['history']['trades_registered'] = len(trade_events)
+    stats['history']['decisions_registered'] = len(decision_events)
+    stats['history']['snapshots_registered'] = len(snapshot_events)
 
     merged = _merge_trade_events(trade_events)
     stats['_closed_for_drawdown'] = []
@@ -408,7 +418,30 @@ def _stats_from_sources(trades_file, decisions_file, snapshots_file):
     for record in decision_events:
         _add_decision(stats, record)
     stats['snapshots']['total'] = len(snapshot_events)
+    _set_history_bounds(stats, trade_events, decision_events, snapshot_events)
     return _finalise_stats(stats)
+
+
+def _record_time(record):
+    for key in ('recorded_at', 'timestamp', 'opened_at', 'closed_at', 'entry_time', 'exit_time'):
+        value = record.get(key)
+        if value and _parse_dt(value):
+            return value
+    return None
+
+
+def _set_history_bounds(stats, *groups):
+    values = []
+    for records in groups:
+        for record in records:
+            value = _record_time(record)
+            if value:
+                values.append(value)
+    if not values:
+        return
+    values.sort(key=lambda v: _parse_dt(v) or datetime.max.replace(tzinfo=timezone.utc))
+    stats['history']['first_record'] = values[0]
+    stats['history']['last_record'] = values[-1]
 
 
 def save_stats(stats, stats_file=DEFAULT_STATS_FILE):
@@ -467,6 +500,16 @@ def update_trade(trade, stats_file=DEFAULT_STATS_FILE, trades_file=history.DEFAU
 
         stats.setdefault('source', {})
         stats['source']['trade_events'] = stats['source'].get('trade_events', 0) + 1
+        stats.setdefault('history', {})
+        stats['history']['trades_registered'] = stats['history'].get('trades_registered', 0) + 1
+        current_time = _record_time(trade)
+        if current_time:
+            first = stats['history'].get('first_record')
+            last = stats['history'].get('last_record')
+            if not first or (_parse_dt(current_time) and _parse_dt(first) and _parse_dt(current_time) < _parse_dt(first)):
+                stats['history']['first_record'] = current_time
+            if not last or (_parse_dt(current_time) and _parse_dt(last) and _parse_dt(current_time) > _parse_dt(last)):
+                stats['history']['last_record'] = current_time
         indexed = stats.get('trade_index', {}).get(trade_id, {})
         was_open = str(indexed.get('status') or '').upper() == 'OPEN'
         merged_trade = dict(indexed)

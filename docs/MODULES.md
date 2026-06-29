@@ -66,9 +66,9 @@ Guia de alto nivel de los modulos principales.
 
 **Proposito:** interfaz Telegram read-only.
 
-**Responsabilidades:** recibir updates, validar chat autorizado, renderizar paginas, responder comandos/callbacks y guardar offset.
+**Responsabilidades:** recibir updates, validar chat autorizado, renderizar paginas, responder comandos/callbacks, mostrar estadisticas desde `analytics_engine` y guardar offset.
 
-**Consume:** `bot_state.json`, `state.json`, JSONL, `config_loader`, systemd status.
+**Consume:** `bot_state.json`, `state.json`, JSONL, `analytics_engine`, `config_loader`, systemd status.
 
 **Lo usan:** servicio Telegram.
 
