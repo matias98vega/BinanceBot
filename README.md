@@ -194,14 +194,28 @@ journalctl -u binancebot.service -f
 journalctl -u binancebot-guardian.service -f
 ```
 
+## Documentacion
+
+Documentos principales:
+
+- `ARCHITECTURE.md`: arquitectura canonica y flujos.
+- `docs/MODULES.md`: guia por modulo.
+- `docs/ROADMAP.md`: estado actual, prioridades y deuda tecnica.
+- `docs/DESIGN_NOTES.md`: decisiones de diseno y tradeoffs.
+- `docs/BACKLOG.md`: trabajo pendiente clasificado.
+- `docs/CHANGELOG.md`: hitos importantes.
+- `docs/FUTURE_VISION.md`: vision de evolucion futura.
+- `docs/DEPLOY_UBUNTU.md`: despliegue Ubuntu/systemd.
+
 ## Estructura
 
 ```text
 dashboard/          Dashboard local HTML/CSS/JS y API http.server
 deploy/systemd/     Unidades systemd de ejemplo
-docs/               Documentacion de despliegue
+docs/               Documentacion tecnica y despliegue
 scripts/            Wrappers operativos para Ubuntu/VPS
 trading/            Bot, estrategia, observabilidad y analytics
+ARCHITECTURE.md     Arquitectura canonica
 README.md           Guia principal
 requirements.txt    Dependencias Python
 .env.example        Variables de entorno sin secretos
