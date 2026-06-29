@@ -12,6 +12,7 @@ os.environ.setdefault('BINANCE_API_SECRET', 'test')
 sys.path.insert(0, os.path.dirname(__file__))
 
 import longs
+import sl_guardian
 import utils
 
 
@@ -52,6 +53,7 @@ class TradeHardeningTests(unittest.TestCase):
 
     @patch('utils.get_spot_price', return_value=1.0)
     @patch('utils.get_spot_filters', return_value={'tick_size': 0.0001})
+    @patch('utils.get_asset_spot', return_value=10.0)
     @patch('utils.send_alert')
     @patch('utils.spot_signed')
     def test_recovery_oco_success_does_not_send_critical(self, spot_signed, send_alert, *_):
@@ -73,6 +75,7 @@ class TradeHardeningTests(unittest.TestCase):
 
     @patch('utils.get_spot_price', return_value=1.0)
     @patch('utils.get_spot_filters', return_value={'tick_size': 0.0001})
+    @patch('utils.get_asset_spot', return_value=10.0)
     @patch('utils.send_alert')
     @patch('utils.spot_signed', side_effect=RuntimeError('oco rejected'))
     def test_recovery_oco_failure_sends_critical(self, _spot_signed, send_alert, *_):
@@ -88,6 +91,88 @@ class TradeHardeningTests(unittest.TestCase):
         self.assertEqual(action, 'hold')
         messages = [call.args[0] for call in send_alert.call_args_list]
         self.assertTrue(any('🚨' in msg for msg in messages))
+
+    @patch('utils.get_spot_filters', return_value={
+        'step_size': 0.1, 'min_qty': 0.1, 'min_notional': 1.0, 'tick_size': 0.0001
+    })
+    @patch('utils.get_asset_spot', return_value=9.5)
+    def test_adjust_spot_qty_uses_real_balance_not_theoretical_qty(self, *_):
+        qty, free_balance = longs._adjust_spot_qty('XRPUSDT', 10.0, price=1.0)
+        self.assertEqual(qty, 9.5)
+        self.assertEqual(free_balance, 9.5)
+
+    @patch('time.sleep')
+    @patch('config.OCO_MAX_RETRIES', 1)
+    @patch('config.DRY_RUN', False)
+    @patch('capital_manager.validate_spot_order', return_value=(True, 'OK', 10.0))
+    @patch('utils.get_spot_capital_per_position', return_value=10.0)
+    @patch('utils.get_spot_risk_pct', return_value=1.0)
+    @patch('utils.get_usdt_spot', return_value=100.0)
+    @patch('utils.get_spot_price', return_value=1.0)
+    @patch('utils.get_spot_filters', return_value={
+        'step_size': 0.1, 'min_qty': 0.1, 'min_notional': 1.0, 'tick_size': 0.0001
+    })
+    @patch('utils.log_binance_http_error', wraps=utils.log_binance_http_error)
+    @patch('utils.get_asset_spot', side_effect=[9.5, 9.4])
+    @patch('utils.spot_signed')
+    def test_open_long_retries_oco_with_adjusted_real_balance(
+        self, spot_signed, _asset, _log_error, *_,
+    ):
+        spot_signed.side_effect = [
+            {'executedQty': '10.0', 'cummulativeQuoteQty': '10.0'},
+            _http_error('{"code":-2010,"msg":"Account has insufficient balance for requested action."}'),
+            {'orderListId': 123, 'orders': [{'orderId': 456}]},
+        ]
+        candidate = {'symbol': 'XRPUSDT', 'sl': 0.9, 'tp': 1.1, 'atr': 0.01}
+
+        pos, msg = longs.open_long(candidate, {'positions': []}, max_longs=1)
+
+        self.assertIsNotNone(pos, msg)
+        self.assertEqual(pos['quantity'], 9.4)
+        self.assertEqual(pos['oco_order_list_id'], '123')
+        first_oco_params = spot_signed.call_args_list[1].args[2]
+        retry_oco_params = spot_signed.call_args_list[2].args[2]
+        self.assertEqual(first_oco_params['quantity'], '9.5')
+        self.assertEqual(retry_oco_params['quantity'], '9.4')
+
+    @patch('utils.get_spot_price', return_value=1.0)
+    @patch('utils.get_spot_filters', return_value={
+        'step_size': 0.1, 'min_qty': 0.1, 'min_notional': 1.0, 'tick_size': 0.0001
+    })
+    @patch('utils.get_asset_spot', return_value=4.2)
+    @patch('utils.spot_signed', return_value={'executedQty': '4.2', 'cummulativeQuoteQty': '4.2'})
+    def test_emergency_market_sell_uses_min_state_qty_and_free_balance(self, spot_signed, *_):
+        sold_quote, fill_price = longs._market_sell('ETHUSDT', 5.0, price=1.0)
+        params = spot_signed.call_args.args[2]
+        self.assertEqual(params['quantity'], '4.2')
+        self.assertEqual(sold_quote, 4.2)
+        self.assertEqual(fill_price, 1.0)
+
+    @patch('utils.get_spot_filters', return_value={
+        'step_size': 0.1, 'min_qty': 0.1, 'min_notional': 1.0
+    })
+    @patch('utils.get_asset_spot', return_value=0.0)
+    def test_guardian_cleans_state_when_long_balance_is_zero(self, *_):
+        status, closed_qty = sl_guardian._close_spot_market('ETHUSDT', 5.0, 1.0)
+        self.assertEqual(status, 'already_closed')
+        self.assertEqual(closed_qty, 0.0)
+
+    @patch('utils.get_spot_filters', return_value={
+        'step_size': 0.1, 'min_qty': 0.1, 'min_notional': 1.0
+    })
+    @patch('utils.get_asset_spot', return_value=3.0)
+    @patch('utils.send_alert')
+    @patch('utils.spot_signed', side_effect=_http_error(
+        '{"code":-2010,"msg":"Account has insufficient balance for requested action."}'
+    ))
+    def test_guardian_alerts_critical_when_balance_exists_and_sell_fails(
+        self, _spot_signed, send_alert, *_,
+    ):
+        status, closed_qty = sl_guardian._close_spot_market('ETHUSDT', 5.0, 1.0)
+        self.assertEqual(status, 'failed')
+        self.assertEqual(closed_qty, 0.0)
+        self.assertTrue(send_alert.called)
+        self.assertIn('Guardian no pudo cerrar LARGO', send_alert.call_args.args[0])
 
 
 if __name__ == '__main__':

@@ -24,18 +24,22 @@ def _binance_error_msg(http_err):
 
 def extract_http_error_details(http_err):
     status = getattr(http_err, 'code', None) or getattr(http_err, 'status', None)
-    raw_body = ''
-    try:
-        raw = http_err.read()
-        raw_body = raw.decode('utf-8', errors='replace') if isinstance(raw, bytes) else str(raw)
-    except Exception:
-        raw_body = ''
+    raw_body = getattr(http_err, 'binance_body', '') or ''
+    if not raw_body:
+        try:
+            raw = http_err.read()
+            raw_body = raw.decode('utf-8', errors='replace') if isinstance(raw, bytes) else str(raw)
+        except Exception:
+            raw_body = ''
     details = {
         'status': status,
         'reason': getattr(http_err, 'reason', None),
         'code': None,
         'msg': None,
         'raw_body': raw_body[:1000] if raw_body else '',
+        'endpoint': getattr(http_err, 'binance_endpoint', None),
+        'method': getattr(http_err, 'binance_method', None),
+        'payload': getattr(http_err, 'binance_payload', None),
     }
     if raw_body:
         try:
@@ -80,11 +84,13 @@ def interpret_binance_error(details, params=None):
 
 def log_binance_http_error(operation, symbol=None, side=None, order_type=None, params=None, error=None):
     details = extract_http_error_details(error) if error is not None else {}
-    context = safe_order_context(params or {})
+    context = safe_order_context(params or details.get('payload') or {})
     interpreted = interpret_binance_error(details, context)
     logging.error(
-        'BINANCE HTTP ERROR operation=%s symbol=%s side=%s type=%s status=%s code=%s msg=%s interpreted=%s params=%s raw_body=%s',
+        'BINANCE HTTP ERROR operation=%s endpoint=%s method=%s symbol=%s side=%s type=%s status=%s code=%s msg=%s interpreted=%s params=%s raw_body=%s',
         operation,
+        details.get('endpoint'),
+        details.get('method'),
         symbol or context.get('symbol'),
         side or context.get('side'),
         order_type or context.get('type'),
@@ -130,6 +136,16 @@ def _urlopen(req_or_url, timeout=10):
             with urllib.request.urlopen(req_or_url, timeout=timeout) as r:
                 return json.loads(r.read())
         except urllib.error.HTTPError as e:
+            try:
+                raw = e.read()
+                e.binance_body = raw.decode('utf-8', errors='replace') if isinstance(raw, bytes) else str(raw)
+            except Exception:
+                e.binance_body = ''
+            try:
+                e.binance_endpoint = getattr(req_or_url, 'full_url', req_or_url)
+                e.binance_method = getattr(req_or_url, 'get_method', lambda: None)()
+            except Exception:
+                pass
             last_err = e
             if e.code in (429, 418):  # rate limit
                 time.sleep(10 * attempt)
@@ -161,6 +177,7 @@ def spot_public(path, params=None):
 
 def spot_signed(method, path, params=None):
     params = params or {}
+    original_params = dict(params)
     try:
         params['timestamp'] = _server_time(config.SPOT_BASE)
     except Exception:
@@ -176,7 +193,13 @@ def spot_signed(method, path, params=None):
     req = urllib.request.Request(url, data=data, method=method,
           headers={'X-MBX-APIKEY': config.API_KEY,
                    'Content-Type': 'application/x-www-form-urlencoded'})
-    return _urlopen(req)
+    try:
+        return _urlopen(req)
+    except urllib.error.HTTPError as e:
+        e.binance_endpoint = path
+        e.binance_method = method
+        e.binance_payload = safe_order_context(original_params)
+        raise
 
 # ── Futures ──────────────────────────────────────────────────────────────────
 def fut_public(path, params=None):
@@ -186,6 +209,7 @@ def fut_public(path, params=None):
 
 def fut_signed(method, path, params=None):
     params = params or {}
+    original_params = dict(params)
     try:
         params['timestamp'] = _server_time(config.FUTURES_BASE)
     except Exception:
@@ -201,7 +225,13 @@ def fut_signed(method, path, params=None):
     req = urllib.request.Request(url, data=data, method=method,
           headers={'X-MBX-APIKEY': config.API_KEY,
                    'Content-Type': 'application/x-www-form-urlencoded'})
-    return _urlopen(req)
+    try:
+        return _urlopen(req)
+    except urllib.error.HTTPError as e:
+        e.binance_endpoint = path
+        e.binance_method = method
+        e.binance_payload = safe_order_context(original_params)
+        raise
 
 # ── Precio ───────────────────────────────────────────────────────────────────
 def get_spot_price(symbol):

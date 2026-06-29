@@ -63,9 +63,10 @@ def _run():
                     print(msg)
                     critical_alerts.append(msg)
                     utils.send_alert(msg)
-                    _close_spot_market(sym, qty)
-                    pnl = (price - entry) * qty
-                    triggered.append((pos.get('id'), sym, 'long', price, pnl))
+                    close_status, closed_qty = _close_spot_market(sym, qty, price)
+                    if close_status in {'closed', 'already_closed'}:
+                        pnl = (price - entry) * closed_qty if close_status == 'closed' else 0.0
+                        triggered.append((pos.get('id'), sym, 'long', price, pnl))
 
             elif direction == 'short':
                 price = utils.get_fut_price(sym)
@@ -184,13 +185,49 @@ def _run():
         # Si hay critical_alerts, ya se imprimieron arriba y el agente los entrega
 
 
-def _close_spot_market(symbol, qty):
+def _asset_from_symbol(symbol):
+    return str(symbol).replace('USDT', '')
+
+
+def _sellable_spot_qty(symbol, qty, price_now):
     try:
-        utils.spot_signed('POST', '/api/v3/order', {
-            'symbol': symbol, 'side': 'SELL', 'type': 'MARKET', 'quantity': str(qty)
-        })
+        filters = utils.get_spot_filters(symbol)
+        step = filters.get('step_size', 0.001)
+        min_qty = filters.get('min_qty', 0.001)
+        min_notional = filters.get('min_notional', 5.0)
+        free_balance = utils.get_asset_spot(_asset_from_symbol(symbol))
+        qty_sell = utils.round_step(min(float(qty or 0), free_balance), step)
+        if qty_sell < min_qty or qty_sell * float(price_now or 0) < min_notional:
+            return 0.0, free_balance
+        return qty_sell, free_balance
+    except Exception:
+        return 0.0, 0.0
+
+
+def _close_spot_market(symbol, qty, price_now):
+    qty_sell, free_balance = _sellable_spot_qty(symbol, qty, price_now)
+    if qty_sell <= 0:
+        return ('already_closed' if free_balance <= 0 else 'not_sellable'), 0.0
+    params = {
+        'symbol': symbol, 'side': 'SELL', 'type': 'MARKET', 'quantity': str(qty_sell)
+    }
+    try:
+        utils.spot_signed('POST', '/api/v3/order', params)
+        return 'closed', qty_sell
     except Exception as e:
-        utils.send_alert(f'🚨 Guardian no pudo cerrar LARGO {symbol}: {e}')
+        details = {}
+        if hasattr(e, 'code'):
+            details = utils.log_binance_http_error('guardian spot market sell', symbol, 'SELL', 'MARKET', params, e)
+        _, free_retry = _sellable_spot_qty(symbol, qty, price_now)
+        if details.get('code') == -2010 and free_retry <= 0:
+            return 'already_closed', 0.0
+        reason = details.get('msg') or str(e)
+        if free_retry > 0:
+            utils.send_alert(
+                f'🚨 Guardian no pudo cerrar LARGO {symbol}: {reason}. '
+                f'Balance real disponible={free_retry:.8f}. Intervencion manual urgente.'
+            )
+        return 'failed', 0.0
 
 
 def _close_fut_market(symbol, qty, entry, price_now):

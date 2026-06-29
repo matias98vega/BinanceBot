@@ -8,6 +8,61 @@ sys.path.insert(0, os.path.dirname(__file__))
 import utils, config, capital_manager
 
 
+def _asset_from_symbol(symbol):
+    return str(symbol).replace('USDT', '')
+
+
+def _spot_free_asset(symbol):
+    return utils.get_asset_spot(_asset_from_symbol(symbol))
+
+
+def _adjust_spot_qty(symbol, requested_qty, price=None, filters=None):
+    filters = filters or utils.get_spot_filters(symbol)
+    step = filters.get('step_size', 0.001)
+    min_qty = filters.get('min_qty', 0.001)
+    min_notional = filters.get('min_notional', 5.0)
+    free_balance = _spot_free_asset(symbol)
+    qty = utils.round_step(min(float(requested_qty or 0), free_balance), step)
+    if qty < min_qty:
+        return 0.0, free_balance
+    if price is not None and qty * float(price) < min_notional:
+        return 0.0, free_balance
+    return qty, free_balance
+
+
+def _build_oco_params(sym, qty, tp, sl, tick):
+    sl_limit = utils.round_tick(sl * 0.999, tick)
+    return {
+        'symbol':               sym,
+        'side':                 'SELL',
+        'quantity':             str(qty),
+        'price':                str(tp),
+        'stopPrice':            str(sl),
+        'stopLimitPrice':       str(sl_limit),
+        'stopLimitTimeInForce': 'GTC',
+    }
+
+
+def _recovery_pending_position(sym, actual_price, qty, real_sl, real_tp, atr, reason):
+    return {
+        'id':                f'long_{sym}_{int(time.time())}_UNPROTECTED',
+        'direction':         'long',
+        'symbol':            sym,
+        'entry_price':       actual_price,
+        'quantity':          qty,
+        'sl':                real_sl,
+        'tp':                real_tp,
+        'atr':               atr,
+        'oco_order_list_id': '',
+        'oco_order_ids':     [],
+        'entry_time':        int(time.time()),
+        'partial_taken':     False,
+        'trail_peak':        actual_price,
+        'recovery_pending':  True,
+        'protection_warning': reason,
+    }
+
+
 def open_long(candidate, state, max_longs=None):
     """
     Abre una posición long en spot para el candidato dado.
@@ -124,7 +179,21 @@ def open_long(candidate, state, max_longs=None):
     exec_qty = float(buy.get('executedQty', qty))
     cum_quote = float(buy.get('cummulativeQuoteQty', qty * price))
     actual_price = cum_quote / exec_qty if exec_qty else price
-    qty_for_oco  = exec_qty
+    qty_for_oco, real_asset_balance = _adjust_spot_qty(sym, exec_qty, actual_price, filters)
+    real_sl = utils.round_tick(actual_price - config.SL_ATR_MULT * candidate['atr'], tick)
+    real_tp = utils.round_tick(actual_price + config.TP_ATR_MULT * candidate['atr'], tick)
+    sl_dist = (actual_price - real_sl) / actual_price * 100
+    if sl_dist < config.SL_MIN_DIST_PCT:
+        real_sl = utils.round_tick(actual_price * (1 - config.SL_MIN_DIST_PCT / 100), tick)
+    if qty_for_oco <= 0:
+        pos = _recovery_pending_position(
+            sym, actual_price, 0.0, real_sl, real_tp, candidate['atr'],
+            f'Balance real no vendible/protegible despues de compra (balance={real_asset_balance:.8f})'
+        )
+        return pos, (
+            f'LONG {sym} comprado pero balance real insuficiente para OCO '
+            f'(balance={real_asset_balance:.8f}). Revisión manual requerida.'
+        )
 
     # OCO (SL + TP)
     oco_id   = ''
@@ -133,22 +202,7 @@ def open_long(candidate, state, max_longs=None):
     for attempt in range(config.OCO_MAX_RETRIES):
         try:
             # SL debe estar bajo el precio, TP sobre el precio
-            real_sl = utils.round_tick(actual_price - config.SL_ATR_MULT * candidate['atr'], tick)
-            real_tp = utils.round_tick(actual_price + config.TP_ATR_MULT * candidate['atr'], tick)
-            sl_dist = (actual_price - real_sl) / actual_price * 100
-            if sl_dist < config.SL_MIN_DIST_PCT:
-                real_sl = utils.round_tick(actual_price * (1 - config.SL_MIN_DIST_PCT / 100), tick)
-
-            real_sl_limit = utils.round_tick(real_sl * 0.999, tick)
-            oco_params = {
-                'symbol':               sym,
-                'side':                 'SELL',
-                'quantity':             str(qty_for_oco),
-                'price':                str(real_tp),
-                'stopPrice':            str(real_sl),
-                'stopLimitPrice':       str(real_sl_limit),
-                'stopLimitTimeInForce': 'GTC',
-            }
+            oco_params = _build_oco_params(sym, qty_for_oco, real_tp, real_sl, tick)
             oco = utils.spot_signed('POST', '/api/v3/order/oco', oco_params)
             oco_id   = str(oco.get('orderListId', ''))
             oco_oids = [str(o['orderId']) for o in oco.get('orders', [])]
@@ -161,27 +215,62 @@ def open_long(candidate, state, max_longs=None):
                     f'HTTP {details.get("status")} code={details.get("code")} msg={details.get("msg")}'
                     if details.get('code') is not None or details.get('msg') else str(e)
                 )
+                if details.get('code') == -2010:
+                    qty_retry, real_asset_balance = _adjust_spot_qty(sym, qty_for_oco, actual_price, filters)
+                    if qty_retry > 0:
+                        qty_for_oco = qty_retry
+                        try:
+                            oco_params = _build_oco_params(sym, qty_for_oco, real_tp, real_sl, tick)
+                            oco = utils.spot_signed('POST', '/api/v3/order/oco', oco_params)
+                            oco_id = str(oco.get('orderListId', ''))
+                            oco_oids = [str(o['orderId']) for o in oco.get('orders', [])]
+                            break
+                        except Exception as retry_error:
+                            oco_err = retry_error
+                            if hasattr(retry_error, 'code'):
+                                retry_details = utils.log_binance_http_error(
+                                    'spot OCO create retry real balance', sym, 'SELL', 'OCO', oco_params, retry_error
+                                )
+                                oco_err = (
+                                    f'HTTP {retry_details.get("status")} code={retry_details.get("code")} msg={retry_details.get("msg")}'
+                                    if retry_details.get('code') is not None or retry_details.get('msg') else str(retry_error)
+                                )
             time.sleep(2 ** attempt)
 
     # Si OCO falló, vender en mercado (emergencia)
     if not oco_id:
-        sell_params = {
-            'symbol':   sym,
-            'side':     'SELL',
-            'type':     'MARKET',
-            'quantity': str(qty_for_oco),
-        }
+        sell_err = None
         try:
-            utils.spot_signed('POST', '/api/v3/order', sell_params)
-            return None, f'OCO falló ({oco_err}), posición cerrada en emergencia'
+            sold_quote, _ = _market_sell(sym, qty_for_oco, price=actual_price, filters=filters)
+            if sold_quote > 0:
+                return None, f'OCO fallo ({oco_err}), posicion cerrada en emergencia'
+            sell_err = 'balance real insuficiente para sell emergencia'
+            raise RuntimeError(sell_err)
         except Exception as e2:
-            sell_err = e2
+            sell_err = sell_err or e2
+            sell_params = {
+                'symbol':   sym,
+                'side':     'SELL',
+                'type':     'MARKET',
+                'quantity': str(qty_for_oco),
+            }
             if hasattr(e2, 'code'):
                 details = utils.log_binance_http_error('spot emergency sell', sym, 'SELL', 'MARKET', sell_params, e2)
                 sell_err = (
                     f'HTTP {details.get("status")} code={details.get("code")} msg={details.get("msg")}'
                     if details.get('code') is not None or details.get('msg') else str(e2)
                 )
+            qty_recovery, real_asset_balance = _adjust_spot_qty(sym, qty_for_oco, actual_price, filters)
+            if qty_recovery <= 0:
+                pos = _recovery_pending_position(
+                    sym, actual_price, 0.0, real_sl, real_tp, candidate['atr'],
+                    f'OCO inicial fallo ({oco_err}); no queda balance vendible (balance={real_asset_balance:.8f})'
+                )
+                return pos, (
+                    f'OCO fallo ({oco_err}) y no queda balance vendible '
+                    f'(balance={real_asset_balance:.8f}); limpiando sin posicion local.'
+                )
+            qty_for_oco = qty_recovery
             pos = {
                 'id':                f'long_{sym}_{int(time.time())}_UNPROTECTED',
                 'direction':         'long',
@@ -196,11 +285,12 @@ def open_long(candidate, state, max_longs=None):
                 'entry_time':        int(time.time()),
                 'partial_taken':     False,
                 'trail_peak':        actual_price,
+                'recovery_pending':  True,
                 'protection_warning': f'OCO inicial fallo ({oco_err}); sell emergencia fallo ({sell_err})',
             }
             return pos, (
                 f'⚠️ LONG {sym} abierto sin OCO inicial; sell emergencia fallo. '
-                f'Recovery automatico intentara recolocar OCO. Motivo: {oco_err}'
+                f'Recovery automatico intentara recolocar OCO con balance real. Motivo: {oco_err}'
             )
 
     pos = {
@@ -345,14 +435,23 @@ def _cancel_oco(symbol, oco_id):
         pass
 
 
-def _market_sell(symbol, qty):
+def _market_sell(symbol, qty, price=None, filters=None):
+    if price is None:
+        try:
+            price = utils.get_spot_price(symbol)
+        except Exception:
+            price = None
+    qty_to_sell, _ = _adjust_spot_qty(symbol, qty, price, filters)
+    if qty_to_sell <= 0:
+        return 0.0, 0.0
+    params = {
+        'symbol':   symbol,
+        'side':     'SELL',
+        'type':     'MARKET',
+        'quantity': str(qty_to_sell),
+    }
     try:
-        order = utils.spot_signed('POST', '/api/v3/order', {
-            'symbol':   symbol,
-            'side':     'SELL',
-            'type':     'MARKET',
-            'quantity': str(qty),
-        })
+        order = utils.spot_signed('POST', '/api/v3/order', params)
         # Calcular precio real de fill desde los fills
         fills = order.get('fills', [])
         if fills:
@@ -360,11 +459,13 @@ def _market_sell(symbol, qty):
             total_qty   = sum(float(f['qty']) for f in fills)
             return float(order.get('cummulativeQuoteQty', 0)), total_quote / total_qty if total_qty else 0
         # Fallback: cummulativeQuoteQty / executedQty
-        exec_qty   = float(order.get('executedQty', qty))
+        exec_qty   = float(order.get('executedQty', qty_to_sell))
         cum_quote  = float(order.get('cummulativeQuoteQty', 0))
         fill_price = cum_quote / exec_qty if exec_qty else 0
         return cum_quote, fill_price
-    except Exception:
+    except Exception as e:
+        if hasattr(e, 'code'):
+            utils.log_binance_http_error('spot market sell', symbol, 'SELL', 'MARKET', params, e)
         return 0.0, 0.0
 
 
@@ -378,12 +479,19 @@ def _recolocar_oco(pos, state):
 
     if price_now <= sl:
         # Ya tocó el SL, cerrar en mercado
-        _market_sell(sym, qty)
+        _market_sell(sym, qty, price=price_now)
         pnl = (price_now - pos['entry_price']) * qty
         return 'closed_sl', price_now, pnl
 
     try:
-        tick = utils.get_spot_filters(sym).get('tick_size', 0.0001)
+        filters = utils.get_spot_filters(sym)
+        tick = filters.get('tick_size', 0.0001)
+        qty, real_asset_balance = _adjust_spot_qty(sym, qty, price_now, filters)
+        if qty <= 0:
+            pos['quantity'] = 0.0
+            pos['recovery_pending'] = False
+            pos['already_closed'] = True
+            return 'closed_manual', price_now, 0
         sl_r = utils.round_tick(sl, tick)
         tp_r = utils.round_tick(tp, tick)
         sl_limit_r = utils.round_tick(sl_r * 0.999, tick)
@@ -399,6 +507,8 @@ def _recolocar_oco(pos, state):
         oco = utils.spot_signed('POST', '/api/v3/order/oco', oco_params)
         pos['oco_order_list_id'] = str(oco.get('orderListId', ''))
         pos['oco_order_ids']     = [str(o['orderId']) for o in oco.get('orders', [])]
+        pos['quantity']          = qty
+        pos['recovery_pending']  = False
         pos.pop('protection_warning', None)
         utils.send_alert(f'⚠️ OCO inicial falló para {sym}, recuperación automática exitosa. Protección restablecida.')
         return 'updated', price_now, 0
