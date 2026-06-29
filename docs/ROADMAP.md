@@ -20,6 +20,7 @@ El sistema ya cuenta con:
 - Dashboard local en `dashboard/app.py`.
 - Analytics append-only en `trading/analytics.py`.
 - Snapshots de decisiones en `trading/decision_snapshots.jsonl`.
+- Memoria historica pasiva en `data/history/*.jsonl`.
 - Healthcheck, preflight, post-cycle y validadores de observabilidad.
 - Tests unitarios para capital, rebalance, hardening de trades y notificaciones.
 
@@ -33,6 +34,7 @@ El sistema ya cuenta con:
 | Completar Decision Timeline cronologico | Alta | Definir contrato JSONL y puntos de integracion | Pendiente |
 | Mejorar diagnostico de errores Binance HTTP | Alta | Wrapper HTTP actual | Implementado parcialmente |
 | Profundizar tests de recovery Long Spot | Alta | Hardening OCO actual | Implementado base |
+| Consolidar memoria historica JSONL | Alta | `history.py` y analytics | Implementado base |
 | Validar cierre preventivo BTC con orden real de salida | Alta | Auditoria de `bot.py` | Pendiente |
 | Separar estado observable de calculos de presentacion | Media | `bot_state.py` actual | En desarrollo |
 | Revisar documentos legacy | Media | Docs canonicas | En curso |
@@ -83,6 +85,7 @@ El sistema ya cuenta con:
 - Notificaciones Telegram configurables por tipo.
 - Dashboard local con estado, trades, snapshots, health y metricas.
 - Analytics estructurada y snapshots de decisiones.
+- Persistencia historica JSONL de trades, decisiones y snapshots.
 - Validadores de observabilidad y healthcheck local.
 - Hardening Long Spot para no proteger/vender mas que balance real disponible.
 

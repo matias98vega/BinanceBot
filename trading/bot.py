@@ -45,6 +45,9 @@ def _safe_log_open(pos, candidate, btc_ctx, capital_at_entry):
             reject_reason=candidate.get('reject_reason') if candidate else None,
             reject_reasons=candidate.get('reject_reasons') if candidate else None,
             capital_at_entry=capital_at_entry,
+            quantity=pos.get('quantity'),
+            wallet='SPOT' if pos.get('direction') == 'long' else 'FUTURES',
+            btc_context=btc_ctx or {},
         )
     except Exception:
         pass

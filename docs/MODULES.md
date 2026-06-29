@@ -116,11 +116,21 @@ Guia de alto nivel de los modulos principales.
 
 **Proposito:** telemetria estructurada.
 
-**Responsabilidades:** log de opens/closes/events, decision snapshots, merge de trades y export CSV.
+**Responsabilidades:** log de opens/closes/events, decision snapshots, merge de trades, export CSV y puente pasivo hacia `history.py`.
 
 **Consume:** runtime config y archivos JSONL.
 
 **Lo usan:** `bot.py`, `sl_guardian.py`, analizadores.
+
+## `trading/history.py`
+
+**Proposito:** memoria historica append-only para aprendizaje futuro.
+
+**Responsabilidades:** registrar aperturas, cierres, decisiones y snapshots en `data/history/*.jsonl`; reconstruir un trade por `trade_id`; tolerar archivos inexistentes o lineas JSON invalidas sin romper el bot.
+
+**Consume:** eventos pasivos desde `analytics.py`.
+
+**Lo usan:** `analytics.py`, tests y futuras herramientas offline. No lo usa la estrategia para decidir.
 
 ## `trading/utils.py`
 

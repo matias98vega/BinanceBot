@@ -22,6 +22,7 @@ bot.py --------------------------+
    +--> bot_state.json
    +--> trade_analytics.jsonl
    +--> decision_snapshots.jsonl
+   +--> data/history/*.jsonl
    |
    +--> Telegram read-only
    +--> Dashboard read-only
@@ -210,7 +211,8 @@ Estos scripts no abren ordenes ni cambian estrategia.
 | `utils.py` | HTTP Binance, firma, balances, filtros, indicadores, state, logs, alerts | `config` | casi todos los modulos |
 | `config.py` | Constantes de estrategia/riesgo y runtime config | `config_loader` | modulos de trading |
 | `config_loader.py` | Cargar `.env` y rutas sin requerir API en herramientas read-only | `.env` | `config`, dashboard, Telegram, tools |
-| `analytics.py` | Eventos JSONL, snapshots y export CSV | runtime config | `bot.py`, guardian, analizadores |
+| `analytics.py` | Eventos JSONL, snapshots, export CSV y puente hacia historia pasiva | runtime config | `bot.py`, guardian, analizadores |
+| `history.py` | Memoria historica pasiva de trades, decisiones y snapshots | JSONL en `data/history/` | `analytics.py`, tests, futuras herramientas offline |
 | `bot_state.py` | Snapshot observable de estado/capital/sistema | `state`, `capital_manager`, `rebalance`, systemd | `bot.py`, Telegram, dashboard |
 | `telegram_commands.py` | Menu y comandos read-only | `bot_state`, JSONL, `state` | servicio Telegram |
 | `telegram_alerts.py` | Alertas configurables por tipo | env, Telegram API | `utils`/flujos de alerta |
@@ -226,6 +228,9 @@ Estos scripts no abren ordenes ni cambian estrategia.
 | `trading/trades_log.txt` | texto append-only | Log humano historico |
 | `trading/trade_analytics.jsonl` | JSONL append-only | Eventos estructurados de trades |
 | `trading/decision_snapshots.jsonl` | JSONL append-only | Snapshots de decisiones por ciclo |
+| `data/history/trades.jsonl` | JSONL append-only | Historia normalizada de aperturas/cierres |
+| `data/history/decisions.jsonl` | JSONL append-only | Contexto explicativo de decisiones |
+| `data/history/snapshots.jsonl` | JSONL append-only | Contexto de mercado/capital |
 | `trading/.cycle_baseline.json` | JSON | Baseline local pre/post ciclo |
 | `trading/telegram_offset.json` | JSON | Offset de updates Telegram |
 | `trading/blacklist_dynamic.json` | JSON | Blacklist dinamica persistida |
@@ -236,9 +241,32 @@ La observabilidad actual tiene tres capas:
 
 1. **Estado actual:** `state.json` y `bot_state.json`.
 2. **Historico estructurado:** `trade_analytics.jsonl` y `decision_snapshots.jsonl`.
-3. **Interfaces read-only:** Telegram, dashboard, analyzers, healthcheck.
+3. **Memoria historica pasiva:** `data/history/trades.jsonl`, `data/history/decisions.jsonl`, `data/history/snapshots.jsonl`.
+4. **Interfaces read-only:** Telegram, dashboard, analyzers, healthcheck.
 
 No existe aun un `decision_timeline.py` en el estado actual del codigo; queda como item pendiente en backlog/roadmap.
+
+## Historical Persistence
+
+`trading/history.py` es una capa append-only encapsulada para memoria historica. No participa en scoring, seleccion de monedas, sizing, TP/SL, rebalance ni entradas/salidas.
+
+```text
+analytics.py
+   |
+   +-- record_trade_open()  -> data/history/trades.jsonl
+   +-- record_trade_close() -> data/history/trades.jsonl
+   +-- record_decision()    -> data/history/decisions.jsonl
+   +-- record_snapshot()    -> data/history/snapshots.jsonl
+```
+
+Propiedades:
+
+- JSONL, un objeto por linea.
+- Append-only para escritura.
+- Crea archivos/directorios si no existen.
+- Si encuentra JSON invalido durante lectura, registra WARNING y continua.
+- `get_trade(trade_id)` reconstruye el ultimo estado conocido del trade.
+- Los archivos runtime bajo `data/history/` no se versionan.
 
 ## Riesgos Arquitectonicos
 

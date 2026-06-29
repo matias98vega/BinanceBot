@@ -12,6 +12,7 @@ import os
 import time
 from datetime import datetime, timezone
 from config_loader import load_config
+import history
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -72,6 +73,12 @@ class AnalyticsLogger:
         reject_reason=None,
         reject_reasons=None,
         capital_at_entry=None,
+        quantity=None,
+        wallet=None,
+        btc_context=None,
+        volatility=None,
+        strategy_version=None,
+        bot_version=None,
         entry_time=None,
     ):
         record = {
@@ -96,6 +103,15 @@ class AnalyticsLogger:
             'status': 'OPEN',
         }
         self._append(record)
+        self._record_history_open(
+            record,
+            quantity=quantity,
+            wallet=wallet,
+            btc_context=btc_context,
+            volatility=volatility,
+            strategy_version=strategy_version,
+            bot_version=bot_version,
+        )
         return record
 
     def log_trade_close(
@@ -132,6 +148,7 @@ class AnalyticsLogger:
         }
         record.update({k: v for k, v in extra.items() if v is not None})
         self._append(record)
+        self._record_history_close(record, extra)
         return record
 
     def log_event(self, event_type, **fields):
@@ -180,6 +197,76 @@ class AnalyticsLogger:
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         with open(self.path, 'a', encoding='utf-8') as f:
             f.write(json.dumps(record, ensure_ascii=False, separators=(',', ':')) + '\n')
+
+    def _record_history_open(self, record, **extra):
+        try:
+            history.record_trade_open(
+                trade_id=record.get('trade_id'),
+                symbol=record.get('symbol'),
+                side=record.get('side'),
+                opened_at=record.get('entry_time'),
+                entry_price=record.get('entry_price'),
+                quantity=extra.get('quantity'),
+                capital_used=record.get('capital_at_entry'),
+                wallet=extra.get('wallet'),
+                score=record.get('score'),
+                atr=record.get('atr'),
+                atr_pct=record.get('atr_pct'),
+                rsi=record.get('rsi'),
+                volatility=extra.get('volatility') or record.get('atr_pct'),
+                btc_context=extra.get('btc_context'),
+                market_regime=record.get('market_regime'),
+                strategy_version=extra.get('strategy_version'),
+                bot_version=extra.get('bot_version'),
+                extra={
+                    'ema20': record.get('ema20'),
+                    'ema50': record.get('ema50'),
+                    'volume_ratio': record.get('volume_ratio'),
+                    'macd_hist': record.get('macd_hist'),
+                    'btc_correlation': record.get('btc_correlation'),
+                    'reject_reason': record.get('reject_reason'),
+                    'reject_reasons': record.get('reject_reasons'),
+                },
+            )
+            history.record_snapshot(
+                market={
+                    'market_regime': record.get('market_regime'),
+                    'btc_context': extra.get('btc_context') or {},
+                },
+                capital={
+                    'capital_used': record.get('capital_at_entry'),
+                    'wallet': extra.get('wallet'),
+                },
+                positions={
+                    'trade_id': record.get('trade_id'),
+                    'symbol': record.get('symbol'),
+                    'side': record.get('side'),
+                    'quantity': extra.get('quantity'),
+                },
+                details={'source': 'trade_open'},
+                timestamp=record.get('entry_time'),
+            )
+        except Exception as exc:
+            import logging
+            logging.warning('history trade open write failed: %s', exc)
+
+    def _record_history_close(self, record, extra):
+        try:
+            history.record_trade_close(
+                trade_id=record.get('trade_id'),
+                symbol=record.get('symbol'),
+                side=record.get('side'),
+                opened_at=record.get('entry_time'),
+                entry_price=record.get('entry_price'),
+                closed_at=record.get('exit_time'),
+                exit_price=record.get('exit_price'),
+                exit_reason=record.get('exit_reason'),
+                pnl_usdt=record.get('pnl_usdt'),
+                fees=extra.get('fees') if isinstance(extra, dict) else None,
+            )
+        except Exception as exc:
+            import logging
+            logging.warning('history trade close write failed: %s', exc)
 
     @staticmethod
     def _iso(value=None):
@@ -254,7 +341,57 @@ class DecisionSnapshotLogger:
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         with open(self.path, 'a', encoding='utf-8') as f:
             f.write(json.dumps(record, ensure_ascii=False, separators=(',', ':')) + '\n')
+        self._record_history_snapshot(record)
         return record
+
+    def _record_history_snapshot(self, record):
+        try:
+            market = {
+                'btc_trend': record.get('market_regime'),
+                'btc_change_1h': record.get('btc_change_1h'),
+                'btc_change_4h': record.get('btc_change_4h'),
+                'directional_mode': record.get('mode'),
+            }
+            capital = {
+                'total': record.get('capital_total'),
+                'spot': record.get('spot_balance'),
+                'futures': record.get('futures_balance'),
+            }
+            candidates = record.get('candidates') or []
+            history.record_snapshot(
+                market=market,
+                capital=capital,
+                details={'candidate_count': len(candidates)},
+                timestamp=record.get('timestamp'),
+            )
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                steps = [
+                    f'BTC regime: {record.get("market_regime")}',
+                    f'score: {candidate.get("score")}',
+                    f'decision: {candidate.get("decision")}',
+                ]
+                if candidate.get('reason'):
+                    steps.append(f'reason: {candidate.get("reason")}')
+                history.record_decision(
+                    decision=candidate.get('decision'),
+                    symbol=candidate.get('symbol'),
+                    side=candidate.get('side'),
+                    reason=candidate.get('reason'),
+                    steps=steps,
+                    score=candidate.get('score'),
+                    market_regime=record.get('market_regime'),
+                    btc_context={
+                        'change_1h': record.get('btc_change_1h'),
+                        'change_4h': record.get('btc_change_4h'),
+                    },
+                    timestamp=record.get('timestamp'),
+                    details=candidate,
+                )
+        except Exception as exc:
+            import logging
+            logging.warning('history snapshot write failed: %s', exc)
 
 
 def main():

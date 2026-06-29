@@ -20,6 +20,7 @@ Este backlog agrupa trabajo pendiente. No implica autorizacion para modificar es
 | Polling de balance post-fill para Long Spot | Media | Media | Reducir carreras tras compra Spot |
 | Auditoria de permisos API en setup | Media | Baja | Detectar claves sin permisos adecuados |
 | Playbooks de recuperacion manual | Media | Baja | Reducir improvisacion ante fallos |
+| Rotacion de `data/history/*.jsonl` | Media | Baja | Evitar crecimiento indefinido de memoria historica |
 
 ## UI
 
@@ -62,6 +63,7 @@ Este backlog agrupa trabajo pendiente. No implica autorizacion para modificar es
 | Item | Prioridad | Complejidad | Impacto esperado |
 |---|---|---:|---|
 | Dataset tabular desde analytics/snapshots | Media | Media | Base para investigacion offline |
+| Migracion futura de JSONL historico a SQLite | Media | Media | Consultas mas rapidas sin cambiar el contrato de escritura |
 | Modelo offline de probabilidad TP/SL | Baja | Alta | Evaluar senal predictiva |
 | Feature importance de indicadores | Media | Media | Priorizar filtros utiles |
 | Deteccion de outliers de simbolo | Media | Media | Alertar condiciones anormales |
@@ -83,6 +85,7 @@ Este backlog agrupa trabajo pendiente. No implica autorizacion para modificar es
 | Tests de Telegram pages | Media | Media | Evitar regresiones UX |
 | Tests dashboard APIs | Media | Baja | Mantener contrato read-only |
 | Tests de rotacion JSONL | Media | Baja | Evitar crecimiento sin control |
+| Tests de migracion JSONL a SQLite | Baja | Media | Preparar evolucion de storage |
 
 ## Performance
 

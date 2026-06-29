@@ -16,6 +16,7 @@ trading/.cycle_baseline.json
 trading/telegram_offset.json
 trading/telegram_alert_state.json
 trading/reports/
+data/history/
 
 # Entornos y caches Python
 .venv/
