@@ -8,11 +8,19 @@ Guia de alto nivel de los modulos principales.
 
 **Responsabilidades:** configurar stdout/stderr, adquirir/liberar lock, crear dependencias compartidas, ejecutar `CycleRunner` y manejar errores globales. Mantiene wrappers de compatibilidad para tests y llamadas internas historicas.
 
-**Consume:** `utils`, `bot_state`, `binance_client`, `cycle_runner`, `position_lifecycle`, `audit_pipeline`, `persistence_pipeline`, `analytics`.
+**Consume:** `utils`, `bot_state`, `binance_client`, `orchestration.*`, `analytics`.
 
 **Lo usan:** systemd/manual run.
 
-## `trading/cycle_runner.py`
+## `trading/orchestration/`
+
+**Proposito:** paquete interno para la logica de orquestacion del ciclo del bot.
+
+**Responsabilidades:** agrupar el runner principal, lifecycle de posiciones, auditoria/reconciliacion y persistencia pasiva del ciclo. No contiene estrategia, scoring ni integraciones UI.
+
+**Lo usan:** `bot.py`.
+
+## `trading/orchestration/cycle_runner.py`
 
 **Proposito:** orquestador principal del ciclo de trading.
 
@@ -22,7 +30,7 @@ Guia de alto nivel de los modulos principales.
 
 **Lo usan:** `bot.py`.
 
-## `trading/position_lifecycle.py`
+## `trading/orchestration/position_lifecycle.py`
 
 **Proposito:** concentrar operaciones de lifecycle que antes vivian dentro de `bot.py`.
 
@@ -32,7 +40,7 @@ Guia de alto nivel de los modulos principales.
 
 **Lo usan:** `bot.py` mediante wrappers compatibles.
 
-## `trading/audit_pipeline.py`
+## `trading/orchestration/audit_pipeline.py`
 
 **Proposito:** aislar auditorias pasivas de wallet Spot y reconciliacion de orphans.
 
@@ -42,7 +50,7 @@ Guia de alto nivel de los modulos principales.
 
 **Lo usan:** `bot.py`.
 
-## `trading/persistence_pipeline.py`
+## `trading/orchestration/persistence_pipeline.py`
 
 **Proposito:** centralizar persistencia segura de observabilidad del ciclo.
 

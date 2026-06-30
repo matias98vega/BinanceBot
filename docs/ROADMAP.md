@@ -145,7 +145,7 @@ El sistema ya cuenta con:
 ## Deuda Tecnica
 
 - Documentacion historica dispersa entre raiz, `trading/` y `docs/`.
-- `bot.py` ya delega persistencia, auditoria y lifecycle, pero la orquestacion completa del ciclo aun no esta extraida a `cycle_runner.py`.
+- `bot.py` ya es bootstrap y la logica interna del ciclo vive bajo `trading/orchestration/`.
 - Tests aun no cubren todos los flujos de salida y recuperacion.
 - `BinanceClient` existe, pero las implementaciones Fake/Replay/Paper/Shadow aun son trabajo futuro.
 - Decision Timeline ya existe, pero su cobertura puede ampliarse a mas eventos de filtros finos y a una UI dashboard dedicada.

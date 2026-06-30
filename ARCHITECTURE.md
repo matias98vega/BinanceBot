@@ -47,7 +47,7 @@ bot.py main()
    +-- build CycleRunner dependencies
    |
    v
-cycle_runner.py CycleRunner.run()
+orchestration/cycle_runner.py CycleRunner.run()
    |
    +-- load state.json
    +-- daily reset / pause checks / circuit breaker
@@ -65,7 +65,7 @@ cycle_runner.py CycleRunner.run()
    +-- release lock
 ```
 
-El bootstrap vive en `trading/bot.py`; la orquestacion principal del ciclo vive en `trading/cycle_runner.py`. Las decisiones de mercado viven en `market.py`, la ejecucion Long en `longs.py`, la ejecucion Short en `shorts.py`, los guardrails en `capital_manager.py`, el lifecycle de cierres/parciales en `position_lifecycle.py`, la auditoria Spot en `audit_pipeline.py` y la observabilidad persistente en `persistence_pipeline.py`/`analytics.py`/`decision_timeline.py`/`bot_state.py`.
+El bootstrap vive en `trading/bot.py`; la orquestacion principal del ciclo vive en `trading/orchestration/cycle_runner.py`. Las decisiones de mercado viven en `market.py`, la ejecucion Long en `longs.py`, la ejecucion Short en `shorts.py`, los guardrails en `capital_manager.py`, el lifecycle de cierres/parciales en `trading/orchestration/position_lifecycle.py`, la auditoria Spot en `trading/orchestration/audit_pipeline.py` y la observabilidad persistente en `trading/orchestration/persistence_pipeline.py`/`analytics.py`/`decision_timeline.py`/`bot_state.py`.
 
 ## Flujo de Apertura
 
@@ -110,7 +110,7 @@ shorts.open_short()
 ## Flujo de Cierre
 
 ```text
-cycle_runner.py gestiona posicion
+orchestration/cycle_runner.py gestiona posicion
    |
    +-- longs.manage_long()
    |      +-- detecta OCO cerrado, stale, trailing o recovery
@@ -118,7 +118,7 @@ cycle_runner.py gestiona posicion
    +-- shorts.manage_short()
           +-- detecta TP/SL exchange, stale, trailing o cierre software
 
-cycle_runner.py -> bot._handle_close() -> position_lifecycle.handle_close()
+orchestration/cycle_runner.py -> bot._handle_close() -> orchestration/position_lifecycle.handle_close()
    |
    +-- calcula/recibe PnL
    +-- actualiza daily/total PnL
@@ -127,7 +127,7 @@ cycle_runner.py -> bot._handle_close() -> position_lifecycle.handle_close()
    +-- remueve posicion de state
 ```
 
-Los cierres parciales se coordinan desde `CycleRunner` mediante wrappers de compatibilidad en `bot.py`, pero la logica vive en `position_lifecycle.py`.
+Los cierres parciales se coordinan desde `CycleRunner` mediante wrappers de compatibilidad en `bot.py`, pero la logica vive en `trading/orchestration/position_lifecycle.py`.
 
 ## Flujo Guardian
 
@@ -154,7 +154,7 @@ Guardian no escanea nuevas entradas. Solo protege posiciones existentes.
 ## Flujo Rebalance
 
 ```text
-cycle_runner.py obtiene btc_ctx
+orchestration/cycle_runner.py obtiene btc_ctx
    |
    v
 rebalance.rebalance(state, btc_ctx)
@@ -223,11 +223,11 @@ Estos scripts no abren ordenes ni cambian estrategia.
 
 | Modulo | Proposito | Consume | Usado por |
 |---|---|---|---|
-| `bot.py` | Bootstrap, lock, inyeccion de dependencias y manejo de errores globales | `utils`, `bot_state`, `binance_client`, `cycle_runner`, `position_lifecycle`, `audit_pipeline`, `persistence_pipeline` | systemd/manual |
-| `cycle_runner.py` | Orquestacion principal del ciclo de trading | `market`, `longs`, `shorts`, `rebalance`, `capital_manager`, `bot_state`, `decision_timeline`, `utils` | `bot.py` |
-| `position_lifecycle.py` | Cierres, parciales y recovery OCO coordinados por el ciclo | `config`, `utils`, `rebalance`, `decision_timeline` | `bot.py` |
-| `audit_pipeline.py` | Auditoria Spot, deteccion/reconciliacion de orphans y limpieza de polvo | `config`, `utils`, cliente Binance inyectado | `bot.py` |
-| `persistence_pipeline.py` | Persistencia segura de BotState y logs pasivos de analytics/snapshots | `bot_state`, `market`, `config` | `bot.py` |
+| `bot.py` | Bootstrap, lock, inyeccion de dependencias y manejo de errores globales | `utils`, `bot_state`, `binance_client`, `orchestration.*` | systemd/manual |
+| `orchestration/cycle_runner.py` | Orquestacion principal del ciclo de trading | `market`, `longs`, `shorts`, `rebalance`, `capital_manager`, `bot_state`, `decision_timeline`, `utils` | `bot.py` |
+| `orchestration/position_lifecycle.py` | Cierres, parciales y recovery OCO coordinados por el ciclo | `config`, `utils`, `rebalance`, `decision_timeline` | `bot.py` |
+| `orchestration/audit_pipeline.py` | Auditoria Spot, deteccion/reconciliacion de orphans y limpieza de polvo | `config`, `utils`, cliente Binance inyectado | `bot.py` |
+| `orchestration/persistence_pipeline.py` | Persistencia segura de BotState y logs pasivos de analytics/snapshots | `bot_state`, `market`, `config` | `bot.py` |
 | `capital_manager.py` | Guardrails de capital, max margin por posicion, validacion y snapshot | env, estado | `bot.py`, `longs.py`, `shorts.py`, dashboard |
 | `rebalance.py` | Mover USDT entre Spot/Futures segun regimen | `binance_client`, `utils`, `config`, `state` | `bot.py`, `bot_state.py` |
 | `longs.py` | Apertura y gestion Long Spot | `binance_client`, `utils`, `config`, `capital_manager` | `bot.py`, recovery |
@@ -339,7 +339,7 @@ Propiedades:
 
 ## Riesgos Arquitectonicos
 
-- `bot.py` ya es bootstrap; el siguiente paso arquitectonico es reagrupar `cycle_runner.py`, `position_lifecycle.py`, `audit_pipeline.py` y `persistence_pipeline.py` bajo `trading/orchestration/`.
+- `trading/orchestration/` agrupa la logica interna del ciclo. El resto de modulos de `trading/` representan componentes funcionales independientes.
 - `state.json` puede desalinearse del exchange si hay cierres externos, fallos parciales o ejecuciones manuales.
 - `binance_client.py` ya centraliza el acceso a Binance, pero todavia falta implementar clientes alternativos como `FakeBinanceClient`, `ReplayBinanceClient`, `PaperBinanceClient` y `ShadowBinanceClient`.
 - Los JSONL no tienen una politica formal de retencion.

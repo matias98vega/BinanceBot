@@ -120,7 +120,6 @@ Este backlog agrupa trabajo pendiente. No implica autorizacion para modificar es
 
 | Item | Prioridad | Complejidad | Impacto esperado |
 |---|---|---:|---|
-| Reorganizar orquestacion bajo `trading/orchestration/` | Media | Media | Agrupar `cycle_runner`, lifecycle, auditoria y persistencia sin cambiar comportamiento |
 | Extraer orquestacion de entradas de `cycle_runner.py` | Media | Alta | Separar seleccion/apertura de la coordinacion del ciclo |
 | Abstraer persistencia de estado | Media | Media | Migraciones mas seguras |
 | Unificar nombres de campos de posicion | Alta | Media | Menos bugs por claves inconsistentes |

@@ -10,7 +10,8 @@ try:
 except Exception:
     pass
 sys.path.insert(0, os.path.dirname(__file__))
-import config, utils, bot_state, binance_client, persistence_pipeline, audit_pipeline, position_lifecycle, cycle_runner
+import config, utils, bot_state, binance_client
+from orchestration import audit_pipeline, cycle_runner, persistence_pipeline, position_lifecycle
 from analytics import AnalyticsLogger, DecisionSnapshotLogger
 from telegram_alerts import send_telegram_alert
 

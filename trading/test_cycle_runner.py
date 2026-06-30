@@ -10,7 +10,7 @@ os.environ.setdefault('BINANCE_API_SECRET', 'test')
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-import cycle_runner
+from orchestration import cycle_runner
 
 
 class CycleRunnerTests(unittest.TestCase):
