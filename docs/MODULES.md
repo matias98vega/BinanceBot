@@ -6,11 +6,41 @@ Guia de alto nivel de los modulos principales.
 
 **Proposito:** orquestador principal del ciclo.
 
-**Responsabilidades:** lock, carga/guardado de estado, reset diario, circuit breaker, auditoria de orphans, rebalance, gestion de posiciones, scans, aperturas, cierres, timeline, analytics y snapshot observable.
+**Responsabilidades:** lock, carga/guardado de estado, reset diario, circuit breaker, rebalance, gestion de posiciones, scans, aperturas, timeline y coordinacion general. Mantiene wrappers de compatibilidad para cierres/parciales, auditoria y persistencia extraidos.
 
-**Consume:** `config`, `utils`, `market`, `longs`, `shorts`, `rebalance`, `capital_manager`, `bot_state`, `analytics`, `decision_timeline`.
+**Consume:** `config`, `utils`, `market`, `longs`, `shorts`, `rebalance`, `capital_manager`, `position_lifecycle`, `audit_pipeline`, `persistence_pipeline`, `analytics`, `decision_timeline`.
 
 **Lo usan:** systemd/manual run.
+
+## `trading/position_lifecycle.py`
+
+**Proposito:** concentrar operaciones de lifecycle que antes vivian dentro de `bot.py`.
+
+**Responsabilidades:** cierre contable/observable de posiciones, parciales Long/Short, recovery OCO auxiliar y rebalance post-cierre. No decide entradas ni cambia parametros de TP/SL.
+
+**Consume:** `config`, `utils`, `rebalance`, `decision_timeline`.
+
+**Lo usan:** `bot.py` mediante wrappers compatibles.
+
+## `trading/audit_pipeline.py`
+
+**Proposito:** aislar auditorias pasivas de wallet Spot y reconciliacion de orphans.
+
+**Responsabilidades:** detectar activos Spot sin posicion local, intentar protegerlos con OCO usando la logica existente, reportar fallos y coordinar limpieza de polvo.
+
+**Consume:** `config`, `utils`, cliente Binance inyectado desde `bot.py`.
+
+**Lo usan:** `bot.py`.
+
+## `trading/persistence_pipeline.py`
+
+**Proposito:** centralizar persistencia segura de observabilidad del ciclo.
+
+**Responsabilidades:** log de apertura/cierre hacia analytics, snapshot de decisiones y persistencia segura de BotState.
+
+**Consume:** `bot_state`, `market`, `config`.
+
+**Lo usan:** `bot.py`.
 
 ## `trading/capital_manager.py`
 

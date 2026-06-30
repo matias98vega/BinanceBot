@@ -120,7 +120,7 @@ Este backlog agrupa trabajo pendiente. No implica autorizacion para modificar es
 
 | Item | Prioridad | Complejidad | Impacto esperado |
 |---|---|---:|---|
-| Extraer motor de ciclo de `bot.py` | Media | Alta | Mantenimiento mas simple |
-| Separar partial TP en modulo propio | Baja | Media | Reducir tamano de `bot.py` |
+| Extraer motor de ciclo de `bot.py` a `cycle_runner.py` | Media | Alta | Reducir blast radius de la orquestacion principal |
+| Extraer orquestacion de entradas de `bot.py` | Media | Alta | Separar seleccion/apertura de la coordinacion del ciclo |
 | Abstraer persistencia de estado | Media | Media | Migraciones mas seguras |
 | Unificar nombres de campos de posicion | Alta | Media | Menos bugs por claves inconsistentes |

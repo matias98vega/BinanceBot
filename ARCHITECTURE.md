@@ -60,7 +60,7 @@ bot.py main()
    +-- release lock
 ```
 
-El ciclo principal vive en `trading/bot.py`. Su responsabilidad es orquestar; las decisiones de mercado viven en `market.py`, la ejecucion Long en `longs.py`, la ejecucion Short en `shorts.py`, los guardrails en `capital_manager.py` y la observabilidad en `analytics.py`/`decision_timeline.py`/`bot_state.py`.
+El ciclo principal vive en `trading/bot.py`. Su responsabilidad es orquestar; las decisiones de mercado viven en `market.py`, la ejecucion Long en `longs.py`, la ejecucion Short en `shorts.py`, los guardrails en `capital_manager.py`, el lifecycle de cierres/parciales en `position_lifecycle.py`, la auditoria Spot en `audit_pipeline.py` y la observabilidad persistente en `persistence_pipeline.py`/`analytics.py`/`decision_timeline.py`/`bot_state.py`.
 
 ## Flujo de Apertura
 
@@ -113,7 +113,7 @@ bot.py gestiona posicion
    +-- shorts.manage_short()
           +-- detecta TP/SL exchange, stale, trailing o cierre software
 
-bot._handle_close()
+bot._handle_close() -> position_lifecycle.handle_close()
    |
    +-- calcula/recibe PnL
    +-- actualiza daily/total PnL
@@ -122,7 +122,7 @@ bot._handle_close()
    +-- remueve posicion de state
 ```
 
-Los cierres parciales se manejan desde `bot.py` en `_check_partial_long` y `_check_partial_short`.
+Los cierres parciales se coordinan desde `bot.py` mediante wrappers de compatibilidad, pero la logica vive en `position_lifecycle.py`.
 
 ## Flujo Guardian
 
@@ -218,7 +218,10 @@ Estos scripts no abren ordenes ni cambian estrategia.
 
 | Modulo | Proposito | Consume | Usado por |
 |---|---|---|---|
-| `bot.py` | Orquestar ciclo principal, estado, entradas, cierres y observabilidad | `config`, `utils`, `binance_client`, `market`, `longs`, `shorts`, `rebalance`, `capital_manager`, `bot_state`, `analytics` | systemd/manual |
+| `bot.py` | Orquestar ciclo principal y mantener wrappers de compatibilidad | `config`, `utils`, `binance_client`, `market`, `longs`, `shorts`, `rebalance`, `capital_manager`, `position_lifecycle`, `audit_pipeline`, `persistence_pipeline` | systemd/manual |
+| `position_lifecycle.py` | Cierres, parciales y recovery OCO coordinados por el ciclo | `config`, `utils`, `rebalance`, `decision_timeline` | `bot.py` |
+| `audit_pipeline.py` | Auditoria Spot, deteccion/reconciliacion de orphans y limpieza de polvo | `config`, `utils`, cliente Binance inyectado | `bot.py` |
+| `persistence_pipeline.py` | Persistencia segura de BotState y logs pasivos de analytics/snapshots | `bot_state`, `market`, `config` | `bot.py` |
 | `capital_manager.py` | Guardrails de capital, max margin por posicion, validacion y snapshot | env, estado | `bot.py`, `longs.py`, `shorts.py`, dashboard |
 | `rebalance.py` | Mover USDT entre Spot/Futures segun regimen | `binance_client`, `utils`, `config`, `state` | `bot.py`, `bot_state.py` |
 | `longs.py` | Apertura y gestion Long Spot | `binance_client`, `utils`, `config`, `capital_manager` | `bot.py`, recovery |
@@ -330,7 +333,7 @@ Propiedades:
 
 ## Riesgos Arquitectonicos
 
-- `bot.py` es el modulo mas grande y con mayor blast radius.
+- `bot.py` sigue concentrando la orquestacion principal, aunque cierres/parciales, auditoria y persistencia ya fueron extraidos.
 - `state.json` puede desalinearse del exchange si hay cierres externos, fallos parciales o ejecuciones manuales.
 - `binance_client.py` ya centraliza el acceso a Binance, pero todavia falta implementar clientes alternativos como `FakeBinanceClient`, `ReplayBinanceClient`, `PaperBinanceClient` y `ShadowBinanceClient`.
 - Los JSONL no tienen una politica formal de retencion.
