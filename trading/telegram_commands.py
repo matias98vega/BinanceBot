@@ -637,6 +637,13 @@ def _rebalance_recovered_lines(rebalance):
     return lines
 
 
+def _rebalance_reconciled_lines(rebalance):
+    return [
+        '\u2705 Rebalance reconciliado autom\u00e1ticamente.',
+        'Capital alineado dentro de la tolerancia.',
+    ]
+
+
 def _status_icon(status):
     if status in {'ONLINE', 'RUNNING', 'OK'}:
         return '\U0001F7E2'
@@ -1006,6 +1013,9 @@ class CapitalPage(MenuPage):
                 'Rebalance:',
                 f'{_rebalance_label(rebalance.get("status"))} {direction_label}',
             ])
+            if rebalance.get('reconciled'):
+                lines.extend([''])
+                lines.extend(_rebalance_reconciled_lines(rebalance))
             if rebalance.get('recovered'):
                 lines.extend([''])
                 lines.extend(_rebalance_recovered_lines(rebalance))

@@ -2,6 +2,7 @@
 import os
 import sys
 import io
+import importlib.util
 import json
 import tempfile
 import urllib.error
@@ -15,6 +16,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import rebalance
 import telegram_commands
+
+
+PROJECT_DIR = os.path.dirname(os.path.dirname(__file__))
 
 
 def http_error(status=400, body='{"code":-2010,"msg":"Insufficient balance"}'):
@@ -283,6 +287,134 @@ class RebalanceDiagnosticsTests(unittest.TestCase):
         self.assertIn('Recuperado autom', text)
         self.assertIn('Monto final:\n26.74 USDT', text)
         self.assertIn('Buffer aplicado:\n0.10 USDT', text)
+
+    def test_reconcile_pending_status_when_capital_aligned(self):
+        with patch.object(rebalance.decision_timeline, 'record_rebalance_event'):
+            rebalance._record_rebalance_failure(
+                'SPOT_TO_FUTURES',
+                26.94,
+                http_error(body='{"code":-5013,"msg":"Asset transfer failed: insufficient balance"}'),
+                {},
+            )
+
+        with patch.object(rebalance.decision_timeline, 'record_rebalance_event') as timeline:
+            resolved = rebalance.reconcile_rebalance_status_if_aligned(
+                spot_actual=0.10,
+                fut_actual=53.91,
+                target_spot=0.0,
+                target_fut=54.01,
+                tolerance=0.20,
+            )
+
+        saved = self.read_status()
+        self.assertIsNotNone(resolved)
+        self.assertFalse(saved['pending'])
+        self.assertEqual(saved['resolved_reason'], 'capital_already_aligned')
+        self.assertIn('last_resolved_at', saved)
+        self.assertEqual(saved['last_direction'], 'SPOT_TO_FUTURES')
+        self.assertEqual(saved['last_amount'], 26.94)
+        self.assertEqual(saved['last_attempts'], 1)
+        self.assertIsNone(saved['last_binance_code'])
+        timeline.assert_called_once()
+        args, kwargs = timeline.call_args
+        self.assertEqual(args[0], 'rebalance_reconciled')
+        self.assertIn('capital ya alineado', args[1])
+        self.assertEqual(kwargs['details']['diff_futures'], 0.1)
+        self.assertEqual(kwargs['details']['tolerance'], 0.2)
+
+    def test_reconcile_keeps_pending_when_outside_tolerance(self):
+        with patch.object(rebalance.decision_timeline, 'record_rebalance_event'):
+            rebalance._record_rebalance_failure(
+                'SPOT_TO_FUTURES',
+                26.94,
+                http_error(body='{"code":-5013,"msg":"Asset transfer failed: insufficient balance"}'),
+                {},
+            )
+
+        with patch.object(rebalance.decision_timeline, 'record_rebalance_event') as timeline:
+            resolved = rebalance.reconcile_rebalance_status_if_aligned(
+                spot_actual=4.0,
+                fut_actual=50.0,
+                target_spot=0.0,
+                target_fut=54.0,
+                tolerance=0.20,
+            )
+
+        saved = self.read_status()
+        self.assertIsNone(resolved)
+        self.assertTrue(saved['pending'])
+        self.assertEqual(saved['last_binance_code'], -5013)
+        timeline.assert_not_called()
+
+    def test_reconciliation_does_not_change_targets(self):
+        with patch.object(rebalance.decision_timeline, 'record_rebalance_event'):
+            rebalance._record_rebalance_failure('SPOT_TO_FUTURES', 26.94, http_error(), {})
+        target_spot = 0.0
+        target_fut = 54.01
+
+        resolved = rebalance.reconcile_rebalance_status_if_aligned(
+            spot_actual=0.10,
+            fut_actual=53.91,
+            target_spot=target_spot,
+            target_fut=target_fut,
+            tolerance=0.20,
+        )
+
+        self.assertEqual(target_spot, 0.0)
+        self.assertEqual(target_fut, 54.01)
+        self.assertEqual(resolved['target_spot'], 0.0)
+        self.assertEqual(resolved['target_futures'], 54.01)
+
+    def test_telegram_does_not_show_pending_after_reconciliation(self):
+        metrics = {
+            'total_real': 54.01,
+            'total_limit': 54.01,
+            'total_authorized': 54.01,
+            'spot_real': 0.10,
+            'spot_target': 0.0,
+            'spot_used': 0.0,
+            'spot_reserved': 0,
+            'futures_real': 53.91,
+            'futures_target': 54.01,
+            'futures_used': 18.2,
+            'futures_reserved': 0,
+            'rebalance': {
+                'status': 'NOT_REQUIRED',
+                'direction': 'NONE',
+                'amount_pending': 0,
+                'reconciled': True,
+                'resolved_reason': 'capital_already_aligned',
+                'tolerance': 0.20,
+            },
+            'max_exposure_percent': 80.0,
+            'max_position_percent': None,
+            'warning': None,
+        }
+
+        with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics):
+            text = telegram_commands._render_page('capital')['text']
+
+        self.assertIn('Rebalance reconciliado autom', text)
+        self.assertIn('Capital alineado dentro de la tolerancia.', text)
+        self.assertNotIn('Rebalance pendiente', text)
+        self.assertNotIn('Intentos:', text)
+
+    def test_dashboard_rebalance_endpoint_returns_pending_false(self):
+        rebalance._write_rebalance_status({
+            'pending': False,
+            'last_resolved_at': '2026-06-30T18:00:00Z',
+            'resolved_reason': 'capital_already_aligned',
+        })
+        dashboard_path = os.path.join(PROJECT_DIR, 'dashboard', 'app.py')
+        spec = importlib.util.spec_from_file_location('dashboard_app_for_rebalance_test', dashboard_path)
+        dashboard_app = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(dashboard_app)
+
+        with patch.object(dashboard_app, 'REBALANCE_STATUS_FILE', self.status_file):
+            payload = dashboard_app._api_payload('/api/rebalance')
+
+        self.assertFalse(payload['pending'])
+        self.assertEqual(payload['resolved_reason'], 'capital_already_aligned')
 
 
 if __name__ == '__main__':

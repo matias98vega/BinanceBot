@@ -48,6 +48,7 @@ VERY_BULLISH_DAYS          = 3.0    # umbral de días consecutivos alcistas
 REBALANCE_MIN_USDT         = 2.0    # no transferir menos de $2
 REBALANCE_MIN_WALLET       = _env_float('REBALANCE_MIN_WALLET_USDT', 0.0)  # reserva minima opcional por wallet
 REBALANCE_TRANSFER_BUFFER_USDT = _env_float('REBALANCE_TRANSFER_BUFFER_USDT', 0.10)  # colchon para evitar -5013 por saldo libre exacto
+REBALANCE_ALIGNMENT_TOLERANCE_USDT = _env_float('REBALANCE_ALIGNMENT_TOLERANCE_USDT', 0.20)  # tolerancia para reconciliar estado pendiente
 
 
 def _rebalance_log(message):
@@ -222,6 +223,82 @@ def _record_rebalance_failure(direction, amount, error, payload, extra=None):
     except Exception:
         pass
     return status, details
+
+
+def _alignment_tolerance(tolerance=None):
+    value = REBALANCE_ALIGNMENT_TOLERANCE_USDT if tolerance is None else tolerance
+    try:
+        return max(0.0, float(value or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def reconcile_rebalance_status_if_aligned(spot_actual, fut_actual, target_spot, target_fut, tolerance=None):
+    status = read_rebalance_status()
+    if not isinstance(status, dict) or not status.get('pending'):
+        return None
+    tol = _alignment_tolerance(tolerance)
+    diff_spot = abs(float(spot_actual or 0) - float(target_spot or 0))
+    diff_fut = abs(float(fut_actual or 0) - float(target_fut or 0))
+    aligned = diff_spot <= tol and diff_fut <= tol
+    logging.warning(
+        'REBALANCE RECONCILE CHECK target_spot=%s target_futures=%s real_spot=%s real_futures=%s diff_spot=%s diff_futures=%s tolerance=%s aligned=%s',
+        target_spot, target_fut, spot_actual, fut_actual, diff_spot, diff_fut, tol, aligned,
+    )
+    if not aligned:
+        return None
+
+    now = _now_iso()
+    resolved = {
+        'pending': False,
+        'direction': None,
+        'amount': None,
+        'first_failure': status.get('first_failure'),
+        'last_attempt': status.get('last_attempt'),
+        'attempts': 0,
+        'last_http_status': None,
+        'last_binance_code': None,
+        'last_message': None,
+        'last_raw_body': None,
+        'last_resolved_at': now,
+        'resolved_reason': 'capital_already_aligned',
+        'last_direction': status.get('direction'),
+        'last_amount': status.get('amount'),
+        'last_attempts': status.get('attempts'),
+        'reconciled': True,
+        'reconciled_at': now,
+        'diff_spot': _safe_float(diff_spot),
+        'diff_futures': _safe_float(diff_fut),
+        'tolerance': _safe_float(tol),
+        'spot_actual': _safe_float(spot_actual),
+        'futures_actual': _safe_float(fut_actual),
+        'target_spot': _safe_float(target_spot),
+        'target_futures': _safe_float(target_fut),
+    }
+    _write_rebalance_status(resolved)
+    logging.warning(
+        'REBALANCE RECONCILED reason=capital_already_aligned target_spot=%s target_futures=%s real_spot=%s real_futures=%s diff_spot=%s diff_futures=%s tolerance=%s',
+        target_spot, target_fut, spot_actual, fut_actual, diff_spot, diff_fut, tol,
+    )
+    try:
+        decision_timeline.record_rebalance_event(
+            'rebalance_reconciled',
+            'Rebalance reconciliado: capital ya alineado.',
+            level='INFO',
+            details={
+                'reason': 'capital_already_aligned',
+                'diff_spot': _safe_float(diff_spot),
+                'diff_futures': _safe_float(diff_fut),
+                'tolerance': _safe_float(tol),
+                'spot_actual': _safe_float(spot_actual),
+                'futures_actual': _safe_float(fut_actual),
+                'target_spot': _safe_float(target_spot),
+                'target_futures': _safe_float(target_fut),
+            },
+        )
+    except Exception:
+        pass
+    return resolved
 
 
 def _format_transfer_error(direction, details, error):
@@ -547,10 +624,18 @@ def rebalance(state, btc_ctx=None):
     # Capital actual real (libre + en posiciones) por wallet
     # spot_actual y fut_actual ya calculados arriba desde _capital_total
     diff_fut = target_fut - fut_actual   # positivo = futures tiene menos de lo que debería
+    diff_spot = target_spot - spot_actual
     _rebalance_log(
         f'CHECK: regime={trend} total={total_capital:.2f} spot_free={spot_free:.2f} '
         f'spot_actual={spot_actual:.2f} fut_actual={fut_actual:.2f} fut_free={fut_free:.2f} '
-        f'target_fut={target_fut:.2f} diff_fut={diff_fut:.2f}'
+        f'target_spot={target_spot:.2f} target_fut={target_fut:.2f} '
+        f'diff_spot={diff_spot:.2f} diff_fut={diff_fut:.2f}'
+    )
+    reconcile_rebalance_status_if_aligned(
+        spot_actual=spot_actual,
+        fut_actual=fut_actual,
+        target_spot=target_spot,
+        target_fut=target_fut,
     )
 
     if abs(diff_fut) < REBALANCE_MIN_USDT:

@@ -270,6 +270,17 @@ def _build_rebalance_diagnostics(spot_real, futures_real, spot_target, futures_t
         except Exception:
             status = {}
         if not isinstance(status, dict) or not status.get('pending'):
+            if isinstance(status, dict) and status.get('reconciled'):
+                enriched = dict(base)
+                enriched.update({
+                    'reconciled': True,
+                    'last_resolved_at': status.get('last_resolved_at'),
+                    'resolved_reason': status.get('resolved_reason'),
+                    'diff_spot': status.get('diff_spot'),
+                    'diff_futures': status.get('diff_futures'),
+                    'tolerance': status.get('tolerance'),
+                })
+                return enriched
             if isinstance(status, dict) and status.get('recovered'):
                 enriched = dict(base)
                 enriched.update({
