@@ -16,7 +16,11 @@ Este backlog agrupa trabajo pendiente. No implica autorizacion para modificar es
 | Item | Prioridad | Complejidad | Impacto esperado |
 |---|---|---:|---|
 | Ampliar cobertura de Decision Timeline | Media | Media | Registrar filtros finos y motivos adicionales sin depender de journalctl |
-| Cliente Binance mockeable/injectable | Alta | Alta | Tests mas confiables sin patching disperso |
+| Implementar FakeBinanceClient | Alta | Media | Tests mas confiables sin patching disperso |
+| Implementar ReplayBinanceClient | Media | Alta | Reproducir sesiones historicas sin tocar Binance |
+| Implementar PaperBinanceClient | Media | Alta | Simular ordenes sin riesgo operativo |
+| Implementar ShadowBinanceClient | Media | Alta | Comparar comportamiento alternativo sin afectar live |
+| Retirar o migrar `auto_loop.py` legacy | Media | Alta | Eliminar stack Binance standalone fuera del bot modular |
 | Polling de balance post-fill para Long Spot | Media | Media | Reducir carreras tras compra Spot |
 | Auditoria de permisos API en setup | Media | Baja | Detectar claves sin permisos adecuados |
 | Playbooks de recuperacion manual | Media | Baja | Reducir improvisacion ante fallos |

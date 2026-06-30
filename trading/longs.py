@@ -5,7 +5,9 @@ Abre, monitorea, toma parcial, trailing stop, cierra.
 """
 import sys, os, time, math
 sys.path.insert(0, os.path.dirname(__file__))
-import utils, config, capital_manager, decision_timeline
+import utils, config, capital_manager, decision_timeline, binance_client
+
+BINANCE = binance_client.get_default_client()
 
 
 def _asset_from_symbol(symbol):
@@ -13,11 +15,11 @@ def _asset_from_symbol(symbol):
 
 
 def _spot_free_asset(symbol):
-    return utils.get_asset_spot(_asset_from_symbol(symbol))
+    return BINANCE.get_asset_spot(_asset_from_symbol(symbol))
 
 
 def _adjust_spot_qty(symbol, requested_qty, price=None, filters=None):
-    filters = filters or utils.get_spot_filters(symbol)
+    filters = filters or BINANCE.get_spot_filters(symbol)
     step = filters.get('step_size', 0.001)
     min_qty = filters.get('min_qty', 0.001)
     min_notional = filters.get('min_notional', 5.0)
@@ -79,7 +81,7 @@ def open_long(candidate, state, max_longs=None):
     except Exception:
         pass
 
-    usdt = utils.get_usdt_spot()
+    usdt = BINANCE.get_usdt_spot()
     if usdt < 5.0:
         return None, f'Capital spot insuficiente: ${usdt:.2f} USDT (mínimo $5)'
     # Total capital spot = libre + en posiciones abiertas
@@ -104,7 +106,7 @@ def open_long(candidate, state, max_longs=None):
 
     # Dry-run: simular sin ejecutar
     if config.DRY_RUN:
-        price = utils.get_spot_price(sym)
+        price = BINANCE.get_spot_price(sym)
         try:
             ok, limit_msg, _ = capital_manager.validate_spot_order(
                 state, spot_total, capital, max_longs
@@ -129,7 +131,7 @@ def open_long(candidate, state, max_longs=None):
 
     # Filtros spot
     try:
-        filters  = utils.get_spot_filters(sym)
+        filters  = BINANCE.get_spot_filters(sym)
         step     = filters.get('step_size', 0.001)
         min_qty  = filters.get('min_qty', 0.001)
         min_not  = filters.get('min_notional', 5.0)
@@ -137,7 +139,7 @@ def open_long(candidate, state, max_longs=None):
     except Exception as e:
         return None, f'Error filtros {sym}: {e}'
 
-    price = utils.get_spot_price(sym)
+    price = BINANCE.get_spot_price(sym)
     qty   = utils.round_step(capital / price, step)
 
     if qty < min_qty:
@@ -169,7 +171,7 @@ def open_long(candidate, state, max_longs=None):
         }
         try:
             decision_timeline.record_order_event('order_sent', sym, 'LONG', f'BUY MARKET {sym}', details=params)
-            buy = utils.spot_signed('POST', '/api/v3/order', params)
+            buy = BINANCE.spot_signed('POST', '/api/v3/order', params)
             decision_timeline.record_order_event('order_opened', sym, 'LONG', f'LONG {sym} buy filled', details=buy)
             break  # éxito
         except Exception as e:
@@ -212,7 +214,7 @@ def open_long(candidate, state, max_longs=None):
         try:
             # SL debe estar bajo el precio, TP sobre el precio
             oco_params = _build_oco_params(sym, qty_for_oco, real_tp, real_sl, tick)
-            oco = utils.spot_signed('POST', '/api/v3/order/oco', oco_params)
+            oco = BINANCE.spot_signed('POST', '/api/v3/order/oco', oco_params)
             decision_timeline.record_protection_event('oco_created', sym, 'LONG', f'OCO protection OK for {sym}', details=oco_params)
             oco_id   = str(oco.get('orderListId', ''))
             oco_oids = [str(o['orderId']) for o in oco.get('orders', [])]
@@ -231,7 +233,7 @@ def open_long(candidate, state, max_longs=None):
                         qty_for_oco = qty_retry
                         try:
                             oco_params = _build_oco_params(sym, qty_for_oco, real_tp, real_sl, tick)
-                            oco = utils.spot_signed('POST', '/api/v3/order/oco', oco_params)
+                            oco = BINANCE.spot_signed('POST', '/api/v3/order/oco', oco_params)
                             decision_timeline.record_protection_event('oco_retry_created', sym, 'LONG', f'OCO retry protection OK for {sym}', details=oco_params)
                             oco_id = str(oco.get('orderListId', ''))
                             oco_oids = [str(o['orderId']) for o in oco.get('orders', [])]
@@ -360,13 +362,13 @@ def manage_long(pos, state):
     # Verificar si el OCO sigue activo
     if oco_id:
         try:
-            oco_status = utils.spot_signed('GET', '/api/v3/orderList', {'orderListId': int(oco_id)})
+            oco_status = BINANCE.spot_signed('GET', '/api/v3/orderList', {'orderListId': int(oco_id)})
             list_status = oco_status.get('listOrderStatus', '')
 
             if list_status in ('ALL_DONE', 'FILLED'):
                 # Determinar si fue TP o SL
                 for o in oco_status.get('orders', []):
-                    order_detail = utils.spot_signed('GET', '/api/v3/order', {
+                    order_detail = BINANCE.spot_signed('GET', '/api/v3/order', {
                         'symbol':  sym,
                         'orderId': o['orderId']
                     })
@@ -390,7 +392,7 @@ def manage_long(pos, state):
     if not oco_id:
         return _recolocar_oco(pos, state)
 
-    price_now = utils.get_spot_price(sym)
+    price_now = BINANCE.get_spot_price(sym)
 
     # Stale exit por tiempo máximo (12h) — aunque esté en profit
     elapsed_h = (time.time() - pos.get('entry_time', time.time())) / 3600
@@ -420,7 +422,7 @@ def manage_long(pos, state):
             # Nuevo OCO con SL subido
             tick = 0.0001
             try:
-                filters = utils.get_spot_filters(sym)
+                filters = BINANCE.get_spot_filters(sym)
                 tick    = filters.get('tick_size', 0.0001)
             except Exception:
                 pass
@@ -428,7 +430,7 @@ def manage_long(pos, state):
             new_tp = utils.round_tick(pos['tp'], tick)
             try:
                 new_sl_limit = utils.round_tick(new_sl * 0.999, tick)
-                oco = utils.spot_signed('POST', '/api/v3/order/oco', {
+                oco = BINANCE.spot_signed('POST', '/api/v3/order/oco', {
                     'symbol':               sym,
                     'side':                 'SELL',
                     'quantity':             str(qty),
@@ -450,7 +452,7 @@ def manage_long(pos, state):
 
 def _cancel_oco(symbol, oco_id):
     try:
-        utils.spot_signed('DELETE', '/api/v3/orderList', {
+        BINANCE.spot_signed('DELETE', '/api/v3/orderList', {
             'symbol':      symbol,
             'orderListId': int(oco_id),
         })
@@ -461,7 +463,7 @@ def _cancel_oco(symbol, oco_id):
 def _market_sell(symbol, qty, price=None, filters=None):
     if price is None:
         try:
-            price = utils.get_spot_price(symbol)
+            price = BINANCE.get_spot_price(symbol)
         except Exception:
             price = None
     qty_to_sell, _ = _adjust_spot_qty(symbol, qty, price, filters)
@@ -474,7 +476,7 @@ def _market_sell(symbol, qty, price=None, filters=None):
         'quantity': str(qty_to_sell),
     }
     try:
-        order = utils.spot_signed('POST', '/api/v3/order', params)
+        order = BINANCE.spot_signed('POST', '/api/v3/order', params)
         # Calcular precio real de fill desde los fills
         fills = order.get('fills', [])
         if fills:
@@ -498,7 +500,7 @@ def _recolocar_oco(pos, state):
     sl    = pos['sl']
     tp    = pos['tp']
     qty   = pos['quantity']
-    price_now = utils.get_spot_price(sym)
+    price_now = BINANCE.get_spot_price(sym)
 
     if price_now <= sl:
         # Ya tocó el SL, cerrar en mercado
@@ -507,7 +509,7 @@ def _recolocar_oco(pos, state):
         return 'closed_sl', price_now, pnl
 
     try:
-        filters = utils.get_spot_filters(sym)
+        filters = BINANCE.get_spot_filters(sym)
         tick = filters.get('tick_size', 0.0001)
         qty, real_asset_balance = _adjust_spot_qty(sym, qty, price_now, filters)
         if qty <= 0:
@@ -527,7 +529,7 @@ def _recolocar_oco(pos, state):
             'stopLimitPrice':       str(sl_limit_r),
             'stopLimitTimeInForce': 'GTC',
         }
-        oco = utils.spot_signed('POST', '/api/v3/order/oco', oco_params)
+        oco = BINANCE.spot_signed('POST', '/api/v3/order/oco', oco_params)
         pos['oco_order_list_id'] = str(oco.get('orderListId', ''))
         pos['oco_order_ids']     = [str(o['orderId']) for o in oco.get('orders', [])]
         pos['quantity']          = qty

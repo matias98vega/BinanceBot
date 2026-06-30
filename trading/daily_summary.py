@@ -5,7 +5,9 @@ Cada sección separada por \n\n porque Jarvis colapsa \n simple a espacio.
 """
 import sys, os, time
 sys.path.insert(0, os.path.dirname(__file__))
-import utils, config
+import utils, config, binance_client
+
+BINANCE = binance_client.get_default_client()
 
 
 def uy_time(utc_str):
@@ -30,8 +32,8 @@ def resultado_emoji(resultado):
 def main():
     state       = utils.load_state()
     ayer        = time.strftime('%Y-%m-%d', time.gmtime(time.time() - 86400))
-    spot        = utils.get_usdt_spot()
-    fut_total, fut_avail, fut_margin = utils.get_futures_summary()
+    spot        = BINANCE.get_usdt_spot()
+    fut_total, fut_avail, fut_margin = BINANCE.get_futures_summary()
     total       = spot + fut_total
     positions   = state.get('positions', [])
     daily_pnl   = state.get('daily_pnl_usdt', 0)
@@ -48,10 +50,10 @@ def main():
         sym = p['symbol']
         try:
             if p['direction'] == 'short':
-                price = utils.get_fut_price(sym)
+                price = BINANCE.get_fut_price(sym)
                 upnl  = (p['entry_price'] - price) * p['quantity']
             else:
-                price = utils.get_spot_price(sym)
+                price = BINANCE.get_spot_price(sym)
                 upnl  = (price - p['entry_price']) * p['quantity']
         except Exception:
             upnl = 0.0

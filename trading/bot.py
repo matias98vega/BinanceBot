@@ -10,13 +10,14 @@ try:
 except Exception:
     pass
 sys.path.insert(0, os.path.dirname(__file__))
-import config, utils, market, longs, shorts, rebalance, capital_manager, bot_state, decision_timeline
+import config, utils, market, longs, shorts, rebalance, capital_manager, bot_state, decision_timeline, binance_client
 from analytics import AnalyticsLogger, DecisionSnapshotLogger
 from telegram_alerts import send_telegram_alert
 
 OUTPUT = []
 ANALYTICS = AnalyticsLogger()
 DECISIONS = DecisionSnapshotLogger()
+BINANCE = binance_client.get_default_client()
 
 def out(msg):
     print(msg)
@@ -73,7 +74,7 @@ def _safe_log_decision_snapshot(btc_ctx, spot_total_capital, spot_balance, futur
     try:
         decisions = market.get_last_decision_candidates()
         candidates = decisions.get('long', []) + decisions.get('short', [])
-        futures_total = utils.get_total_futures()
+        futures_total = BINANCE.get_total_futures()
         mode = btc_ctx.get('force_mode') or ('directional' if config.DIRECTIONAL_MODE else 'both_sides')
         DECISIONS.log_snapshot(
             market_regime=btc_ctx.get('trend'),
@@ -152,12 +153,12 @@ def _run():
             out('âœ… Nuevo dÃ­a â€” bot reactivado.')
         state['pnl_date']            = today
         state['daily_pnl_usdt']      = 0.0
-        spot_free = utils.get_usdt_spot()
+        spot_free = BINANCE.get_usdt_spot()
         spot_in_pos = sum(
             p['entry_price'] * p['quantity']
             for p in state.get('positions', []) if p['direction'] == 'long'
         )
-        state['daily_start_capital'] = spot_free + spot_in_pos + utils.get_total_futures()
+        state['daily_start_capital'] = spot_free + spot_in_pos + BINANCE.get_total_futures()
         state['consec_sl']           = 0
 
     # â”€â”€ AuditorÃ­a: activos huÃ©rfanos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -263,20 +264,20 @@ def _run():
             if should_close:
                 # Cerrar al mercado
                 if direction == 'short':
-                    price_now = utils.get_fut_price(sym)
+                    price_now = BINANCE.get_fut_price(sym)
                     pnl = (pos['entry_price'] - price_now) * pos['quantity']
                     # Cancelar TP si existe
                     if pos.get('tp_order_id'):
                         try:
-                            utils.fut_signed('DELETE', '/fapi/v1/order', {'symbol': sym, 'orderId': int(pos['tp_order_id'])})
+                            BINANCE.fut_signed('DELETE', '/fapi/v1/order', {'symbol': sym, 'orderId': int(pos['tp_order_id'])})
                         except: pass
                 else:
-                    price_now = utils.get_spot_price(sym)
+                    price_now = BINANCE.get_spot_price(sym)
                     pnl = (price_now - pos['entry_price']) * pos['quantity']
                     # Cancelar OCO si existe
                     if pos.get('oco_id'):
                         try:
-                            utils.spot_signed('DELETE', '/api/v3/orderList', {'symbol': sym, 'orderListId': int(pos['oco_id'])})
+                            BINANCE.spot_signed('DELETE', '/api/v3/orderList', {'symbol': sym, 'orderListId': int(pos['oco_id'])})
                         except: pass
                 
                 # Remover de posiciones
@@ -348,13 +349,13 @@ def _run():
     excluded       = active_symbols | cooldowns
     long_count     = sum(1 for p in positions_to_keep if p['direction'] == 'long')
     short_count    = sum(1 for p in positions_to_keep if p['direction'] == 'short')
-    spot_free      = utils.get_usdt_spot()
+    spot_free      = BINANCE.get_usdt_spot()
     spot_in_positions = sum(
         p['entry_price'] * p['quantity']
         for p in positions_to_keep if p['direction'] == 'long'
     )
     spot_total_capital = spot_free + spot_in_positions
-    fut_free       = utils.get_usdt_futures()
+    fut_free       = BINANCE.get_usdt_futures()
     max_longs      = utils.get_max_long_positions(spot_total_capital)
     max_shorts     = utils.get_max_short_positions(fut_free)
 
@@ -493,7 +494,7 @@ def _run():
     # Recalcular contadores reales (pueden haber cambiado si se abrio nueva posicion)
     long_count_final  = sum(1 for p in state['positions'] if p['direction'] == 'long')
     short_count_final = sum(1 for p in state['positions'] if p['direction'] == 'short')
-    spot_bal  = utils.get_usdt_spot()
+    spot_bal  = BINANCE.get_usdt_spot()
     # Total spot = USDT libre + valor de longs abiertos
     spot_in_positions = sum(
         p['entry_price'] * p['quantity']
@@ -501,7 +502,7 @@ def _run():
     )
     spot_total = round(spot_bal + spot_in_positions, 2)
     spot_used  = round(spot_in_positions, 2)
-    fut_total, fut_avail, fut_margin = utils.get_futures_summary()
+    fut_total, fut_avail, fut_margin = BINANCE.get_futures_summary()
     # Valor nocional de posiciones short activas
     short_notional = sum(
         p['entry_price'] * p['quantity'] / p.get('leverage', config.FUTURES_LEVERAGE)
@@ -597,7 +598,7 @@ def _recolocar_oco_long(pos, sym, qty_total, step, price, tp, entry):
     """Recoloca OCO de emergencia cuando el parcial falla pero el OCO ya fue cancelado."""
     import urllib.error as _ue
     try:
-        tick     = utils.get_spot_filters(sym).get('tick_size', 0.0001)
+        tick     = BINANCE.get_spot_filters(sym).get('tick_size', 0.0001)
         qty      = utils.round_step(qty_total, step)
         new_sl   = utils.round_tick(entry * (1 - config.SL_MIN_DIST_PCT / 100), tick)
         new_sl_l = utils.round_tick(new_sl * 0.999, tick)
@@ -605,7 +606,7 @@ def _recolocar_oco_long(pos, sym, qty_total, step, price, tp, entry):
         if qty * price < 5.0:
             utils.send_alert(f'ðŸš¨ {sym}: no pude recolocar OCO (qty insuficiente). RevisiÃ³n manual requerida.')
             return
-        oco = utils.spot_signed('POST', '/api/v3/order/oco', {
+        oco = BINANCE.spot_signed('POST', '/api/v3/order/oco', {
             'symbol': sym, 'side': 'SELL', 'quantity': str(qty),
             'price': str(new_tp), 'stopPrice': str(new_sl),
             'stopLimitPrice': str(new_sl_l), 'stopLimitTimeInForce': 'GTC',
@@ -629,12 +630,12 @@ def _handle_close(state, pos, action, price_close, pnl, btc_ctx=None):
     state['trade_count']    = state.get('trade_count', 0) + 1
     state['total_pnl_usdt'] = round(state.get('total_pnl_usdt', 0) + pnl, 4)
     state['daily_pnl_usdt'] = round(state.get('daily_pnl_usdt', 0) + pnl, 4)
-    spot_free_now = utils.get_usdt_spot()
+    spot_free_now = BINANCE.get_usdt_spot()
     spot_in_pos_now = sum(
         p['entry_price'] * p['quantity']
         for p in state.get('positions', []) if p['direction'] == 'long'
     )
-    capital_now = spot_free_now + spot_in_pos_now + utils.get_total_futures()
+    capital_now = spot_free_now + spot_in_pos_now + BINANCE.get_total_futures()
 
     label     = {'closed_tp': 'TP âœ…', 'closed_sl': 'SL ðŸ”´', 'closed_manual': 'STALE â±ï¸ (sin movimiento)'}[action]
     dir_emoji = 'ðŸ“ˆ' if direction == 'long' else 'ðŸ“‰'
@@ -732,7 +733,7 @@ def _check_partial_long(pos, state):
     sym   = pos['symbol']
 
     try:
-        price = utils.get_spot_price(sym)
+        price = BINANCE.get_spot_price(sym)
     except Exception:
         return
 
@@ -743,9 +744,9 @@ def _check_partial_long(pos, state):
     # Cancelar OCO actual y vender 50%
     oco_id = pos.get('oco_order_list_id', '')
     qty_half = utils.round_step(pos['quantity'] * 0.5,
-                                utils.get_spot_filters(sym).get('step_size', 0.001))
+                                BINANCE.get_spot_filters(sym).get('step_size', 0.001))
     qty_rest = utils.round_step(pos['quantity'] * 0.5,
-                                utils.get_spot_filters(sym).get('step_size', 0.001))
+                                BINANCE.get_spot_filters(sym).get('step_size', 0.001))
 
     if qty_half * price < 5.0:   # notional mÃ­nimo
         return
@@ -756,7 +757,7 @@ def _check_partial_long(pos, state):
         oco_cancelled = False
         if oco_id:
             try:
-                utils.spot_signed('DELETE', '/api/v3/orderList', {'symbol': sym, 'orderListId': int(oco_id)})
+                BINANCE.spot_signed('DELETE', '/api/v3/orderList', {'symbol': sym, 'orderListId': int(oco_id)})
                 oco_cancelled = True
             except _ue.HTTPError as e:
                 err = utils._binance_error_msg(e)
@@ -771,10 +772,10 @@ def _check_partial_long(pos, state):
 
         # Verificar balance real antes de vender
         try:
-            acct = utils.get_spot_account()
+            acct = BINANCE.get_spot_account()
             base_asset = sym.replace('USDT', '')
             free_base = next((float(b['free']) for b in acct.get('balances', []) if b['asset'] == base_asset), 0)
-            step = utils.get_spot_filters(sym).get('step_size', 0.001)
+            step = BINANCE.get_spot_filters(sym).get('step_size', 0.001)
             qty_half_real = utils.round_step(min(qty_half, free_base * 0.5), step)
             qty_rest_real = utils.round_step(free_base - qty_half_real, step)
             if qty_half_real * price < 5.0 or qty_rest_real * price < 5.0:
@@ -788,7 +789,7 @@ def _check_partial_long(pos, state):
 
         # Vender mitad
         try:
-            utils.spot_signed('POST', '/api/v3/order', {
+            BINANCE.spot_signed('POST', '/api/v3/order', {
                 'symbol': sym, 'side': 'SELL', 'type': 'MARKET', 'quantity': str(qty_half_real)
             })
         except _ue.HTTPError as e:
@@ -799,7 +800,7 @@ def _check_partial_long(pos, state):
             return
 
         pnl_partial = (price - entry) * qty_half_real
-        tick = utils.get_spot_filters(sym).get('tick_size', 0.0001)
+        tick = BINANCE.get_spot_filters(sym).get('tick_size', 0.0001)
 
         # Nuevo OCO con SL en breakeven (entrada) y mismo TP
         new_sl       = utils.round_tick(entry * 1.003, tick)
@@ -807,7 +808,7 @@ def _check_partial_long(pos, state):
         new_tp       = utils.round_tick(tp, tick)
 
         try:
-            oco = utils.spot_signed('POST', '/api/v3/order/oco', {
+            oco = BINANCE.spot_signed('POST', '/api/v3/order/oco', {
                 'symbol':               sym,
                 'side':                 'SELL',
                 'quantity':             str(qty_rest_real),
@@ -869,7 +870,7 @@ def _check_partial_short(pos, state):
     sym   = pos['symbol']
 
     try:
-        price = utils.get_fut_price(sym)
+        price = BINANCE.get_fut_price(sym)
     except Exception:
         return
 
@@ -878,21 +879,21 @@ def _check_partial_short(pos, state):
         return
 
     qty      = pos['quantity']
-    step     = utils.get_futures_filters(sym).get('step_size', 0.01)
+    step     = BINANCE.get_futures_filters(sym).get('step_size', 0.01)
     qty_half = utils.round_step(qty * 0.5, step)
     qty_rest = utils.round_step(qty * 0.5, step)
 
-    if qty_half < utils.get_futures_filters(sym).get('min_qty', 0.01):
+    if qty_half < BINANCE.get_futures_filters(sym).get('min_qty', 0.01):
         return
 
     try:
         # Cerrar mitad con MARKET
-        order = utils.fut_signed('POST', '/fapi/v1/order', {
+        order = BINANCE.fut_signed('POST', '/fapi/v1/order', {
             'symbol': sym, 'side': 'BUY', 'type': 'MARKET',
             'quantity': str(qty_half), 'reduceOnly': 'true',
         })
         time.sleep(1)
-        d = utils.fut_signed('GET', '/fapi/v1/order', {
+        d = BINANCE.fut_signed('GET', '/fapi/v1/order', {
             'symbol': sym, 'orderId': order['orderId']
         })
         fill = float(d.get('avgPrice', price))
@@ -905,16 +906,16 @@ def _check_partial_short(pos, state):
         tp_id = pos.get('tp_order_id', '')
         if tp_id:
             try:
-                utils.fut_signed('DELETE', '/fapi/v1/order', {'symbol': sym, 'orderId': int(tp_id)})
+                BINANCE.fut_signed('DELETE', '/fapi/v1/order', {'symbol': sym, 'orderId': int(tp_id)})
             except Exception:
                 pass
 
-        tick   = utils.get_futures_filters(sym).get('tick_size', 0.001)
+        tick   = BINANCE.get_futures_filters(sym).get('tick_size', 0.001)
         # Fix #2: breakeven para SHORT es por ENCIMA de la entrada (SL se activa cuando precio SUBE)
         new_sl = utils.round_tick(entry * 1.003, tick)   # breakeven + 0.3% (cubre fees + ruido)
         new_tp = utils.round_tick(tp, tick)
 
-        tp_order = utils.fut_signed('POST', '/fapi/v1/order', {
+        tp_order = BINANCE.fut_signed('POST', '/fapi/v1/order', {
             'symbol': sym, 'side': 'BUY', 'type': 'LIMIT',
             'price': str(new_tp), 'quantity': str(qty_rest),
             'reduceOnly': 'true', 'timeInForce': 'GTC',
@@ -928,7 +929,7 @@ def _check_partial_short(pos, state):
             # Cancelar SL nativo viejo (tenÃ­a qty_total)
             if old_sl_id:
                 try:
-                    utils.fut_signed('DELETE', '/fapi/v1/order', {
+                    BINANCE.fut_signed('DELETE', '/fapi/v1/order', {
                         'symbol': sym, 'orderId': int(old_sl_id)
                     })
                 except Exception:
@@ -938,7 +939,7 @@ def _check_partial_short(pos, state):
             # Si el precio ya bajÃ³ mÃ¡s allÃ¡ del breakeven, Binance rechaza la orden (400).
             # En ese caso el guardian software es suficiente â€” el SL ya no tiene sentido colocarlo.
             try:
-                price_now = utils.get_fut_price(sym)
+                price_now = BINANCE.get_fut_price(sym)
                 if new_sl > price_now * 1.0005:  # margen mÃ­nimo de 0.05% sobre precio actual
                     # ValidaciÃ³n adicional: stopPrice no debe exceder ~4.5% del precio actual
                     # Binance rechaza STOP_MARKET si stopPrice > markPrice +5%
@@ -975,8 +976,8 @@ def _check_partial_short(pos, state):
         state['trade_count']    = state.get('trade_count', 0) + 1
         state['total_pnl_usdt'] = round(state.get('total_pnl_usdt', 0) + pnl_partial, 4)
         state['daily_pnl_usdt'] = round(state.get('daily_pnl_usdt', 0) + pnl_partial, 4)
-        spot_free_now = utils.get_usdt_spot()
-        capital_now   = spot_free_now + utils.get_total_futures()
+        spot_free_now = BINANCE.get_usdt_spot()
+        capital_now   = spot_free_now + BINANCE.get_total_futures()
         try:
             ANALYTICS.log_trade_close(
                 trade_id=f'{pos.get("id")}:partial',
@@ -1014,16 +1015,14 @@ def _audit_orphans(state):
         dust_in_progress = state.get('dust_in_progress', False)
 
         # Precios en batch
-        import urllib.request as _ur
         all_prices = {}
         try:
-            r = _ur.urlopen(f'{config.SPOT_BASE}/api/v3/ticker/price', timeout=8)
-            for p in json.loads(r.read()):
+            for p in BINANCE.spot_ticker_prices():
                 all_prices[p['symbol']] = float(p['price'])
         except Exception:
             pass
 
-        acc = utils.get_spot_account()
+        acc = BINANCE.get_spot_account()
         for b in acc.get('balances', []):
             asset  = b['asset']
             free   = float(b['free'])
@@ -1061,7 +1060,7 @@ def _audit_orphans(state):
 
             # Buscar precio de entrada en historial de trades
             try:
-                trades = utils.spot_signed('GET', '/api/v3/myTrades', {'symbol': sym, 'limit': 5})
+                trades = BINANCE.spot_signed('GET', '/api/v3/myTrades', {'symbol': sym, 'limit': 5})
                 buys = [t for t in trades if t['isBuyer']]
                 entry = float(buys[-1]['price']) if buys else price
             except Exception:
@@ -1069,7 +1068,7 @@ def _audit_orphans(state):
 
             # Calcular SL/TP desde precio actual
             try:
-                k1h    = utils.get_klines(sym, '1h', 50)
+                k1h    = BINANCE.get_klines(sym, '1h', 50)
                 closes = [float(k[4]) for k in k1h]
                 highs  = [float(k[2]) for k in k1h]
                 lows   = [float(k[3]) for k in k1h]
@@ -1081,7 +1080,7 @@ def _audit_orphans(state):
                 cur = price
 
             try:
-                filters   = utils.get_spot_filters(sym)
+                filters   = BINANCE.get_spot_filters(sym)
                 tick      = filters.get('tick_size', 0.0001)
                 step      = filters.get('step_size', 0.1)
                 qty       = utils.round_step(free, step)  # solo qty libre
@@ -1095,7 +1094,7 @@ def _audit_orphans(state):
                 if tp <= cur or sl >= cur or qty <= 0:
                     raise ValueError(f'precios invÃ¡lidos: sl={sl} cur={cur} tp={tp} qty={qty}')
 
-                oco = utils.spot_signed('POST', '/api/v3/order/oco', {
+                oco = BINANCE.spot_signed('POST', '/api/v3/order/oco', {
                     'symbol':               sym,
                     'side':                 'SELL',
                     'quantity':             str(qty),
@@ -1157,7 +1156,7 @@ def _maybe_clean_dust(state):
     if now - last_conv < 3660:
         return
 
-    assets, msg = utils.clean_dust(dry_run=config.DRY_RUN)
+    assets, msg = BINANCE.clean_dust(dry_run=config.DRY_RUN)
     if assets:
         out(f'ðŸ§¹ Polvo: {msg}')
         utils.send_alert(f'ðŸ§¹ {msg}')

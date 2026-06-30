@@ -38,7 +38,7 @@ Guia de alto nivel de los modulos principales.
 
 **Responsabilidades:** validar capital/capacidad, BUY MARKET, OCO TP/SL, retry OCO, emergency sell, recovery pending, trailing, stale exit y recolocacion OCO.
 
-**Consume:** `utils`, `config`, `capital_manager`, `decision_timeline`, filtros Binance Spot.
+**Consume:** `binance_client`, `utils`, `config`, `capital_manager`, `decision_timeline`, filtros Binance Spot.
 
 **Lo usan:** `bot.py`.
 
@@ -48,7 +48,7 @@ Guia de alto nivel de los modulos principales.
 
 **Responsabilidades:** leverage, SELL MARKET, TP reduceOnly, SL nativo/software, trailing, stale exit, cierre market y cancelacion de TP.
 
-**Consume:** `utils`, `config`, `capital_manager`, `decision_timeline`, filtros Binance Futures.
+**Consume:** `binance_client`, `utils`, `config`, `capital_manager`, `decision_timeline`, filtros Binance Futures.
 
 **Lo usan:** `bot.py`.
 
@@ -108,7 +108,7 @@ Guia de alto nivel de los modulos principales.
 
 **Responsabilidades:** obtener contexto BTC, calcular score Long/Short, aplicar filtros, blacklist dinamica, candidatos dinamicos y snapshots de decision.
 
-**Consume:** `utils`, `config`, datos publicos Binance.
+**Consume:** `binance_client`, `utils`, `config`, datos publicos Binance.
 
 **Lo usan:** `bot.py`.
 
@@ -182,6 +182,16 @@ Guia de alto nivel de los modulos principales.
 
 **Lo usan:** Telegram, dashboard y tests. No consulta Binance, no depende de `state.json` y no participa en decisiones operativas.
 
+## `trading/binance_client.py`
+
+**Proposito:** punto unico e inyectable de acceso a Binance.
+
+**Responsabilidades:** exponer metodos de alto nivel para precios, cuentas, ordenes Spot/Futures, OCO, cancelaciones, transferencias y exchange info; delegar 1:1 en `utils` sin cambiar firma, autenticacion, payloads, errores, retries ni logging.
+
+**Consume:** `utils`.
+
+**Lo usan:** modulos operativos que necesitan Binance. La arquitectura queda preparada para futuros `FakeBinanceClient`, `ReplayBinanceClient`, `PaperBinanceClient` y `ShadowBinanceClient`.
+
 ## `trading/utils.py`
 
 **Proposito:** capa compartida de infraestructura.
@@ -190,7 +200,7 @@ Guia de alto nivel de los modulos principales.
 
 **Consume:** `config`.
 
-**Lo usan:** casi todos los modulos de trading.
+**Lo usan:** `binance_client.py` para acceso al exchange y otros modulos para helpers no relacionados con Binance.
 
 ## `trading/healthcheck.py`
 

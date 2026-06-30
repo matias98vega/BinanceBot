@@ -21,7 +21,9 @@ Filosofía de cambio de tendencia:
 
 import sys, os, logging
 sys.path.insert(0, os.path.dirname(__file__))
-import utils, config, market, capital_manager, decision_timeline
+import utils, config, market, capital_manager, decision_timeline, binance_client
+
+BINANCE = binance_client.get_default_client()
 
 
 def _env_float(name, default):
@@ -79,7 +81,7 @@ def _capital_total(state):
     """Capital total = libre + comprometido en posiciones (ambas wallets)."""
     import urllib.error, time, logging
     
-    spot_free   = utils.get_usdt_spot()
+    spot_free   = BINANCE.get_usdt_spot()
     
     # Futures: walletBalance + uPnL (balance real, igual al resumen diario)
     # Con reintentos ante errores transitorios de API
@@ -87,7 +89,7 @@ def _capital_total(state):
     last_err = None
     for _attempt in range(3):
         try:
-            account = utils.fut_signed('GET', '/fapi/v2/account', {})
+            account = BINANCE.fut_signed('GET', '/fapi/v2/account', {})
             break
         except urllib.error.HTTPError as e:
             last_err = e
@@ -122,7 +124,7 @@ def _count_bearish_days():
     (precio < EMA20_4h Y precio < EMA50_4h en velas 4h consecutivas desde ahora).
     """
     try:
-        k4h = utils.get_klines('BTCUSDT', interval='4h', limit=60)
+        k4h = BINANCE.get_klines('BTCUSDT', interval='4h', limit=60)
         closes = [float(k[4]) for k in k4h]
         ema20  = utils.ema(closes, 20)
         ema50  = utils.ema(closes, 50)
@@ -143,7 +145,7 @@ def _count_bullish_days():
     (precio > EMA20_4h Y precio > EMA50_4h en velas 4h consecutivas desde ahora).
     """
     try:
-        k4h = utils.get_klines('BTCUSDT', interval='4h', limit=60)
+        k4h = BINANCE.get_klines('BTCUSDT', interval='4h', limit=60)
         closes = [float(k[4]) for k in k4h]
         ema20  = utils.ema(closes, 20)
         ema50  = utils.ema(closes, 50)
@@ -286,7 +288,7 @@ def rebalance(state, btc_ctx=None):
 
         try:
             _rebalance_log(f'TRANSFER: {amount:.2f} Spot -> Futures')
-            utils.spot_signed('POST', '/sapi/v1/asset/transfer', {
+            BINANCE.spot_signed('POST', '/sapi/v1/asset/transfer', {
                 'type': 'MAIN_UMFUTURE', 'asset': 'USDT', 'amount': str(amount),
             })
             state['last_rebalance_trend'] = trend
@@ -338,7 +340,7 @@ def rebalance(state, btc_ctx=None):
 
         try:
             _rebalance_log(f'TRANSFER: {amount:.2f} Futures -> Spot')
-            utils.spot_signed('POST', '/sapi/v1/asset/transfer', {
+            BINANCE.spot_signed('POST', '/sapi/v1/asset/transfer', {
                 'type': 'UMFUTURE_MAIN', 'asset': 'USDT', 'amount': str(amount),
             })
             state['last_rebalance_trend'] = trend

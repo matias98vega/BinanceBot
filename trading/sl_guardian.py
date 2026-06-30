@@ -6,10 +6,11 @@ Ultra liviano: no hace análisis, no abre posiciones.
 """
 import sys, os, time, json
 sys.path.insert(0, os.path.dirname(__file__))
-import utils, config, decision_timeline
+import utils, config, decision_timeline, binance_client
 from analytics import AnalyticsLogger
 
 ANALYTICS = AnalyticsLogger()
+BINANCE = binance_client.get_default_client()
 
 def main():
     lock = utils.acquire_lock()
@@ -58,7 +59,7 @@ def _run():
                 if oco_id:
                     continue  # OCO activo, Binance lo maneja solo
 
-                price = utils.get_spot_price(sym)
+                price = BINANCE.get_spot_price(sym)
                 if price <= sl:
                     partial_info = ''
                     if pos.get('partial_taken'):
@@ -94,7 +95,7 @@ def _run():
                         )
 
             elif direction == 'short':
-                price = utils.get_fut_price(sym)
+                price = BINANCE.get_fut_price(sym)
                 dist_pct = (sl - price) / price * 100
 
                 if price >= sl:
@@ -105,7 +106,7 @@ def _run():
                     pos_still_open = True
                     if sl_order_id:
                         try:
-                            positions_check = utils.fut_signed('GET', '/fapi/v2/positionRisk', {'symbol': sym})
+                            positions_check = BINANCE.fut_signed('GET', '/fapi/v2/positionRisk', {'symbol': sym})
                             pos_amt = next((abs(float(p['positionAmt'])) for p in positions_check
                                             if float(p.get('positionAmt', 0)) < 0), 0.0)
                             pos_still_open = pos_amt > 0
@@ -136,14 +137,14 @@ def _run():
                         tp_id = pos.get('tp_order_id', '')
                         if tp_id:
                             try:
-                                utils.fut_signed('DELETE', '/fapi/v1/order', {
+                                BINANCE.fut_signed('DELETE', '/fapi/v1/order', {
                                     'symbol': sym, 'orderId': int(tp_id)
                                 })
                             except Exception:
                                 pass
                         if sl_order_id:
                             try:
-                                utils.fut_signed('DELETE', '/fapi/v1/order', {
+                                BINANCE.fut_signed('DELETE', '/fapi/v1/order', {
                                     'symbol': sym, 'orderId': int(sl_order_id)
                                 })
                             except Exception:
@@ -169,7 +170,7 @@ def _run():
                         tp_id = pos.get('tp_order_id', '')
                         if tp_id:
                             try:
-                                utils.fut_signed('DELETE', '/fapi/v1/order', {
+                                BINANCE.fut_signed('DELETE', '/fapi/v1/order', {
                                     'symbol': sym, 'orderId': int(tp_id)
                                 })
                             except Exception:
@@ -242,11 +243,11 @@ def _asset_from_symbol(symbol):
 
 def _sellable_spot_qty(symbol, qty, price_now):
     try:
-        filters = utils.get_spot_filters(symbol)
+        filters = BINANCE.get_spot_filters(symbol)
         step = filters.get('step_size', 0.001)
         min_qty = filters.get('min_qty', 0.001)
         min_notional = filters.get('min_notional', 5.0)
-        free_balance = utils.get_asset_spot(_asset_from_symbol(symbol))
+        free_balance = BINANCE.get_asset_spot(_asset_from_symbol(symbol))
         qty_sell = utils.round_step(min(float(qty or 0), free_balance), step)
         if qty_sell < min_qty or qty_sell * float(price_now or 0) < min_notional:
             return 0.0, free_balance
@@ -271,7 +272,7 @@ def _close_spot_market(symbol, qty, price_now):
         'symbol': symbol, 'side': 'SELL', 'type': 'MARKET', 'quantity': str(qty_sell)
     }
     try:
-        utils.spot_signed('POST', '/api/v3/order', params)
+        BINANCE.spot_signed('POST', '/api/v3/order', params)
         decision_timeline.record_guardian_event(
             'guardian_spot_sell',
             symbol,
@@ -315,7 +316,7 @@ def _close_spot_market(symbol, qty, price_now):
 
 def _close_fut_market(symbol, qty, entry, price_now):
     try:
-        order = utils.fut_signed('POST', '/fapi/v1/order', {
+        order = BINANCE.fut_signed('POST', '/fapi/v1/order', {
             'symbol': symbol, 'side': 'BUY', 'type': 'MARKET',
             'quantity': str(qty), 'reduceOnly': 'true',
         })
@@ -328,7 +329,7 @@ def _close_fut_market(symbol, qty, entry, price_now):
             details={'order_id': order.get('orderId'), 'quantity': qty},
         )
         time.sleep(2)
-        d = utils.fut_signed('GET', '/fapi/v1/order', {
+        d = BINANCE.fut_signed('GET', '/fapi/v1/order', {
             'symbol': symbol, 'orderId': order['orderId']
         })
         fill = float(d.get('avgPrice', price_now))

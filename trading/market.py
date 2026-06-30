@@ -4,7 +4,9 @@ Análisis de mercado: contexto macro BTC, scoring de candidatos long y short.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
-import utils, config
+import utils, config, binance_client
+
+BINANCE = binance_client.get_default_client()
 
 # Fallback estático si la lista dinámica falla
 _STATIC_CANDIDATES = [
@@ -233,7 +235,7 @@ def get_dynamic_candidates(top_n=40):
         return _candidates_cache['symbols']
 
     try:
-        tickers = utils.fut_public('/fapi/v1/ticker/24hr')
+        tickers = BINANCE.fut_public('/fapi/v1/ticker/24hr')
         # Filtrar USDT perps, excluir stables y pares raros
         exclude = {'USDCUSDT', 'BUSDUSDT', 'TUSDUSDT', 'USDPUSDT', 'BTCSTUSDT'}
         valid = [
@@ -261,7 +263,7 @@ def confirm_15m(symbol, direction, futures=False):
     Retorna (ok: bool, reason: str)
     """
     try:
-        k15 = utils.get_klines(symbol, interval='15m', limit=20, futures=futures)
+        k15 = BINANCE.get_klines(symbol, interval='15m', limit=20, futures=futures)
         c15 = [float(k[4]) for k in k15]
         h15 = [float(k[2]) for k in k15]
         l15 = [float(k[3]) for k in k15]
@@ -313,12 +315,12 @@ def get_btc_context():
       - force_mode: None | 'long_only' | 'short_only'
     """
     try:
-        k4h = utils.get_klines('BTCUSDT', interval='4h', limit=52)
+        k4h = BINANCE.get_klines('BTCUSDT', interval='4h', limit=52)
         closes_4h = [float(k[4]) for k in k4h]
         highs_4h  = [float(k[2]) for k in k4h]
         lows_4h   = [float(k[3]) for k in k4h]
 
-        k1h = utils.get_klines('BTCUSDT', interval='1h', limit=2)
+        k1h = BINANCE.get_klines('BTCUSDT', interval='1h', limit=2)
         price_1h_prev = float(k1h[-2][4])
         price_now     = float(k1h[-1][4])
 
@@ -454,7 +456,7 @@ def score_long(symbol, btc_ctx):
             else:
                 hour_reason = 'bonus_us-1'
 
-        k1h = utils.get_klines(symbol, interval='1h', limit=50)
+        k1h = BINANCE.get_klines(symbol, interval='1h', limit=50)
         closes = [float(k[4]) for k in k1h]
         highs  = [float(k[2]) for k in k1h]
         lows   = [float(k[3]) for k in k1h]
@@ -469,7 +471,7 @@ def score_long(symbol, btc_ctx):
         vol_r  = vols[-1] / (sum(vols[-10:]) / 10) if vols[-10:] else 1.0
 
         # Confirmación 4h
-        k4h      = utils.get_klines(symbol, interval='4h', limit=24)
+        k4h      = BINANCE.get_klines(symbol, interval='4h', limit=24)
         c4h      = [float(k[4]) for k in k4h]
         e20_4h   = utils.ema(c4h, 20)[-1]
         h4h      = [float(k[2]) for k in k4h]
@@ -547,7 +549,7 @@ def score_long(symbol, btc_ctx):
         corr_btc = 0.0
         if btc_ctx['change_4h'] < config.BTC_WEAK_PCT and symbol != 'BTCUSDT':
             try:
-                btc_k   = utils.get_klines('BTCUSDT', interval='1h', limit=48)
+                btc_k   = BINANCE.get_klines('BTCUSDT', interval='1h', limit=48)
                 btc_cls = [float(k[4]) for k in btc_k]
                 n = min(len(closes), len(btc_cls))
                 corr_btc = utils.pearson_corr(closes[-n:], btc_cls[-n:])
@@ -624,7 +626,7 @@ def score_short(symbol, btc_ctx):
             else:
                 hour_reason = 'bonus_us-1'
 
-        k1h = utils.get_klines(symbol, interval='1h', limit=60, futures=True)
+        k1h = BINANCE.get_klines(symbol, interval='1h', limit=60, futures=True)
         closes = [float(k[4]) for k in k1h]
         highs  = [float(k[2]) for k in k1h]
         lows   = [float(k[3]) for k in k1h]
@@ -663,7 +665,7 @@ def score_short(symbol, btc_ctx):
         vol_dist = bear_vol > bull_vol * 1.2   # 20% más volumen bajista
 
         # Confirmación 4h
-        k4h = utils.get_klines(symbol, interval='4h', limit=30, futures=True)
+        k4h = BINANCE.get_klines(symbol, interval='4h', limit=30, futures=True)
         c4h  = [float(k[4]) for k in k4h]
         h4h  = [float(k[2]) for k in k4h]
         l4h  = [float(k[3]) for k in k4h]
@@ -899,7 +901,7 @@ def review_dynamic_blacklist():
         # Medir volatilidad actual
         try:
             futures = True  # todos los de la blacklist dinámica son futures
-            k = utils.get_klines(sym, interval='1h', limit=48, futures=futures)
+            k = BINANCE.get_klines(sym, interval='1h', limit=48, futures=futures)
             closes = [float(x[4]) for x in k]
             highs  = [float(x[2]) for x in k]
             lows   = [float(x[3]) for x in k]
@@ -937,7 +939,7 @@ def check_volatility_risk(symbol, futures=False):
     """
     try:
         import math
-        k1h = utils.get_klines(symbol, interval='1h', limit=48, futures=futures)
+        k1h = BINANCE.get_klines(symbol, interval='1h', limit=48, futures=futures)
         closes = [float(k[4]) for k in k1h]
         highs  = [float(k[2]) for k in k1h]
         lows   = [float(k[3]) for k in k1h]

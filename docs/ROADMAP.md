@@ -14,6 +14,7 @@ El sistema ya cuenta con:
 - Guardian independiente en `trading/sl_guardian.py`.
 - Rebalance Spot/Futures en `trading/rebalance.py`.
 - Capital guardrails centralizados en `trading/capital_manager.py`.
+- Acceso a Binance centralizado e inyectable en `trading/binance_client.py`.
 - Estado observable persistido en `trading/bot_state.py`.
 - Telegram read-only en `trading/telegram_commands.py`.
 - Alertas Telegram configurables en `trading/telegram_alerts.py`.
@@ -41,6 +42,7 @@ El sistema ya cuenta con:
 | Profundizar tests de recovery Long Spot | Alta | Hardening OCO actual | Implementado base |
 | Consolidar memoria historica JSONL | Alta | `history.py` y analytics | Implementado base |
 | Construir Feature Store pasivo | Alta | Analytics de apertura | Implementado base |
+| Introducir BinanceClient inyectable | Alta | `utils` actual | Implementado base |
 | Construir Analytics Engine pasivo | Alta | Historia JSONL | Implementado base |
 | Integrar Analytics Engine en Telegram | Alta | `stats.json` | Implementado base |
 | Construir Insights Engine pasivo | Alta | `stats.json` | Implementado base |
@@ -91,6 +93,7 @@ El sistema ya cuenta con:
 - Rebalance automatico entre Spot y Futures.
 - Reserva minima de wallet configurable, default `0`.
 - Guardrails de capital por exposicion y slots.
+- `BinanceClient` como punto unico de acceso al exchange.
 - Telegram read-only con menu, capital, posiciones, health, diagnostico, trades, snapshots y estadisticas.
 - Telegram `Insights` con conclusiones compactas generadas desde `stats.json`.
 - Telegram `Inspeccionar Trade` para ultimo trade, ultimo ganador, ultimo perdedor y detalle por id.
@@ -127,7 +130,7 @@ El sistema ya cuenta con:
 - Dashboard de analitica avanzada.
 - Politica formal de retencion/rotacion de logs.
 - Playbooks de recuperacion manual.
-- Pruebas de integracion con cliente Binance mockeado.
+- Implementaciones alternativas de cliente: `FakeBinanceClient`, `ReplayBinanceClient`, `PaperBinanceClient`, `ShadowBinanceClient`.
 
 ## Riesgos Conocidos
 
@@ -144,7 +147,7 @@ El sistema ya cuenta con:
 - Documentacion historica dispersa entre raiz, `trading/` y `docs/`.
 - `bot.py` concentra mucha orquestacion, cierre, partials, auditoria de orphans y persistencia.
 - Tests aun no cubren todos los flujos de salida y recuperacion.
-- No existe cliente Binance abstracto inyectable; los mocks se aplican por patching de funciones.
+- `BinanceClient` existe, pero las implementaciones Fake/Replay/Paper/Shadow aun son trabajo futuro.
 - Decision Timeline ya existe, pero su cobertura puede ampliarse a mas eventos de filtros finos y a una UI dashboard dedicada.
 - No hay una politica unica de migracion de `state.json`.
 - Algunos comentarios en codigo tienen encoding deteriorado heredado.

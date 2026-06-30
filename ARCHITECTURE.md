@@ -8,6 +8,9 @@ Este documento es la referencia canonica de arquitectura. Describe el estado act
 Binance API
    |
    v
+trading/binance_client.py
+   |
+   v
 trading/utils.py  <--------------+
    |                              |
    +--> market.py                 |
@@ -215,14 +218,15 @@ Estos scripts no abren ordenes ni cambian estrategia.
 
 | Modulo | Proposito | Consume | Usado por |
 |---|---|---|---|
-| `bot.py` | Orquestar ciclo principal, estado, entradas, cierres y observabilidad | `config`, `utils`, `market`, `longs`, `shorts`, `rebalance`, `capital_manager`, `bot_state`, `analytics` | systemd/manual |
+| `bot.py` | Orquestar ciclo principal, estado, entradas, cierres y observabilidad | `config`, `utils`, `binance_client`, `market`, `longs`, `shorts`, `rebalance`, `capital_manager`, `bot_state`, `analytics` | systemd/manual |
 | `capital_manager.py` | Guardrails de capital, max margin por posicion, validacion y snapshot | env, estado | `bot.py`, `longs.py`, `shorts.py`, dashboard |
-| `rebalance.py` | Mover USDT entre Spot/Futures segun regimen | `utils`, `config`, `state` | `bot.py`, `bot_state.py` |
-| `longs.py` | Apertura y gestion Long Spot | `utils`, `config`, `capital_manager` | `bot.py`, recovery |
-| `shorts.py` | Apertura y gestion Short Futures | `utils`, `config`, `capital_manager` | `bot.py` |
-| `sl_guardian.py` | Proteccion independiente de SL | `utils`, `config`, `analytics` | systemd/manual |
-| `market.py` | Contexto BTC, scoring, filtros y candidatos | `utils`, `config` | `bot.py` |
-| `utils.py` | HTTP Binance, firma, balances, filtros, indicadores, state, logs, alerts | `config` | casi todos los modulos |
+| `rebalance.py` | Mover USDT entre Spot/Futures segun regimen | `binance_client`, `utils`, `config`, `state` | `bot.py`, `bot_state.py` |
+| `longs.py` | Apertura y gestion Long Spot | `binance_client`, `utils`, `config`, `capital_manager` | `bot.py`, recovery |
+| `shorts.py` | Apertura y gestion Short Futures | `binance_client`, `utils`, `config`, `capital_manager` | `bot.py` |
+| `sl_guardian.py` | Proteccion independiente de SL | `binance_client`, `utils`, `config`, `analytics` | systemd/manual |
+| `market.py` | Contexto BTC, scoring, filtros y candidatos | `binance_client`, `utils`, `config` | `bot.py` |
+| `binance_client.py` | Punto unico inyectable de acceso a Binance | `utils` | `bot.py`, `longs.py`, `shorts.py`, `rebalance.py`, `sl_guardian.py`, `market.py`, tests |
+| `utils.py` | Implementacion HTTP Binance, firma, balances, filtros, indicadores, state, logs, alerts | `config` | `binance_client.py` y helpers internos |
 | `config.py` | Constantes de estrategia/riesgo y runtime config | `config_loader` | modulos de trading |
 | `config_loader.py` | Cargar `.env` y rutas sin requerir API en herramientas read-only | `.env` | `config`, dashboard, Telegram, tools |
 | `analytics.py` | Eventos JSONL, snapshots, export CSV y puente hacia historia pasiva | runtime config | `bot.py`, guardian, analizadores |
@@ -328,6 +332,6 @@ Propiedades:
 
 - `bot.py` es el modulo mas grande y con mayor blast radius.
 - `state.json` puede desalinearse del exchange si hay cierres externos, fallos parciales o ejecuciones manuales.
-- El sistema todavia no tiene una abstraccion de cliente Binance para pruebas de integracion limpias.
+- `binance_client.py` ya centraliza el acceso a Binance, pero todavia falta implementar clientes alternativos como `FakeBinanceClient`, `ReplayBinanceClient`, `PaperBinanceClient` y `ShadowBinanceClient`.
 - Los JSONL no tienen una politica formal de retencion.
 - Hay documentos legacy dentro de `trading/` que ahora apuntan a docs canonicas.

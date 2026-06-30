@@ -7,7 +7,9 @@ TP: orden LIMIT + reduceOnly=true.
 import sys, os, time, math
 import urllib.error as _ue
 sys.path.insert(0, os.path.dirname(__file__))
-import utils, config, capital_manager, decision_timeline
+import utils, config, capital_manager, decision_timeline, binance_client
+
+BINANCE = binance_client.get_default_client()
 
 
 def _place_stop_market(symbol, side, stop_price, quantity, reduce_only=True):
@@ -27,7 +29,7 @@ def _place_stop_market(symbol, side, stop_price, quantity, reduce_only=True):
         'reduceOnly': 'true' if reduce_only else 'false',
     }
     try:
-        return utils.fut_signed('POST', '/fapi/v1/order', params)
+        return BINANCE.fut_signed('POST', '/fapi/v1/order', params)
     except _ue.HTTPError as e:
         details = utils.extract_http_error_details(e)
         body = details.get('raw_body') or ''
@@ -96,7 +98,7 @@ def _notify_native_sl_failure(symbol, stop_price, quantity, current_price, error
 
 def _ensure_leverage(symbol, leverage):
     try:
-        utils.fut_signed('POST', '/fapi/v1/leverage', {'symbol': symbol, 'leverage': leverage})
+        BINANCE.fut_signed('POST', '/fapi/v1/leverage', {'symbol': symbol, 'leverage': leverage})
     except Exception:
         pass
 
@@ -105,7 +107,7 @@ def _get_fill_price(order_id, symbol, fallback):
     """Consulta la orden hasta obtener el avgPrice real (puede llegar en 0 en la respuesta inicial)."""
     for _ in range(5):
         try:
-            d = utils.fut_signed('GET', '/fapi/v1/order', {'symbol': symbol, 'orderId': order_id})
+            d = BINANCE.fut_signed('GET', '/fapi/v1/order', {'symbol': symbol, 'orderId': order_id})
             avg = float(d.get('avgPrice', 0))
             if avg > 0:
                 return avg
@@ -129,7 +131,7 @@ def open_short(candidate, state, max_shorts=None):
         details={'score': candidate.get('score'), 'reasons': candidate.get('reasons')},
     )
 
-    available = utils.get_usdt_futures()
+    available = BINANCE.get_usdt_futures()
     capital   = utils.get_futures_capital_per_position(state)
     limits = capital_manager.get_limits()
     futures_usable = capital_manager.futures_usable_capital(available, limits)
@@ -142,7 +144,7 @@ def open_short(candidate, state, max_shorts=None):
         capital = capital * config.RISKY_RISK_FACTOR
 
     try:
-        filters  = utils.get_futures_filters(sym)
+        filters  = BINANCE.get_futures_filters(sym)
         step     = filters.get('step_size', 0.1)
         min_qty  = filters.get('min_qty', 0.1)
         min_not  = filters.get('min_notional', 5.0)
@@ -151,7 +153,7 @@ def open_short(candidate, state, max_shorts=None):
         return None, f'Error en filtros futures {sym}: {e}'
 
     # Obtener precio actual
-    price = utils.get_fut_price(sym)
+    price = BINANCE.get_fut_price(sym)
 
     # Dry-run: simular sin ejecutar
     if config.DRY_RUN:
@@ -212,7 +214,7 @@ def open_short(candidate, state, max_shorts=None):
         }
         try:
             decision_timeline.record_order_event('order_sent', sym, 'SHORT', f'SELL MARKET {sym}', details=order_params)
-            order = utils.fut_signed('POST', '/fapi/v1/order', order_params)
+            order = BINANCE.fut_signed('POST', '/fapi/v1/order', order_params)
             decision_timeline.record_order_event('order_opened', sym, 'SHORT', f'SHORT {sym} opened', details=order)
             break  # éxito
         except _ue.HTTPError as e:
@@ -248,7 +250,7 @@ def open_short(candidate, state, max_shorts=None):
     for _ in range(6):
         time.sleep(1)
         try:
-            check = utils.fut_signed('GET', '/fapi/v2/positionRisk', {'symbol': sym})
+            check = BINANCE.fut_signed('GET', '/fapi/v2/positionRisk', {'symbol': sym})
             if any(float(p.get('positionAmt', 0)) < 0 for p in check):
                 break
         except Exception:
@@ -267,10 +269,10 @@ def open_short(candidate, state, max_shorts=None):
 
     # Cancelar órdenes abiertas previas del símbolo
     try:
-        open_orders = utils.fut_signed('GET', '/fapi/v1/openOrders', {'symbol': sym})
+        open_orders = BINANCE.fut_signed('GET', '/fapi/v1/openOrders', {'symbol': sym})
         for o in open_orders:
             try:
-                utils.fut_signed('DELETE', '/fapi/v1/order', {'symbol': sym, 'orderId': o['orderId']})
+                BINANCE.fut_signed('DELETE', '/fapi/v1/order', {'symbol': sym, 'orderId': o['orderId']})
             except Exception:
                 pass
     except Exception:
@@ -279,7 +281,7 @@ def open_short(candidate, state, max_shorts=None):
     # TP como LIMIT + reduceOnly
     tp_order_id = ''
     try:
-        tp_order = utils.fut_signed('POST', '/fapi/v1/order', {
+        tp_order = BINANCE.fut_signed('POST', '/fapi/v1/order', {
             'symbol':     sym,
             'side':       'BUY',
             'type':       'LIMIT',
@@ -387,7 +389,7 @@ def manage_short(pos, state):
     entry = pos['entry_price']
     qty   = pos['quantity']
 
-    price_now = utils.get_fut_price(sym)
+    price_now = BINANCE.get_fut_price(sym)
 
     # Verificar si la posición sigue abierta.
     # Fix #6 — flujo con SL nativo: si STOP_MARKET se ejecutó entre ciclos, positionAmt llega 0
@@ -395,7 +397,7 @@ def manage_short(pos, state):
     # El guardian (sl_guardian.py) también lo detecta por positionAmt==0 y solo limpia el TP.
     # No hay doble-cierre porque manage_short sale por este bloque antes de llegar al check de SL.
     try:
-        positions = utils.fut_signed('GET', '/fapi/v2/positionRisk', {'symbol': sym})
+        positions = BINANCE.fut_signed('GET', '/fapi/v2/positionRisk', {'symbol': sym})
         pos_amt = next((abs(float(p['positionAmt'])) for p in positions
                         if float(p.get('positionAmt', 0)) < 0), 0.0)
 
@@ -419,7 +421,7 @@ def manage_short(pos, state):
     if sl_order_id:
         # Verificar que la orden nativa sigue activa en el exchange
         try:
-            order_info = utils.fut_signed('GET', '/fapi/v1/order', {
+            order_info = BINANCE.fut_signed('GET', '/fapi/v1/order', {
                 'symbol': sym, 'orderId': int(sl_order_id)
             })
             status = order_info.get('status', '')
@@ -487,7 +489,7 @@ def manage_short(pos, state):
         new_sl = price_now + config.SL_ATR_MULT_SHORT * atr_v
         if new_sl < sl:
             try:
-                tick   = utils.get_futures_filters(sym).get('tick_size', 0.001)
+                tick   = BINANCE.get_futures_filters(sym).get('tick_size', 0.001)
                 new_sl = utils.round_tick(new_sl, tick)
                 pos['sl'] = new_sl
                 pos['trail_trough'] = price_now
@@ -508,18 +510,18 @@ def _replace_native_sl(symbol, old_order_id, new_sl_price, qty):
     # Cancelar viejo
     if old_order_id:
         try:
-            utils.fut_signed('DELETE', '/fapi/v1/order', {
+            BINANCE.fut_signed('DELETE', '/fapi/v1/order', {
                 'symbol': symbol, 'orderId': int(old_order_id)
             })
         except Exception:
             pass
     # Colocar nuevo
     try:
-        tick = utils.get_futures_filters(symbol).get('tick_size', 0.001)
+        tick = BINANCE.get_futures_filters(symbol).get('tick_size', 0.001)
         new_sl_price = utils.round_tick(new_sl_price, tick)
         
         # Validación: stopPrice no debe exceder ~4.5% del precio actual
-        price_now = utils.get_fut_price(symbol)
+        price_now = BINANCE.get_fut_price(symbol)
         max_stop_dist_pct = 4.5
         max_allowed_sl = price_now * (1 + max_stop_dist_pct / 100)
         if new_sl_price > max_allowed_sl:
@@ -543,7 +545,7 @@ def _update_native_sl(symbol, order_id, new_sl_price, qty):
 def _close_short_market(symbol, qty, entry, price_now):
     """Cierra short con MARKET. Retorna PnL aproximado."""
     try:
-        order = utils.fut_signed('POST', '/fapi/v1/order', {
+        order = BINANCE.fut_signed('POST', '/fapi/v1/order', {
             'symbol':     symbol,
             'side':       'BUY',
             'type':       'MARKET',
@@ -554,7 +556,7 @@ def _close_short_market(symbol, qty, entry, price_now):
         if fill == 0:
             # Esperar fill real
             time.sleep(2)
-            d = utils.fut_signed('GET', '/fapi/v1/order', {
+            d = BINANCE.fut_signed('GET', '/fapi/v1/order', {
                 'symbol': symbol, 'orderId': order['orderId']
             })
             fill = float(d.get('avgPrice', price_now))
@@ -570,7 +572,7 @@ def _cancel_tp(pos):
     sym   = pos['symbol']
     if tp_id:
         try:
-            utils.fut_signed('DELETE', '/fapi/v1/order', {
+            BINANCE.fut_signed('DELETE', '/fapi/v1/order', {
                 'symbol':  sym,
                 'orderId': int(tp_id),
             })
