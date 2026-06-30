@@ -4,13 +4,23 @@ Guia de alto nivel de los modulos principales.
 
 ## `trading/bot.py`
 
-**Proposito:** orquestador principal del ciclo.
+**Proposito:** bootstrap del proceso principal.
 
-**Responsabilidades:** lock, carga/guardado de estado, reset diario, circuit breaker, rebalance, gestion de posiciones, scans, aperturas, timeline y coordinacion general. Mantiene wrappers de compatibilidad para cierres/parciales, auditoria y persistencia extraidos.
+**Responsabilidades:** configurar stdout/stderr, adquirir/liberar lock, crear dependencias compartidas, ejecutar `CycleRunner` y manejar errores globales. Mantiene wrappers de compatibilidad para tests y llamadas internas historicas.
 
-**Consume:** `config`, `utils`, `market`, `longs`, `shorts`, `rebalance`, `capital_manager`, `position_lifecycle`, `audit_pipeline`, `persistence_pipeline`, `analytics`, `decision_timeline`.
+**Consume:** `utils`, `bot_state`, `binance_client`, `cycle_runner`, `position_lifecycle`, `audit_pipeline`, `persistence_pipeline`, `analytics`.
 
 **Lo usan:** systemd/manual run.
+
+## `trading/cycle_runner.py`
+
+**Proposito:** orquestador principal del ciclo de trading.
+
+**Responsabilidades:** inicio/fin de ciclo, carga de estado, reset diario, auditoria, blacklist review, circuit breaker, contexto BTC, rebalance, gestion de posiciones existentes, evaluacion de nuevas entradas, resumen, timeline y persistencia final.
+
+**Consume:** `market`, `longs`, `shorts`, `rebalance`, `capital_manager`, `bot_state`, `decision_timeline`, `utils` y dependencias inyectadas desde `bot.py`.
+
+**Lo usan:** `bot.py`.
 
 ## `trading/position_lifecycle.py`
 
