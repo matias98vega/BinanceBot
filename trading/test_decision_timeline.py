@@ -89,7 +89,7 @@ class DecisionTimelineTests(unittest.TestCase):
             'message': 'opened',
         })
 
-        self.assertIn('12:42 | ORDER', text)
+        self.assertIn('12:42 | ÓRDENES', text)
         self.assertIn('ADAUSDT SHORT opened', text)
 
     def test_missing_file_returns_empty(self):

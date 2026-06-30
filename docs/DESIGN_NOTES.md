@@ -16,6 +16,20 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Mejoras futuras:** extraer un motor de ciclo y un servicio de reconciliacion state-vs-exchange.
 
+## UX Telegram y Observabilidad
+
+**Problema:** la misma informacion podia verse con pequenas diferencias entre Home, Estadisticas, Timeline e Insights.
+
+**Alternativas consideradas:** duplicar calculos en cada pagina, leer siempre `bot_state.json`, o usar los indices pasivos ya existentes como fuente de presentacion.
+
+**Solucion actual:** Home usa Analytics Engine como fuente unica visible para PnL, igual que Estadisticas. Timeline conserva categorias tecnicas en JSONL pero presenta etiquetas localizadas al usuario. Insights filtra conclusiones comparativas cuando la muestra es baja y muestra mensajes de muestra insuficiente.
+
+**Ventajas:** reduce contradicciones visuales y evita conclusiones prematuras con pocos trades.
+
+**Desventajas:** si `stats.json` esta desactualizado, Home y Estadisticas compartiran el mismo desfase hasta que Analytics lo reconstruya.
+
+**Mejoras futuras:** mostrar freshness de `stats.json` en Home o Sistema si la edad del indice supera un umbral.
+
 ## Guardian Independiente
 
 **Problema:** el ciclo principal corre cada pocos minutos; un SL no deberia depender solo de ese intervalo.

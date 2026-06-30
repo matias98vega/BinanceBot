@@ -18,6 +18,23 @@ CATEGORIES = {
     'SYSTEM', 'MARKET', 'SIGNAL', 'FILTER', 'SIZING', 'RISK', 'REBALANCE',
     'ORDER', 'PROTECTION', 'GUARDIAN', 'CAPITAL', 'BLACKLIST', 'ANALYTICS',
 }
+
+CATEGORY_LABELS_ES = {
+    'SYSTEM': 'SISTEMA',
+    'MARKET': 'MERCADO',
+    'SIGNAL': 'SEÑALES',
+    'FILTER': 'FILTROS',
+    'SIZING': 'SIZING',
+    'RISK': 'RIESGO',
+    'REBALANCE': 'REBALANCEO',
+    'ORDER': 'ÓRDENES',
+    'PROTECTION': 'PROTECCIÓN',
+    'GUARDIAN': 'GUARDIAN',
+    'CAPITAL': 'CAPITAL',
+    'BLACKLIST': 'BLACKLIST',
+    'ANALYTICS': 'ANALÍTICAS',
+    'POSITION': 'POSICIONES',
+}
 SENSITIVE_MARKERS = ('key', 'secret', 'signature', 'token', 'api_key', 'api_secret')
 
 
@@ -190,7 +207,8 @@ def compact_event_for_telegram(event):
         return ''
     ts = str(event.get('timestamp') or '')
     time_part = ts[11:16] if len(ts) >= 16 else '--:--'
-    category = str(event.get('category') or 'SYSTEM')
+    category = str(event.get('category') or 'SYSTEM').upper()
+    category_label = CATEGORY_LABELS_ES.get(category, category)
     level = str(event.get('level') or 'INFO').upper()
     icon = '\U0001F6A8' if level == 'CRITICAL' else '\u274C' if level == 'ERROR' else '\u26A0\uFE0F' if level == 'WARNING' else '\u2705'
     if event.get('event', '').endswith('rejected') or 'reject' in str(event.get('event', '')).lower():
@@ -198,4 +216,4 @@ def compact_event_for_telegram(event):
     symbol = f' {event.get("symbol")}' if event.get('symbol') else ''
     direction = f' {event.get("direction")}' if event.get('direction') else ''
     message = event.get('message') or event.get('event') or ''
-    return f'{time_part} | {category}\n{icon}{symbol}{direction} {message}'.strip()
+    return f'{time_part} | {category_label}\n{icon}{symbol}{direction} {message}'.strip()

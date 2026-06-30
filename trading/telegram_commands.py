@@ -719,6 +719,81 @@ def _pnl_for_period(stats, key):
     return 0
 
 
+def _analytics_pnl_summary():
+    stats, _warning = _stats_payload()
+    return {
+        'today': _pnl_for_period(stats, 'day'),
+        'total': (stats.get('general') or {}).get('pnl_total'),
+    }
+
+
+def _timeline_category_label(category):
+    return decision_timeline.CATEGORY_LABELS_ES.get(str(category or '').upper(), str(category or ''))
+
+
+MIN_INSIGHT_SAMPLE = 5
+
+
+def _closed_count(bucket):
+    try:
+        return int((bucket or {}).get('closed') or (bucket or {}).get('closed_trades') or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _has_comparable_sample(buckets, minimum=MIN_INSIGHT_SAMPLE):
+    return sum(1 for bucket in buckets if _closed_count(bucket) >= minimum) >= 2
+
+
+def _insufficient_insight_lines(stats):
+    lines = []
+    general = stats.get('general') or {}
+    closed = _closed_count(general)
+    if closed < MIN_INSIGHT_SAMPLE:
+        lines.append('Aún no hay suficientes operaciones para determinar la mayor pérdida.')
+        lines.append('Todavía no hay muestra suficiente para validar Profit Factor o Win Rate.')
+
+    symbols = (stats.get('by_symbol') or {}).values()
+    if not _has_comparable_sample(symbols):
+        lines.append('Muestra insuficiente para comparar símbolos.')
+
+    directions = stats.get('by_direction') or {}
+    if _closed_count(directions.get('LONG')) < MIN_INSIGHT_SAMPLE or _closed_count(directions.get('SHORT')) < MIN_INSIGHT_SAMPLE:
+        lines.append('Muestra insuficiente para comparar LONG vs SHORT.')
+
+    regimes = [bucket for name, bucket in (stats.get('by_regime') or {}).items() if name != 'UNKNOWN']
+    if not _has_comparable_sample(regimes):
+        lines.append('Muestra insuficiente para comparar regímenes.')
+
+    hours = (stats.get('time') or {}).get('hour') or {}
+    if not _has_comparable_sample(hours.values()):
+        lines.append('Muestra insuficiente para determinar mejor o peor hora.')
+    return lines
+
+
+def _insight_has_enough_sample(item):
+    text = str(item.get('texto') or '').lower()
+    data = item.get('datos_utilizados') or item.get('datos') or item.get('data') or {}
+    if any(term in text for term in (
+        'mayor perdida',
+        'mayor pérdida',
+        'profit factor actual',
+        'mayor ganancia',
+    )):
+        return _closed_count(data) >= MIN_INSIGHT_SAMPLE
+    if any(term in text for term in ('simbolo mas', 'símbolo mas', 'simbolo menos', 'símbolo menos', 'mayor win rate')):
+        return _closed_count(data) >= MIN_INSIGHT_SAMPLE
+    if any(term in text for term in ('regimen mas', 'régimen mas', 'regimen menos', 'régimen menos')):
+        return _closed_count(data) >= MIN_INSIGHT_SAMPLE
+    if any(term in text for term in ('mejor hora', 'peor hora', 'mejor dia', 'peor dia', 'mejor día', 'peor día')):
+        return _closed_count(data) >= MIN_INSIGHT_SAMPLE
+    if 'rinde mejor' in text and ('long' in text or 'short' in text):
+        long_b = data.get('LONG') if isinstance(data, dict) else {}
+        short_b = data.get('SHORT') if isinstance(data, dict) else {}
+        return _closed_count(long_b) >= MIN_INSIGHT_SAMPLE and _closed_count(short_b) >= MIN_INSIGHT_SAMPLE
+    return True
+
+
 def _nav_keyboard(page_id):
     if page_id == 'home':
         return [[_button('🔄 Actualizar', 'r:home')]]
@@ -737,7 +812,7 @@ def _timeline_text(filter_text=None):
     events = decision_timeline.read_recent_events(limit=10, category=category, symbol=symbol)
     title = '\U0001F4DC Timeline'
     if category:
-        title += f' | {category}'
+        title += f' | {_timeline_category_label(category)}'
     if symbol:
         title += f' | {symbol}'
     lines = [title, '']
@@ -799,7 +874,7 @@ class HomePage(MenuPage):
         state = _state()
         snapshot = _bot_state()
         system = snapshot.get('system') if isinstance(snapshot.get('system'), dict) else {}
-        pnl = snapshot.get('pnl') if isinstance(snapshot.get('pnl'), dict) else {}
+        pnl = _analytics_pnl_summary()
         health, _, _ = _health_summary()
         if system.get('health'):
             health = system.get('health')
@@ -813,14 +888,14 @@ class HomePage(MenuPage):
             f'{_status_icon(guardian)} Guardian: {guardian}',
             f'\u2764\ufe0f Healthcheck: {health}',
             '',
-            f'PnL hoy: {_fmt_pnl(pnl.get("today", state.get("daily_pnl_usdt", 0)))}',
-            f'PnL total: {_fmt_pnl(pnl.get("total", state.get("total_pnl_usdt", 0)))}',
+            f'PnL hoy: {_fmt_pnl(pnl.get("today"))}',
+            f'PnL total: {_fmt_pnl(pnl.get("total"))}',
             '',
             f'Longs: {metrics["long_count"]}/{max_longs}',
-            f'Spot: {_fmt_money(metrics["spot_used"])} / {_fmt_money(metrics["spot_target"])}',
+            f'Spot: {_fmt_money(metrics["spot_used"])} / {_fmt_money(metrics["spot_real"])}',
             '',
             f'Shorts: {metrics["short_count"]}/{max_shorts}',
-            f'Futures: {_fmt_money(metrics["futures_used"])} / {_fmt_money(metrics["futures_target"])}',
+            f'Futures: {_fmt_money(metrics["futures_used"])} / {_fmt_money(metrics["futures_real"])}',
             '',
             '\U0001F552 Ultimo ciclo',
             _fmt_uy(system.get('last_execution')) if system.get('last_execution') else _mtime_uy(CONFIG.state_file),
@@ -873,12 +948,21 @@ class CapitalPage(MenuPage):
         if metrics.get('futures_reserved'):
             lines.append(f'Reserva: {_fmt_money(metrics.get("futures_reserved"))}')
         if rebalance:
+            pending_amount = rebalance.get("amount_pending")
             lines.extend([
                 '',
                 'Rebalance:',
                 f'{_rebalance_label(rebalance.get("status"))} {direction_label}',
-                f'Monto: {_fmt_money(rebalance.get("amount_pending"))}',
             ])
+            if str(rebalance.get('status') or '').upper() == 'PENDING':
+                lines.extend([
+                    '',
+                    'Pendiente:',
+                    direction_label,
+                    _fmt_money(pending_amount),
+                ])
+            else:
+                lines.append(f'Monto: {_fmt_money(pending_amount)}')
         if metrics.get('warning'):
             lines.extend(['', 'Info:', metrics.get('warning')])
         risk_lines = []
@@ -1068,15 +1152,19 @@ class InsightsPage(MenuPage):
 
     def render(self):
         data = _insights_payload()
-        lines = ['\U0001F4A1 Insights', '']
+        stats, _warning = _stats_payload()
+        lines = ['💡 Insights', '']
         for warning in data.get('warnings') or []:
             lines.append(str(warning))
             lines.append('')
-        summary = data.get('summary') or []
+        summary = [item for item in (data.get('summary') or []) if _insight_has_enough_sample(item)]
+        insufficient = _insufficient_insight_lines(stats)
         if not summary:
             lines.append('Todavia no hay conclusiones suficientes.')
+        for item in insufficient[:6]:
+            lines.append(f'- {item}')
         for item in summary[:8]:
-            lines.append(f'• {item.get("texto")}')
+            lines.append(f'- {item.get("texto")}')
         return '\n'.join(lines).rstrip()
 
 

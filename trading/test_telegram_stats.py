@@ -139,6 +139,101 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertGreater(len(chunks), 1)
         self.assertTrue(all(len(chunk) <= 1000 for chunk in chunks))
 
+    def test_home_uses_analytics_pnl_and_real_wallet_totals(self):
+        stats = sample_stats()
+        stats['general']['pnl_total'] = 12.34
+        today = telegram_commands.datetime.now(telegram_commands.UY_TZ).date().isoformat()
+        stats['general']['pnl_daily'] = {today: 1.23}
+        bot_snapshot = {
+            'system': {'health': 'OK', 'last_execution': '2026-01-01T12:00:00Z'},
+            'pnl': {'today': 99, 'total': 99},
+            'capital': {
+                'spot_real': 26.9,
+                'spot_target': 25.0,
+                'spot_used': 8.4,
+                'futures_real': 27.1,
+                'futures_target': 30.0,
+                'futures_used': 18.2,
+            },
+            'positions': {
+                'long': {'current': 1, 'max': 2},
+                'short': {'current': 1, 'max': 2},
+            },
+        }
+
+        with patch.object(telegram_commands, '_stats_payload', return_value=(stats, None)), \
+             patch.object(telegram_commands, '_bot_state', return_value=bot_snapshot), \
+             patch.object(telegram_commands, '_state', return_value={'daily_pnl_usdt': 0, 'total_pnl_usdt': 0}), \
+             patch.object(telegram_commands, '_health_summary', return_value=('OK', [], [])), \
+             patch.object(telegram_commands, '_bot_status', return_value='ONLINE'), \
+             patch.object(telegram_commands, '_guardian_status', return_value='ONLINE'):
+            text = telegram_commands._render_page('home')['text']
+
+        self.assertIn('PnL hoy: +1.23 USDT', text)
+        self.assertIn('PnL total: +12.34 USDT', text)
+        self.assertIn('Spot: 8.40 USDT / 26.90 USDT', text)
+        self.assertIn('Futures: 18.20 USDT / 27.10 USDT', text)
+        self.assertNotIn('+99.00 USDT', text)
+
+    def test_insights_low_sample_suppresses_misleading_comparisons(self):
+        stats = sample_stats()
+        stats['general']['closed_trades'] = 1
+        stats['general']['closed'] = 1
+        stats['by_symbol'] = {'ETHUSDT': {'closed': 1, 'pnl_total': 10}}
+        stats['by_direction'] = {'LONG': {'closed': 1}, 'SHORT': {'closed': 0}}
+        stats['by_regime'] = {'BULL': {'closed': 1}}
+        stats['time'] = {'hour': {'14': {'closed': 1}}}
+        insights = {
+            'warnings': [],
+            'summary': [
+                {
+                    'texto': 'Mayor pérdida histórica: ETHUSDT con +10.00 USDT.',
+                    'datos_utilizados': {'symbol': 'ETHUSDT', 'pnl_usdt': 10},
+                },
+                {
+                    'texto': 'ETHUSDT es el simbolo mas rentable.',
+                    'datos_utilizados': {'symbol': 'ETHUSDT', 'closed': 1},
+                },
+            ],
+        }
+
+        with patch.object(telegram_commands, '_stats_payload', return_value=(stats, None)), \
+             patch.object(telegram_commands, '_insights_payload', return_value=insights):
+            text = telegram_commands._render_page('insights')['text']
+
+        self.assertIn('Aún no hay suficientes operaciones para determinar la mayor pérdida.', text)
+        self.assertIn('Muestra insuficiente para comparar símbolos.', text)
+        self.assertNotIn('Mayor pérdida histórica', text)
+        self.assertNotIn('ETHUSDT es el simbolo mas rentable', text)
+
+    def test_capital_pending_rebalance_is_split_visually(self):
+        metrics = {
+            'total_real': 54.0,
+            'total_limit': 54.0,
+            'total_authorized': 54.0,
+            'spot_real': 26.9,
+            'spot_target': 0.0,
+            'spot_used': 8.4,
+            'spot_reserved': 0,
+            'futures_real': 27.1,
+            'futures_target': 54.0,
+            'futures_used': 18.2,
+            'futures_reserved': 0,
+            'rebalance': {
+                'status': 'PENDING',
+                'direction': 'SPOT_TO_FUTURES',
+                'amount_pending': 26.94,
+            },
+            'max_exposure_percent': 80.0,
+            'max_position_percent': None,
+            'warning': None,
+        }
+
+        with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics):
+            text = telegram_commands._render_page('capital')['text']
+
+        self.assertIn('Pendiente:\nSpot → Futures\n26.94 USDT', text)
+
 
 if __name__ == '__main__':
     unittest.main()
