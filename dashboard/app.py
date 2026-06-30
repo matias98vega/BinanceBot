@@ -17,6 +17,8 @@ sys.path.insert(0, TRADING_DIR)
 
 from config_loader import load_config  # noqa: E402
 import capital_manager  # noqa: E402
+import decision_timeline  # noqa: E402
+import insights_engine  # noqa: E402
 
 
 CONFIG = load_config(require_api=False)
@@ -278,6 +280,14 @@ def _health_payload():
     }
 
 
+def _timeline_payload(limit=20):
+    return {'events': decision_timeline.read_recent_events(limit=limit)}
+
+
+def _insights_payload():
+    return insights_engine.load_insights()
+
+
 def _api_payload(path):
     if path == '/api/status':
         return _status_payload()
@@ -289,6 +299,10 @@ def _api_payload(path):
         return _health_payload()
     if path == '/api/metrics':
         return _metrics_payload()
+    if path == '/api/timeline':
+        return _timeline_payload()
+    if path == '/api/insights':
+        return _insights_payload()
     return None
 
 

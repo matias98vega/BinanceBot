@@ -5,6 +5,8 @@ import logging
 import os
 from datetime import datetime, timezone
 
+import decision_timeline
+
 
 TRADING_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(TRADING_DIR)
@@ -154,6 +156,15 @@ class HistoryStore:
         if isinstance(extra, dict):
             record['extra'] = extra
         self._append(self.trades_file, record)
+        decision_timeline.record_event(
+            'history_trade_open',
+            f'{symbol} {record["side"]} trade open stored',
+            category='ANALYTICS',
+            symbol=symbol,
+            direction=record['side'],
+            related_trade_id=trade_id,
+            details={'wallet': wallet, 'capital_used': record.get('capital_used')},
+        )
         return record
 
     def record_trade_close(
@@ -195,6 +206,15 @@ class HistoryStore:
         if isinstance(extra, dict):
             record['extra'] = extra
         self._append(self.trades_file, record)
+        decision_timeline.record_event(
+            'history_trade_close',
+            f'{symbol or trade_id} trade close stored: {record["exit_reason"]}',
+            category='ANALYTICS',
+            symbol=symbol,
+            direction=record['side'],
+            related_trade_id=trade_id,
+            details={'pnl_usdt': record.get('pnl_usdt'), 'result': record.get('result')},
+        )
         return record
 
     def record_decision(self, decision, symbol=None, side=None, reason=None, steps=None,
@@ -214,6 +234,14 @@ class HistoryStore:
             'details': details or {},
         }
         self._append(self.decisions_file, record)
+        decision_timeline.record_event(
+            'history_decision',
+            f'Decision stored: {decision}',
+            category='ANALYTICS',
+            symbol=symbol,
+            direction=record['side'],
+            details={'reason': reason, 'score': record.get('score')},
+        )
         return record
 
     def record_snapshot(self, market=None, capital=None, exposure=None, positions=None,
@@ -229,6 +257,12 @@ class HistoryStore:
             'details': details or {},
         }
         self._append(self.snapshots_file, record)
+        decision_timeline.record_event(
+            'history_snapshot',
+            'Market snapshot stored',
+            category='ANALYTICS',
+            details={'market': record.get('market'), 'max_positions': record.get('max_positions')},
+        )
         return record
 
     def get_trade(self, trade_id):

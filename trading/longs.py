@@ -5,7 +5,7 @@ Abre, monitorea, toma parcial, trailing stop, cierra.
 """
 import sys, os, time, math
 sys.path.insert(0, os.path.dirname(__file__))
-import utils, config, capital_manager
+import utils, config, capital_manager, decision_timeline
 
 
 def _asset_from_symbol(symbol):
@@ -71,6 +71,13 @@ def open_long(candidate, state, max_longs=None):
     sym    = candidate['symbol']
     sl     = candidate['sl']
     tp     = candidate['tp']
+    try:
+        decision_timeline.record_signal_evaluated(
+            sym, 'LONG', 'LONG open flow started',
+            details={'score': candidate.get('score'), 'reasons': candidate.get('reasons')},
+        )
+    except Exception:
+        pass
 
     usdt = utils.get_usdt_spot()
     if usdt < 5.0:
@@ -161,7 +168,9 @@ def open_long(candidate, state, max_longs=None):
             'quantity': str(qty),
         }
         try:
+            decision_timeline.record_order_event('order_sent', sym, 'LONG', f'BUY MARKET {sym}', details=params)
             buy = utils.spot_signed('POST', '/api/v3/order', params)
+            decision_timeline.record_order_event('order_opened', sym, 'LONG', f'LONG {sym} buy filled', details=buy)
             break  # éxito
         except Exception as e:
             if hasattr(e, 'code'):
@@ -204,6 +213,7 @@ def open_long(candidate, state, max_longs=None):
             # SL debe estar bajo el precio, TP sobre el precio
             oco_params = _build_oco_params(sym, qty_for_oco, real_tp, real_sl, tick)
             oco = utils.spot_signed('POST', '/api/v3/order/oco', oco_params)
+            decision_timeline.record_protection_event('oco_created', sym, 'LONG', f'OCO protection OK for {sym}', details=oco_params)
             oco_id   = str(oco.get('orderListId', ''))
             oco_oids = [str(o['orderId']) for o in oco.get('orders', [])]
             break
@@ -222,6 +232,7 @@ def open_long(candidate, state, max_longs=None):
                         try:
                             oco_params = _build_oco_params(sym, qty_for_oco, real_tp, real_sl, tick)
                             oco = utils.spot_signed('POST', '/api/v3/order/oco', oco_params)
+                            decision_timeline.record_protection_event('oco_retry_created', sym, 'LONG', f'OCO retry protection OK for {sym}', details=oco_params)
                             oco_id = str(oco.get('orderListId', ''))
                             oco_oids = [str(o['orderId']) for o in oco.get('orders', [])]
                             break
@@ -266,6 +277,12 @@ def open_long(candidate, state, max_longs=None):
                     sym, actual_price, 0.0, real_sl, real_tp, candidate['atr'],
                     f'OCO inicial fallo ({oco_err}); no queda balance vendible (balance={real_asset_balance:.8f})'
                 )
+                decision_timeline.record_protection_event(
+                    'recovery_pending', sym, 'LONG',
+                    f'LONG {sym} unprotected: OCO failed and no sellable balance',
+                    level='CRITICAL', details={'oco_error': str(oco_err), 'balance': real_asset_balance},
+                    related_trade_id=pos.get('id'),
+                )
                 return pos, (
                     f'OCO fallo ({oco_err}) y no queda balance vendible '
                     f'(balance={real_asset_balance:.8f}); limpiando sin posicion local.'
@@ -288,6 +305,12 @@ def open_long(candidate, state, max_longs=None):
                 'recovery_pending':  True,
                 'protection_warning': f'OCO inicial fallo ({oco_err}); sell emergencia fallo ({sell_err})',
             }
+            decision_timeline.record_protection_event(
+                'recovery_pending', sym, 'LONG',
+                f'LONG {sym} opened without OCO; recovery pending',
+                level='CRITICAL', details={'oco_error': str(oco_err), 'sell_error': str(sell_err)},
+                related_trade_id=pos.get('id'),
+            )
             return pos, (
                 f'⚠️ LONG {sym} abierto sin OCO inicial; sell emergencia fallo. '
                 f'Recovery automatico intentara recolocar OCO con balance real. Motivo: {oco_err}'
@@ -510,6 +533,10 @@ def _recolocar_oco(pos, state):
         pos['quantity']          = qty
         pos['recovery_pending']  = False
         pos.pop('protection_warning', None)
+        decision_timeline.record_protection_event(
+            'recovery_success', sym, 'LONG', f'OCO recovery successful for {sym}',
+            details=oco_params, related_trade_id=pos.get('id'),
+        )
         utils.send_alert(f'⚠️ OCO inicial falló para {sym}, recuperación automática exitosa. Protección restablecida.')
         return 'updated', price_now, 0
     except Exception as e:
@@ -520,5 +547,9 @@ def _recolocar_oco(pos, state):
         utils.send_alert(
             f'🚨 {sym} LONG sigue SIN OCO. Cantidad={qty}. Motivo Binance={reason}. '
             f'Acción requerida: revisar/cerrar o proteger manualmente.'
+        )
+        decision_timeline.record_protection_event(
+            'recovery_failed', sym, 'LONG', f'{sym} LONG remains without OCO',
+            level='CRITICAL', details={'reason': reason}, related_trade_id=pos.get('id'),
         )
         return 'hold', price_now, 0

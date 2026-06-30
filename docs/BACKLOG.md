@@ -15,19 +15,21 @@ Este backlog agrupa trabajo pendiente. No implica autorizacion para modificar es
 
 | Item | Prioridad | Complejidad | Impacto esperado |
 |---|---|---:|---|
-| Decision Timeline JSONL rotado | Alta | Media | Entender ciclos y eventos sin journalctl |
+| Ampliar cobertura de Decision Timeline | Media | Media | Registrar filtros finos y motivos adicionales sin depender de journalctl |
 | Cliente Binance mockeable/injectable | Alta | Alta | Tests mas confiables sin patching disperso |
 | Polling de balance post-fill para Long Spot | Media | Media | Reducir carreras tras compra Spot |
 | Auditoria de permisos API en setup | Media | Baja | Detectar claves sin permisos adecuados |
 | Playbooks de recuperacion manual | Media | Baja | Reducir improvisacion ante fallos |
 | Rotacion de `data/history/*.jsonl` | Media | Baja | Evitar crecimiento indefinido de memoria historica |
 | Validacion periodica de consistencia `stats.json` vs JSONL | Media | Baja | Detectar indices stale o corruptos |
+| Validacion de freshness de `insights.json` vs `stats.json` | Media | Baja | Evitar conclusiones derivadas de estadisticas stale |
 
 ## UI
 
 | Item | Prioridad | Complejidad | Impacto esperado |
 |---|---|---:|---|
 | Vista compacta de timeline en dashboard | Alta | Media | Diagnostico rapido |
+| Vista compacta de insights en dashboard | Media | Media | Mostrar conclusiones sin depender de Telegram |
 | Vista de capacidad real por wallet | Alta | Baja | Entender slots disponibles |
 | Separar paneles de capital, riesgo y sistema | Media | Media | Lectura mas clara |
 | Filtros por simbolo/direccion/regimen | Media | Media | Analisis mas util |
@@ -36,7 +38,8 @@ Este backlog agrupa trabajo pendiente. No implica autorizacion para modificar es
 
 | Item | Prioridad | Complejidad | Impacto esperado |
 |---|---|---:|---|
-| Pagina `/timeline` | Alta | Media | Ver eventos recientes desde celular |
+| Paginacion y filtros avanzados para `/timeline` | Media | Media | Navegar historiales largos desde celular |
+| Filtros avanzados para `/insights` | Media | Baja | Consultar conclusiones por categoria |
 | Notificaciones de recovery/critical mas claras | Alta | Baja | Mejor respuesta operativa |
 | Paginacion avanzada de rankings estadisticos Telegram | Media | Media | Navegar historiales largos sin mensajes extensos |
 | Healthcheck resumido periodico configurable | Media | Media | Detectar degradacion sin revisar manualmente |
@@ -46,7 +49,8 @@ Este backlog agrupa trabajo pendiente. No implica autorizacion para modificar es
 
 | Item | Prioridad | Complejidad | Impacto esperado |
 |---|---|---:|---|
-| `/api/timeline` | Alta | Baja | Exponer eventos cronologicos |
+| UI visual para `/api/timeline` | Media | Media | Exponer eventos cronologicos en el dashboard web |
+| UI visual para `/api/insights` | Media | Media | Exponer conclusiones generadas por el Insights Engine |
 | Graficos PnL por dia/simbolo/direccion | Media | Media | Mejor analisis de performance |
 | Tabla de rechazos frecuentes | Media | Media | Detectar filtros dominantes |
 | Panel de freshness de archivos | Media | Baja | Identificar observabilidad stale |
@@ -60,6 +64,7 @@ Este backlog agrupa trabajo pendiente. No implica autorizacion para modificar es
 | Drawdown detallado intradia con curva de equity completa | Media | Media | Mejor lectura de riesgo temporal |
 | Distribucion de tiempo en posicion | Media | Baja | Evaluar stale exits |
 | Analisis de SL/TP distance vs resultado | Media | Media | Entender sensibilidad de salidas |
+| Insights por periodo con muestras minimas configurables | Media | Baja | Reducir falsos positivos en alertas |
 
 ## Machine Learning Futuro
 

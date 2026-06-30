@@ -10,7 +10,7 @@ try:
 except Exception:
     pass
 sys.path.insert(0, os.path.dirname(__file__))
-import config, utils, market, longs, shorts, rebalance, capital_manager, bot_state
+import config, utils, market, longs, shorts, rebalance, capital_manager, bot_state, decision_timeline
 from analytics import AnalyticsLogger, DecisionSnapshotLogger
 from telegram_alerts import send_telegram_alert
 
@@ -133,7 +133,12 @@ def main():
 
 
 def _run():
+    cycle_id = f'cycle_{int(time.time())}'
     state = utils.load_state()
+    try:
+        decision_timeline.record_cycle_start(cycle_id=cycle_id, details={'positions': len(state.get('positions', []))})
+    except Exception:
+        pass
 
     # â”€â”€ Migrar cooldown_symbols de lista a dict si es necesario â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if isinstance(state.get('cooldown_symbols'), list):
@@ -223,6 +228,16 @@ def _run():
 
     ctx_emoji = 'ðŸŸ¢' if trend == 'bullish' else ('ðŸ”´' if trend == 'bearish' else 'ðŸŸ¡')
     out(f'{ctx_emoji} Contexto BTC: {trend.upper()} | Precio: ${btc_ctx["btc_price"]:.0f} | 4h: {chg4h:+.2f}%')
+    try:
+        decision_timeline.record_event(
+            'market_context',
+            f'BTC {trend} 4h {chg4h:+.2f}%',
+            category='MARKET',
+            cycle_id=cycle_id,
+            details=btc_ctx,
+        )
+    except Exception:
+        pass
     if force:
         out(f'âš¡ Modo forzado: {force}')
 
@@ -345,10 +360,32 @@ def _run():
 
     if long_count >= max_longs:
         out(f'CAPACITY LIMIT REJECT: longs {long_count}/{max_longs}')
+        try:
+            decision_timeline.record_event(
+                'capacity_reject',
+                f'Long entries blocked: {long_count}/{max_longs}',
+                level='WARNING',
+                category='RISK',
+                cycle_id=cycle_id,
+                details={'direction': 'long', 'count': long_count, 'max': max_longs},
+            )
+        except Exception:
+            pass
         if long_count > max_longs:
             out(f'Sobrecapacidad actual: Longs {long_count}/{max_longs}. No se abrirán nuevos longs hasta normalizar.')
     if short_count >= max_shorts:
         out(f'CAPACITY LIMIT REJECT: shorts {short_count}/{max_shorts}')
+        try:
+            decision_timeline.record_event(
+                'capacity_reject',
+                f'Short entries blocked: {short_count}/{max_shorts}',
+                level='WARNING',
+                category='RISK',
+                cycle_id=cycle_id,
+                details={'direction': 'short', 'count': short_count, 'max': max_shorts},
+            )
+        except Exception:
+            pass
         if short_count > max_shorts:
             out(f'Sobrecapacidad actual: Shorts {short_count}/{max_shorts}. No se abrirán nuevos shorts hasta normalizar.')
 
@@ -382,6 +419,13 @@ def _run():
 
         if best_long:
             out(f'ðŸ” Candidato LONG: {best_long["symbol"]} score={best_long["score"]} RSI={best_long["rsi"]:.0f} reasons={best_long["reasons"]}')
+            try:
+                decision_timeline.record_signal_evaluated(
+                    best_long.get('symbol'), 'LONG', 'LONG signal accepted for open attempt',
+                    cycle_id=cycle_id, details=best_long,
+                )
+            except Exception:
+                pass
             pos, msg = longs.open_long(best_long, state, max_longs=max_longs)
             if pos:
                 state['positions'].append(pos)
@@ -398,6 +442,10 @@ def _run():
                 logging.error(f'LONG fallido {best_long["symbol"]}: {msg}')
         else:
             motivo = descarte_long.get('MERCADO', 'sin candidatos vÃ¡lidos')
+            try:
+                decision_timeline.record_signal_rejected('LONG_SCAN', 'LONG', motivo, cycle_id=cycle_id, details=descarte_long)
+            except Exception:
+                pass
             # No mostrar en consola si es por modo direccional (ya estÃ¡ en config)
             if 'modo direccional' not in motivo:
                 out(f'ðŸ” LONG: sin entrada ({motivo})')
@@ -410,6 +458,13 @@ def _run():
 
         if best_short:
             out(f'ðŸ” Candidato SHORT: {best_short["symbol"]} score={best_short["score"]} RSI={best_short["rsi"]:.0f} reasons={best_short["reasons"]}')
+            try:
+                decision_timeline.record_signal_evaluated(
+                    best_short.get('symbol'), 'SHORT', 'SHORT signal accepted for open attempt',
+                    cycle_id=cycle_id, details=best_short,
+                )
+            except Exception:
+                pass
             pos, msg = shorts.open_short(best_short, state, max_shorts=max_shorts)
             if pos:
                 state['positions'].append(pos)
@@ -424,6 +479,10 @@ def _run():
                 logging.error(f'SHORT fallido {best_short["symbol"]}: {msg}')
         else:
             motivo = descarte_short.get('MERCADO', 'sin candidatos vÃ¡lidos')
+            try:
+                decision_timeline.record_signal_rejected('SHORT_SCAN', 'SHORT', motivo, cycle_id=cycle_id, details=descarte_short)
+            except Exception:
+                pass
             # No mostrar en consola si es por modo direccional (ya estÃ¡ en config)
             if 'modo direccional' not in motivo:
                 out(f'ðŸ” SHORT: sin entrada ({motivo})')
@@ -491,6 +550,25 @@ def _run():
         out(f'BotState build warning: {e}')
     out(f'\nðŸ’¼ Longs: {long_count_final}/{max_longs_console} | Shorts: {short_count_final}/{max_shorts_console} | Spot: ${spot_used:.2f}/${spot_total:.2f} | Futures: ${short_notional:.2f}/${fut_total:.2f}')
     out(f'ðŸ“Š PnL total: {state["total_pnl_usdt"]:+.4f} USDT | Hoy: {state["daily_pnl_usdt"]:+.4f} USDT')
+    try:
+        decision_timeline.record_cycle_end(
+            cycle_id=cycle_id,
+            message=f'Cycle summary: longs {long_count_final}/{max_longs_console}, shorts {short_count_final}/{max_shorts_console}',
+            details={
+                'longs': long_count_final,
+                'shorts': short_count_final,
+                'max_longs': max_longs_console,
+                'max_shorts': max_shorts_console,
+                'spot_used': spot_used,
+                'spot_total': spot_total,
+                'futures_used': short_notional,
+                'futures_total': fut_total,
+                'pnl_total': state.get('total_pnl_usdt'),
+                'pnl_today': state.get('daily_pnl_usdt'),
+            },
+        )
+    except Exception:
+        pass
     if bot_state_payload is not None:
         try:
             bot_state.persist_bot_state(bot_state_payload)

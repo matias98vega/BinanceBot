@@ -42,7 +42,7 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Desventajas:** depende de balances correctos y de que las transferencias Binance respondan sin retrasos.
 
-**Mejoras futuras:** timeline de eventos de rebalance, auditoria post-transfer y simulacion dry-run de rebalance.
+**Mejoras futuras:** auditoria post-transfer y simulacion dry-run de rebalance.
 
 ## Capital Manager
 
@@ -112,7 +112,7 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Desventajas:** agrega llamadas privadas adicionales y depende de que el balance se actualice rapido.
 
-**Mejoras futuras:** polling corto de balance post-fill y registro timeline de recovery.
+**Mejoras futuras:** polling corto de balance post-fill y mas detalle de recovery en timeline.
 
 ## Snapshots de Decision
 
@@ -120,13 +120,41 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Alternativas:** logs humanos, JSONL estructurado, base de datos.
 
-**Solucion actual:** `decision_snapshots.jsonl` guarda contexto, capital y candidatos accepted/rejected/skipped.
+**Solucion actual:** `decision_snapshots.jsonl` guarda contexto, capital y candidatos accepted/rejected/skipped. Para lectura cronologica compacta, `decision_timeline.py` registra eventos en `data/history/timeline.jsonl`.
 
 **Ventajas:** append-only, facil de analizar y de mostrar en dashboard/Telegram.
 
-**Desventajas:** no es una linea cronologica compacta de eventos; puede crecer sin rotacion.
+**Desventajas:** snapshots y timeline se complementan; hay que evitar duplicar ruido excesivo entre ambos.
 
-**Mejoras futuras:** Decision Timeline separado para eventos relevantes por ciclo.
+**Mejoras futuras:** enriquecer motivos de filtros sin cambiar scoring.
+
+## Decision Timeline
+
+**Problema:** para auditar un ciclo era necesario reconstruir eventos desde `journalctl`, logs humanos, snapshots y analytics.
+
+**Alternativas consideradas:** usar solo snapshots, enviar alertas Telegram por cada evento, o crear un JSONL historico consultable.
+
+**Solucion actual:** `decision_timeline.py` registra eventos append-only en `data/history/timeline.jsonl` con nivel, categoria, simbolo/direccion opcional, mensaje y detalles sanitizados. El archivo rota al superar 5 MB preservando eventos recientes.
+
+**Ventajas:** permite consultar eventos recientes desde Telegram (`/timeline`) y dashboard (`/api/timeline`) sin generar spam ni tocar estado operativo.
+
+**Desventajas:** al ser pasivo, depende de que los modulos llamen al helper en los puntos relevantes. Todavia puede ampliarse la cobertura de filtros finos.
+
+**Mejoras futuras:** UI dashboard dedicada, paginacion Telegram y filtros combinados por ciclo/simbolo/categoria.
+
+## Insights Engine
+
+**Problema:** las estadisticas agregadas explican numeros, pero no resumen automaticamente que conclusiones son relevantes para operar y mejorar el sistema.
+
+**Alternativas consideradas:** calcular insights desde `trades.jsonl`, pedirlos directamente a Telegram, o derivarlos desde el indice estadistico.
+
+**Solucion actual:** `insights_engine.py` consume exclusivamente `stats.json` mediante `analytics_engine`, genera `data/history/insights.json` y expone conclusiones estructuradas con tipo, categoria, prioridad, texto, datos utilizados y confianza.
+
+**Ventajas:** mantiene una frontera clara: JSONL historico es fuente de verdad, `stats.json` es indice estadistico y `insights.json` es una vista interpretativa rapida para Telegram, dashboard y futuros asistentes GPT.
+
+**Desventajas:** si `stats.json` esta stale, los insights tambien lo estaran; por eso no se usan para decisiones operativas.
+
+**Mejoras futuras:** freshness check entre `stats.json` e `insights.json`, explicaciones GPT sobre cada insight y filtros por categoria/periodo.
 
 ## Telegram Read-Only
 
@@ -134,13 +162,13 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Alternativas:** comandos operativos, solo alertas, menu read-only.
 
-**Solucion actual:** `telegram_commands.py` expone menu y paginas de estado, capital, posiciones, health, diagnostico, trades y snapshots. No abre/cierra ordenes ni modifica `state.json`.
+**Solucion actual:** `telegram_commands.py` expone menu y paginas de estado, capital, posiciones, health, diagnostico, trades, snapshots, estadisticas, insights y timeline. No abre/cierra ordenes ni modifica `state.json`.
 
 **Ventajas:** baja friccion operativa y menor riesgo.
 
 **Desventajas:** depende de freshness de `bot_state.json` y archivos JSONL.
 
-**Mejoras futuras:** agregar timeline, filtros de eventos y comandos de diagnostico sin mutacion.
+**Mejoras futuras:** paginacion de timeline, filtros combinados de insights y comandos de diagnostico sin mutacion.
 
 ## Dashboard Local
 
@@ -154,7 +182,7 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Desventajas:** no tiene autenticacion propia; debe quedar en loopback o detras de proxy protegido.
 
-**Mejoras futuras:** mas paneles de analitica, timeline y comparacion por regimen.
+**Mejoras futuras:** UI visual para timeline/insights, mas paneles de analitica y comparacion por regimen.
 
 ## Healthcheck y Preflight
 
@@ -176,10 +204,10 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Alternativas:** solo `trades_log.txt`, JSONL append-only, sistema externo de logs.
 
-**Solucion actual:** se mantienen logs humanos, analytics JSONL, snapshots JSONL y logging estructurado de HTTP Binance con payload seguro.
+**Solucion actual:** se mantienen logs humanos, analytics JSONL, snapshots JSONL, timeline JSONL y logging estructurado de HTTP Binance con payload seguro.
 
 **Ventajas:** permite analisis local, dashboard y diagnostico de errores.
 
 **Desventajas:** no hay rotacion uniforme de todos los archivos.
 
-**Mejoras futuras:** timeline JSONL rotado, retention policy y export automatico.
+**Mejoras futuras:** retention policy uniforme y export automatico.

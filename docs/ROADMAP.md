@@ -22,6 +22,8 @@ El sistema ya cuenta con:
 - Snapshots de decisiones en `trading/decision_snapshots.jsonl`.
 - Memoria historica pasiva en `data/history/*.jsonl`.
 - Analytics Engine pasivo con `data/history/stats.json`.
+- Insights Engine pasivo con `data/history/insights.json`.
+- Decision Timeline cronologico en `data/history/timeline.jsonl`.
 - Healthcheck, preflight, post-cycle y validadores de observabilidad.
 - Tests unitarios para capital, rebalance, hardening de trades y notificaciones.
 
@@ -32,12 +34,13 @@ El sistema ya cuenta con:
 | Documentacion canonica del proyecto | Alta | Ninguna | En curso |
 | Consolidar arquitectura en raiz y `docs/` | Alta | Documentacion canonica | En curso |
 | Auditar desalineaciones entre docs y codigo | Alta | Inventario de modulos | En curso |
-| Completar Decision Timeline cronologico | Alta | Definir contrato JSONL y puntos de integracion | Pendiente |
+| Completar Decision Timeline cronologico | Alta | Definir contrato JSONL y puntos de integracion | Implementado base |
 | Mejorar diagnostico de errores Binance HTTP | Alta | Wrapper HTTP actual | Implementado parcialmente |
 | Profundizar tests de recovery Long Spot | Alta | Hardening OCO actual | Implementado base |
 | Consolidar memoria historica JSONL | Alta | `history.py` y analytics | Implementado base |
 | Construir Analytics Engine pasivo | Alta | Historia JSONL | Implementado base |
 | Integrar Analytics Engine en Telegram | Alta | `stats.json` | Implementado base |
+| Construir Insights Engine pasivo | Alta | `stats.json` | Implementado base |
 | Validar cierre preventivo BTC con orden real de salida | Alta | Auditoria de `bot.py` | Pendiente |
 | Separar estado observable de calculos de presentacion | Media | `bot_state.py` actual | En desarrollo |
 | Revisar documentos legacy | Media | Docs canonicas | En curso |
@@ -85,11 +88,15 @@ El sistema ya cuenta con:
 - Reserva minima de wallet configurable, default `0`.
 - Guardrails de capital por exposicion y slots.
 - Telegram read-only con menu, capital, posiciones, health, diagnostico, trades, snapshots y estadisticas.
+- Telegram `Insights` con conclusiones compactas generadas desde `stats.json`.
+- Telegram `/timeline` read-only con filtros simples por categoria o simbolo.
 - Notificaciones Telegram configurables por tipo.
 - Dashboard local con estado, trades, snapshots, health y metricas.
 - Analytics estructurada y snapshots de decisiones.
 - Persistencia historica JSONL de trades, decisiones y snapshots.
 - Estadisticas precalculadas en `data/history/stats.json`.
+- Insights precalculados en `data/history/insights.json`.
+- Timeline rotado de decisiones y eventos operativos en `data/history/timeline.jsonl`.
 - Validadores de observabilidad y healthcheck local.
 - Hardening Long Spot para no proteger/vender mas que balance real disponible.
 
@@ -103,7 +110,8 @@ El sistema ya cuenta con:
 
 ## Funcionalidades Pendientes
 
-- Decision Timeline JSONL cronologico de eventos compactos.
+- UI visual avanzada para Decision Timeline en dashboard.
+- UI visual avanzada para Insights en dashboard.
 - Auditoria state-vs-exchange antes de operar.
 - Backtesting offline.
 - Dataset historico local.
@@ -128,7 +136,7 @@ El sistema ya cuenta con:
 - `bot.py` concentra mucha orquestacion, cierre, partials, auditoria de orphans y persistencia.
 - Tests aun no cubren todos los flujos de salida y recuperacion.
 - No existe cliente Binance abstracto inyectable; los mocks se aplican por patching de funciones.
-- Observabilidad de timeline cronologico aun no esta implementada en el codigo actual.
+- Decision Timeline ya existe, pero su cobertura puede ampliarse a mas eventos de filtros finos y a una UI dashboard dedicada.
 - No hay una politica unica de migracion de `state.json`.
 - Algunos comentarios en codigo tienen encoding deteriorado heredado.
 

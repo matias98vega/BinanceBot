@@ -15,6 +15,8 @@ from config_loader import ENV_FILES, load_config, load_dotenv
 import capital_manager
 import bot_state as bot_state_module
 import analytics_engine
+import decision_timeline
+import insights_engine
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -722,6 +724,37 @@ def _nav_keyboard(page_id):
     return [[_button('◀ Menú', 'home')], [_button('🔄 Actualizar', f'r:{page_id}')]]
 
 
+def _timeline_text(filter_text=None):
+    category = None
+    symbol = None
+    if filter_text:
+        value = filter_text.strip().upper()
+        if value in decision_timeline.CATEGORIES:
+            category = value
+        elif re.fullmatch(r'[A-Z0-9]{2,20}', value):
+            symbol = value
+    events = decision_timeline.read_recent_events(limit=10, category=category, symbol=symbol)
+    title = '\U0001F4DC Timeline'
+    if category:
+        title += f' | {category}'
+    if symbol:
+        title += f' | {symbol}'
+    lines = [title, '']
+    if not events:
+        lines.append('Sin eventos registrados.')
+    for event in events:
+        lines.append(decision_timeline.compact_event_for_telegram(event))
+        lines.append('')
+    return '\n'.join(lines).rstrip()
+
+
+def _insights_payload():
+    try:
+        return insights_engine.load_insights()
+    except Exception as exc:
+        return {'warnings': [f'WARNING: no pude cargar insights ({exc}).'], 'summary': []}
+
+
 class MenuPage:
     page_id = ''
 
@@ -775,6 +808,7 @@ class HomePage(MenuPage):
             [_button('\U0001F4B0 Capital', 'capital'), _button('\U0001F4C2 Posiciones', 'positions')],
             [_button('\U0001F4C8 Trades', 'trades'), _button('\u2764\ufe0f Salud', 'health')],
             [_button('\U0001FA7A Diagnostico', 'diagnostics'), _button('\U0001F4F8 Snapshots', 'snapshots')],
+            [_button('\U0001F4DC Timeline', 'timeline'), _button('\U0001F4A1 Insights', 'insights')],
             [_button('\U0001F4CA Estadisticas', 'stats'), _button('\u2699 Sistema', 'system')],
             [_button('\U0001F504 Actualizar', 'r:home')],
         ]
@@ -973,6 +1007,30 @@ class SnapshotsPage(MenuPage):
             )
             lines.extend(['', '─' * 12, ''])
         return '\n'.join(lines)
+
+
+class TimelinePage(MenuPage):
+    page_id = 'timeline'
+
+    def render(self):
+        return _timeline_text()
+
+
+class InsightsPage(MenuPage):
+    page_id = 'insights'
+
+    def render(self):
+        data = _insights_payload()
+        lines = ['\U0001F4A1 Insights', '']
+        for warning in data.get('warnings') or []:
+            lines.append(str(warning))
+            lines.append('')
+        summary = data.get('summary') or []
+        if not summary:
+            lines.append('Todavia no hay conclusiones suficientes.')
+        for item in summary[:8]:
+            lines.append(f'• {item.get("texto")}')
+        return '\n'.join(lines).rstrip()
 
 
 class StatsMenuPage(MenuPage):
@@ -1194,6 +1252,8 @@ MENU_PAGES = {
     'diagnostics': DiagnosticsPage(),
     'trades': TradesPage(),
     'snapshots': SnapshotsPage(),
+    'timeline': TimelinePage(),
+    'insights': InsightsPage(),
     'stats': StatsMenuPage(),
     'stats_general': StatsGeneralPage(),
     'stats_symbols': StatsSymbolsPage(),
@@ -1215,6 +1275,8 @@ COMMAND_ALIASES = {
     '/diagnostics': 'diagnostics',
     '/lasttrades': 'trades',
     '/snapshots': 'snapshots',
+    '/timeline': 'timeline',
+    '/insights': 'insights',
     '/stats': 'stats',
     '/estadisticas': 'stats',
 }
@@ -1239,6 +1301,8 @@ def command_help():
         '/positions',
         '/lasttrades',
         '/snapshots',
+        '/timeline',
+        '/insights',
         '/stats',
         '',
         'Todos los comandos son solo lectura.',
@@ -1255,9 +1319,16 @@ def _render_page(page_id):
 
 
 def _dispatch_text(text):
-    command = (text or '').strip().split()[0].lower() if text else ''
+    parts = (text or '').strip().split()
+    command = parts[0].lower() if parts else ''
     if command == '/help':
         return {'text': command_help()}
+    if command == '/timeline':
+        return {
+            'page_id': 'timeline',
+            'text': _timeline_text(parts[1] if len(parts) > 1 else None),
+            'reply_markup': {'inline_keyboard': MENU_PAGES['timeline'].keyboard()},
+        }
     page_id = COMMAND_ALIASES.get(command)
     if page_id:
         return _render_page(page_id)

@@ -7,7 +7,7 @@ TP: orden LIMIT + reduceOnly=true.
 import sys, os, time, math
 import urllib.error as _ue
 sys.path.insert(0, os.path.dirname(__file__))
-import utils, config, capital_manager
+import utils, config, capital_manager, decision_timeline
 
 
 def _place_stop_market(symbol, side, stop_price, quantity, reduce_only=True):
@@ -75,6 +75,12 @@ def open_short(candidate, state, max_shorts=None):
     SL: gestionado por manage_short() via monitoreo de precio + cierre MARKET.
     """
     sym = candidate['symbol']
+    decision_timeline.record_signal_evaluated(
+        sym,
+        'SHORT',
+        f'SHORT open flow started for {sym}',
+        details={'score': candidate.get('score'), 'reasons': candidate.get('reasons')},
+    )
 
     available = utils.get_usdt_futures()
     capital   = utils.get_futures_capital_per_position(state)
@@ -158,7 +164,9 @@ def open_short(candidate, state, max_shorts=None):
             'quantity': str(qty),
         }
         try:
+            decision_timeline.record_order_event('order_sent', sym, 'SHORT', f'SELL MARKET {sym}', details=order_params)
             order = utils.fut_signed('POST', '/fapi/v1/order', order_params)
+            decision_timeline.record_order_event('order_opened', sym, 'SHORT', f'SHORT {sym} opened', details=order)
             break  # éxito
         except _ue.HTTPError as e:
             details = utils.log_binance_http_error('futures market sell', sym, 'SELL', 'MARKET', order_params, e)
@@ -234,6 +242,13 @@ def open_short(candidate, state, max_shorts=None):
             'timeInForce':'GTC',
         })
         tp_order_id = str(tp_order.get('orderId', ''))
+        decision_timeline.record_protection_event(
+            'tp_created',
+            sym,
+            'SHORT',
+            f'TP protection OK for {sym}',
+            details={'price': real_tp, 'quantity': actual_qty, 'order_id': tp_order_id},
+        )
     except Exception as e:
         utils.send_alert(f'⚠️ TP futures {sym} no se pudo colocar: {e}. SL gestionado por el bot.')
 
@@ -252,9 +267,34 @@ def open_short(candidate, state, max_shorts=None):
             
             sl_order = _place_stop_market(sym, 'BUY', real_sl, actual_qty)
             sl_order_id = str(sl_order.get('orderId', '') or sl_order.get('strategyId', '')) if sl_order else ''
+            if sl_order_id:
+                decision_timeline.record_protection_event(
+                    'sl_native_created',
+                    sym,
+                    'SHORT',
+                    f'Native SL protection OK for {sym}',
+                    details={'stopPrice': real_sl, 'quantity': actual_qty, 'order_id': sl_order_id},
+                )
+            else:
+                decision_timeline.record_protection_event(
+                    'sl_guardian_fallback',
+                    sym,
+                    'SHORT',
+                    f'Native SL unavailable for {sym}; guardian fallback active',
+                    level='WARNING',
+                    details={'stopPrice': real_sl, 'quantity': actual_qty},
+                )
         except Exception as e:
             import logging
             error_msg = str(e)
+            decision_timeline.record_protection_event(
+                'sl_native_failed',
+                sym,
+                'SHORT',
+                f'Native SL protection failed for {sym}: {error_msg}',
+                level='WARNING',
+                details={'stopPrice': real_sl, 'quantity': actual_qty},
+            )
             logging.error(f'SL nativo {sym}: stopPrice={real_sl}, qty={actual_qty}, price={actual_price}, error={error_msg}')
             utils.send_alert(f'⚠️ SL nativo {sym} no se pudo colocar: {error_msg}. Guardian software activo como fallback.')
 
@@ -285,6 +325,14 @@ def open_short(candidate, state, max_shorts=None):
         f'Entrada: ${actual_price:.4f} | Qty: {actual_qty}\n'
         f'SL: ${real_sl:.4f} ({sl_type}) | TP: ${real_tp:.4f} (LIMIT)\n'
         f'Si TP: +${pnl_tp:.4f} | Si SL: ${pnl_sl:.4f}'
+    )
+    decision_timeline.record_order_event(
+        'order_opened_confirmed',
+        sym,
+        'SHORT',
+        f'SHORT {sym} registered in state',
+        details={'entry_price': actual_price, 'quantity': actual_qty, 'tp': real_tp, 'sl': real_sl},
+        related_trade_id=pos.get('id'),
     )
     return pos, msg
 
@@ -355,6 +403,15 @@ def manage_short(pos, state):
             return 'closed_sl', price_now, pnl
         pnl = _close_short_market(sym, qty, entry, price_now)
         _cancel_tp(pos)
+        decision_timeline.record_guardian_event(
+            'short_closed_by_guardian',
+            sym,
+            'SHORT',
+            f'SHORT {sym} closed by guardian SL',
+            level='WARNING',
+            related_trade_id=pos.get('id'),
+            details={'price': price_now, 'sl': sl},
+        )
         return 'closed_sl', price_now, pnl
 
     # Stale exit por tiempo máximo (12h) — aunque esté en profit
@@ -362,6 +419,14 @@ def manage_short(pos, state):
     if elapsed_h > config.STALE_MAX_HOURS:
         pnl = _close_short_market(sym, qty, entry, price_now)
         _cancel_tp(pos)
+        decision_timeline.record_order_event(
+            'short_stale_exit',
+            sym,
+            'SHORT',
+            f'SHORT {sym} stale exit by max hours',
+            details={'elapsed_hours': elapsed_h},
+            related_trade_id=pos.get('id'),
+        )
         return 'closed_manual', price_now, pnl
     
     # Stale exit por poco movimiento (<0.5% en 5h)
@@ -369,6 +434,14 @@ def manage_short(pos, state):
     if elapsed_h > config.STALE_HOURS and price_pct < config.STALE_RANGE_PCT:
         pnl = _close_short_market(sym, qty, entry, price_now)
         _cancel_tp(pos)
+        decision_timeline.record_order_event(
+            'short_stale_exit',
+            sym,
+            'SHORT',
+            f'SHORT {sym} stale exit by range',
+            details={'elapsed_hours': elapsed_h, 'price_pct': price_pct},
+            related_trade_id=pos.get('id'),
+        )
         return 'closed_manual', price_now, pnl
 
     # Trailing stop (bajar SL a medida que el precio baja)

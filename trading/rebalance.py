@@ -21,7 +21,7 @@ Filosofía de cambio de tendencia:
 
 import sys, os, logging
 sys.path.insert(0, os.path.dirname(__file__))
-import utils, config, market, capital_manager
+import utils, config, market, capital_manager, decision_timeline
 
 
 def _env_float(name, default):
@@ -52,6 +52,19 @@ def _rebalance_log(message):
         pass
     try:
         print(line)
+    except Exception:
+        pass
+    try:
+        upper = str(message).upper()
+        if upper.startswith('ERROR'):
+            level, event = 'ERROR', 'rebalance_error'
+        elif upper.startswith('SKIP'):
+            level, event = 'INFO', 'rebalance_skip'
+        elif upper.startswith('TRANSFER'):
+            level, event = 'INFO', 'rebalance_transfer'
+        else:
+            level, event = 'INFO', 'rebalance_check'
+        decision_timeline.record_rebalance_event(event, line, level=level, details={'raw': message})
     except Exception:
         pass
 

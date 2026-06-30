@@ -6,7 +6,7 @@ Ultra liviano: no hace análisis, no abre posiciones.
 """
 import sys, os, time, json
 sys.path.insert(0, os.path.dirname(__file__))
-import utils, config
+import utils, config, decision_timeline
 from analytics import AnalyticsLogger
 
 ANALYTICS = AnalyticsLogger()
@@ -30,8 +30,14 @@ def main():
 def _run():
     state = utils.load_state()
     positions = state.get('positions', [])
+    decision_timeline.record_guardian_event(
+        'guardian_check',
+        message='Guardian check started',
+        details={'positions': len(positions)},
+    )
 
     if not positions:
+        decision_timeline.record_guardian_event('guardian_skip', message='Guardian skipped: no open positions')
         print('HEARTBEAT_OK')
         return
 
@@ -65,8 +71,27 @@ def _run():
                     utils.send_alert(msg)
                     close_status, closed_qty = _close_spot_market(sym, qty, price)
                     if close_status in {'closed', 'already_closed'}:
+                        decision_timeline.record_guardian_event(
+                            'guardian_close',
+                            sym,
+                            'LONG',
+                            f'Guardian LONG close {close_status} for {sym}',
+                            level='WARNING',
+                            details={'price': price, 'sl': sl, 'closed_qty': closed_qty},
+                            related_trade_id=pos.get('id'),
+                        )
                         pnl = (price - entry) * closed_qty if close_status == 'closed' else 0.0
                         triggered.append((pos.get('id'), sym, 'long', price, pnl))
+                    else:
+                        decision_timeline.record_guardian_event(
+                            'guardian_close_failed',
+                            sym,
+                            'LONG',
+                            f'Guardian LONG close skipped for {sym}: {close_status}',
+                            level='CRITICAL' if close_status == 'failed' else 'WARNING',
+                            details={'price': price, 'sl': sl, 'status': close_status},
+                            related_trade_id=pos.get('id'),
+                        )
 
             elif direction == 'short':
                 price = utils.get_fut_price(sym)
@@ -98,6 +123,15 @@ def _run():
                         critical_alerts.append(msg)
                         utils.send_alert(msg)
                         pnl = _close_fut_market(sym, qty, entry, price)
+                        decision_timeline.record_guardian_event(
+                            'guardian_close',
+                            sym,
+                            'SHORT',
+                            f'Guardian SHORT close executed for {sym}',
+                            level='WARNING',
+                            details={'price': price, 'sl': sl, 'quantity': qty},
+                            related_trade_id=pos.get('id'),
+                        )
                         # Cancelar TP y SL nativo si existen
                         tp_id = pos.get('tp_order_id', '')
                         if tp_id:
@@ -122,6 +156,15 @@ def _run():
                         critical_alerts.append(msg)
                         utils.send_alert(msg)
                         pnl = (entry - price) * qty * (1 - config.FUTURES_FEE_RATE * 2)
+                        decision_timeline.record_guardian_event(
+                            'guardian_state_cleanup',
+                            sym,
+                            'SHORT',
+                            f'Guardian cleanup for native SL {sym}',
+                            level='WARNING',
+                            details={'price': price, 'sl': sl},
+                            related_trade_id=pos.get('id'),
+                        )
                         # Cancelar TP
                         tp_id = pos.get('tp_order_id', '')
                         if tp_id:
@@ -141,6 +184,14 @@ def _run():
                 # else: monitoreo silencioso, no imprimir nada
 
         except Exception as e:
+            decision_timeline.record_guardian_event(
+                'guardian_error',
+                sym,
+                str(direction).upper() if direction else None,
+                f'Guardian error for {sym}: {e}',
+                level='ERROR',
+                related_trade_id=pos.get('id'),
+            )
             print(f'  ⚠️ Error al chequear {sym}: {e}')
 
     # Actualizar state si hubo cierres
@@ -207,12 +258,28 @@ def _sellable_spot_qty(symbol, qty, price_now):
 def _close_spot_market(symbol, qty, price_now):
     qty_sell, free_balance = _sellable_spot_qty(symbol, qty, price_now)
     if qty_sell <= 0:
+        decision_timeline.record_guardian_event(
+            'guardian_spot_skip',
+            symbol,
+            'LONG',
+            'Guardian spot sell skipped: no sellable quantity',
+            level='WARNING',
+            details={'requested_qty': qty, 'free_balance': free_balance, 'price': price_now},
+        )
         return ('already_closed' if free_balance <= 0 else 'not_sellable'), 0.0
     params = {
         'symbol': symbol, 'side': 'SELL', 'type': 'MARKET', 'quantity': str(qty_sell)
     }
     try:
         utils.spot_signed('POST', '/api/v3/order', params)
+        decision_timeline.record_guardian_event(
+            'guardian_spot_sell',
+            symbol,
+            'LONG',
+            f'Guardian spot sell executed for {symbol}',
+            level='WARNING',
+            details=params,
+        )
         return 'closed', qty_sell
     except Exception as e:
         details = {}
@@ -220,9 +287,25 @@ def _close_spot_market(symbol, qty, price_now):
             details = utils.log_binance_http_error('guardian spot market sell', symbol, 'SELL', 'MARKET', params, e)
         _, free_retry = _sellable_spot_qty(symbol, qty, price_now)
         if details.get('code') == -2010 and free_retry <= 0:
+            decision_timeline.record_guardian_event(
+                'guardian_spot_already_closed',
+                symbol,
+                'LONG',
+                f'Guardian spot sell found no balance for {symbol}',
+                level='WARNING',
+                details=details,
+            )
             return 'already_closed', 0.0
         reason = details.get('msg') or str(e)
         if free_retry > 0:
+            decision_timeline.record_guardian_event(
+                'guardian_spot_sell_failed',
+                symbol,
+                'LONG',
+                f'Guardian spot sell failed for {symbol}: {reason}',
+                level='CRITICAL',
+                details={'error': details, 'free_balance': free_retry},
+            )
             utils.send_alert(
                 f'🚨 Guardian no pudo cerrar LARGO {symbol}: {reason}. '
                 f'Balance real disponible={free_retry:.8f}. Intervencion manual urgente.'
@@ -236,6 +319,14 @@ def _close_fut_market(symbol, qty, entry, price_now):
             'symbol': symbol, 'side': 'BUY', 'type': 'MARKET',
             'quantity': str(qty), 'reduceOnly': 'true',
         })
+        decision_timeline.record_guardian_event(
+            'guardian_futures_buy',
+            symbol,
+            'SHORT',
+            f'Guardian futures close order sent for {symbol}',
+            level='WARNING',
+            details={'order_id': order.get('orderId'), 'quantity': qty},
+        )
         time.sleep(2)
         d = utils.fut_signed('GET', '/fapi/v1/order', {
             'symbol': symbol, 'orderId': order['orderId']

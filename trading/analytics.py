@@ -13,6 +13,7 @@ import time
 from datetime import datetime, timezone
 from config_loader import load_config
 import history
+import decision_timeline
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -103,6 +104,18 @@ class AnalyticsLogger:
             'status': 'OPEN',
         }
         self._append(record)
+        try:
+            decision_timeline.record_event(
+                'trade_registered',
+                f'{symbol} {side} trade registered',
+                category='ANALYTICS',
+                symbol=symbol,
+                direction=side,
+                related_trade_id=trade_id,
+                details={'status': 'OPEN', 'entry_price': entry_price, 'capital_at_entry': capital_at_entry},
+            )
+        except Exception:
+            pass
         self._record_history_open(
             record,
             quantity=quantity,
@@ -148,6 +161,18 @@ class AnalyticsLogger:
         }
         record.update({k: v for k, v in extra.items() if v is not None})
         self._append(record)
+        try:
+            decision_timeline.record_event(
+                'trade_closed_registered',
+                f'{symbol or trade_id} closed: {exit_reason}',
+                category='ANALYTICS',
+                symbol=symbol,
+                direction=side,
+                related_trade_id=trade_id,
+                details={'status': 'CLOSED', 'exit_price': exit_price, 'pnl_usdt': pnl_usdt},
+            )
+        except Exception:
+            pass
         self._record_history_close(record, extra)
         return record
 
@@ -361,6 +386,18 @@ class DecisionSnapshotLogger:
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         with open(self.path, 'a', encoding='utf-8') as f:
             f.write(json.dumps(record, ensure_ascii=False, separators=(',', ':')) + '\n')
+        try:
+            decision_timeline.record_event(
+                'decision_snapshot_registered',
+                f'Decision snapshot stored: {len(record.get("candidates") or [])} candidates',
+                category='ANALYTICS',
+                details={
+                    'market_regime': record.get('market_regime'),
+                    'candidate_count': len(record.get('candidates') or []),
+                },
+            )
+        except Exception:
+            pass
         self._record_history_snapshot(record)
         return record
 

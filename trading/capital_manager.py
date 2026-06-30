@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass
 
 from config_loader import ConfigError, load_dotenv
+import decision_timeline
 
 
 CAPITAL_ENV_VARS = (
@@ -154,23 +155,45 @@ def _validate(wallet, real_balance, usable, current_exposure, requested_size, li
     epsilon = 1e-8
 
     if usable <= 0:
-        return False, f'CAPITAL LIMIT REJECT {wallet}: usable capital is ${usable:.2f}', payload
+        msg = f'CAPITAL LIMIT REJECT {wallet}: usable capital is ${usable:.2f}'
+        _record_sizing(False, wallet, requested, payload, msg)
+        return False, msg, payload
     if requested <= 0:
-        return False, f'CAPITAL LIMIT REJECT {wallet}: requested size is ${requested:.2f}', payload
+        msg = f'CAPITAL LIMIT REJECT {wallet}: requested size is ${requested:.2f}'
+        _record_sizing(False, wallet, requested, payload, msg)
+        return False, msg, payload
     if requested > payload['max_position_size'] + epsilon:
-        return False, (
+        msg = (
             f'CAPITAL LIMIT REJECT {wallet}: requested ${requested:.2f} exceeds '
             f'max position ${payload["max_position_size"]:.2f} '
             f'({limits.max_exposure_percent:.2f}% exposure / {payload["max_positions"]} slots '
             f'of usable ${usable:.2f})'
-        ), payload
+        )
+        _record_sizing(False, wallet, requested, payload, msg)
+        return False, msg, payload
     if current_exposure + requested > payload['max_exposure'] + epsilon:
-        return False, (
+        msg = (
             f'CAPITAL LIMIT REJECT {wallet}: exposure ${current_exposure + requested:.2f} exceeds '
             f'max exposure ${payload["max_exposure"]:.2f} '
             f'({limits.max_exposure_percent:.2f}% of usable ${usable:.2f})'
-        ), payload
+        )
+        _record_sizing(False, wallet, requested, payload, msg)
+        return False, msg, payload
+    _record_sizing(True, wallet, requested, payload, 'OK')
     return True, 'OK', payload
+
+
+def _record_sizing(accepted, wallet, requested, payload, message):
+    try:
+        decision_timeline.record_sizing_decision(
+            wallet,
+            accepted,
+            requested=requested,
+            maximum=payload.get('max_margin_per_position'),
+            details={**payload, 'message': message},
+        )
+    except Exception:
+        pass
 
 
 def validate_spot_order(state, spot_real_usdt, requested_usdt, max_positions=1):

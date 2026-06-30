@@ -6,9 +6,9 @@ Guia de alto nivel de los modulos principales.
 
 **Proposito:** orquestador principal del ciclo.
 
-**Responsabilidades:** lock, carga/guardado de estado, reset diario, circuit breaker, auditoria de orphans, rebalance, gestion de posiciones, scans, aperturas, cierres, analytics y snapshot observable.
+**Responsabilidades:** lock, carga/guardado de estado, reset diario, circuit breaker, auditoria de orphans, rebalance, gestion de posiciones, scans, aperturas, cierres, timeline, analytics y snapshot observable.
 
-**Consume:** `config`, `utils`, `market`, `longs`, `shorts`, `rebalance`, `capital_manager`, `bot_state`, `analytics`.
+**Consume:** `config`, `utils`, `market`, `longs`, `shorts`, `rebalance`, `capital_manager`, `bot_state`, `analytics`, `decision_timeline`.
 
 **Lo usan:** systemd/manual run.
 
@@ -18,7 +18,7 @@ Guia de alto nivel de los modulos principales.
 
 **Responsabilidades:** leer limites, calcular capital usable, calcular max margin por posicion, validar orden Spot/Futures, limitar transferencias y producir snapshot de capital.
 
-**Consume:** variables de entorno y estado de posiciones.
+**Consume:** variables de entorno, estado de posiciones y `decision_timeline`.
 
 **Lo usan:** `longs.py`, `shorts.py`, `bot.py`, `bot_state.py`, dashboard.
 
@@ -28,7 +28,7 @@ Guia de alto nivel de los modulos principales.
 
 **Responsabilidades:** calcular targets, detectar tendencia persistente, respetar reserva opcional, calcular transferencias y ejecutar universal transfer.
 
-**Consume:** `utils`, `config`, `state`, contexto BTC.
+**Consume:** `utils`, `config`, `state`, contexto BTC y `decision_timeline`.
 
 **Lo usan:** `bot.py`, `bot_state.py`.
 
@@ -38,7 +38,7 @@ Guia de alto nivel de los modulos principales.
 
 **Responsabilidades:** validar capital/capacidad, BUY MARKET, OCO TP/SL, retry OCO, emergency sell, recovery pending, trailing, stale exit y recolocacion OCO.
 
-**Consume:** `utils`, `config`, `capital_manager`, filtros Binance Spot.
+**Consume:** `utils`, `config`, `capital_manager`, `decision_timeline`, filtros Binance Spot.
 
 **Lo usan:** `bot.py`.
 
@@ -48,7 +48,7 @@ Guia de alto nivel de los modulos principales.
 
 **Responsabilidades:** leverage, SELL MARKET, TP reduceOnly, SL nativo/software, trailing, stale exit, cierre market y cancelacion de TP.
 
-**Consume:** `utils`, `config`, `capital_manager`, filtros Binance Futures.
+**Consume:** `utils`, `config`, `capital_manager`, `decision_timeline`, filtros Binance Futures.
 
 **Lo usan:** `bot.py`.
 
@@ -56,9 +56,9 @@ Guia de alto nivel de los modulos principales.
 
 **Proposito:** proteccion independiente de SL.
 
-**Responsabilidades:** revisar posiciones abiertas, cerrar Longs sin OCO que tocan SL usando balance real, cerrar Shorts segun SL, actualizar estado y registrar analytics.
+**Responsabilidades:** revisar posiciones abiertas, cerrar Longs sin OCO que tocan SL usando balance real, cerrar Shorts segun SL, actualizar estado, registrar timeline y analytics.
 
-**Consume:** `utils`, `config`, `analytics`, `state.json`.
+**Consume:** `utils`, `config`, `analytics`, `decision_timeline`, `state.json`.
 
 **Lo usan:** systemd/manual guardian.
 
@@ -66,9 +66,9 @@ Guia de alto nivel de los modulos principales.
 
 **Proposito:** interfaz Telegram read-only.
 
-**Responsabilidades:** recibir updates, validar chat autorizado, renderizar paginas, responder comandos/callbacks, mostrar estadisticas desde `analytics_engine` y guardar offset.
+**Responsabilidades:** recibir updates, validar chat autorizado, renderizar paginas, responder comandos/callbacks, mostrar estadisticas desde `analytics_engine`, insights desde `insights_engine`, timeline desde `decision_timeline` y guardar offset.
 
-**Consume:** `bot_state.json`, `state.json`, JSONL, `analytics_engine`, `config_loader`, systemd status.
+**Consume:** `bot_state.json`, `state.json`, JSONL, `analytics_engine`, `insights_engine`, `decision_timeline`, `config_loader`, systemd status.
 
 **Lo usan:** servicio Telegram.
 
@@ -142,6 +142,26 @@ Guia de alto nivel de los modulos principales.
 
 **Lo usan:** actualmente tests y `analytics.py` para update incremental pasivo. En futuras iteraciones lo leeran Telegram y Dashboard. No lo usa la estrategia para decidir.
 
+## `trading/insights_engine.py`
+
+**Proposito:** motor pasivo de conclusiones automaticas.
+
+**Responsabilidades:** leer estadisticas exclusivamente mediante `analytics_engine`/`stats.json`, generar `data/history/insights.json`, agrupar conclusiones por general, rendimiento, riesgo, simbolos, direccion, regimen, temporal y salidas, y exponer getters de insights para Telegram/dashboard.
+
+**Consume:** `data/history/stats.json`.
+
+**Lo usan:** Telegram, dashboard y tests. No lee `trades.jsonl`, no recalcula estadisticas base y no alimenta decisiones operativas.
+
+## `trading/decision_timeline.py`
+
+**Proposito:** linea cronologica compacta de decisiones y eventos observables.
+
+**Responsabilidades:** registrar eventos JSONL con `event_id`, timestamp, nivel, categoria, simbolo/direccion opcional, mensaje, detalles sanitizados y trade relacionado; leer eventos recientes con filtros; compactar eventos para Telegram; rotar `data/history/timeline.jsonl` al superar 5 MB preservando eventos recientes.
+
+**Consume:** `data/history/timeline.jsonl`.
+
+**Lo usan:** `bot.py`, `rebalance.py`, `longs.py`, `shorts.py`, `capital_manager.py`, `sl_guardian.py`, `analytics.py`, `history.py`, Telegram, dashboard y tests. No alimenta estrategia ni sizing.
+
 ## `trading/utils.py`
 
 **Proposito:** capa compartida de infraestructura.
@@ -166,8 +186,8 @@ Guia de alto nivel de los modulos principales.
 
 **Proposito:** dashboard local read-only.
 
-**Responsabilidades:** servir UI estatica y endpoints `/api/status`, `/api/trades`, `/api/snapshots`, `/api/health`, `/api/metrics`.
+**Responsabilidades:** servir UI estatica y endpoints `/api/status`, `/api/trades`, `/api/snapshots`, `/api/health`, `/api/metrics`, `/api/timeline`, `/api/insights`.
 
-**Consume:** `bot_state.json`, JSONL, analytics y config read-only.
+**Consume:** `bot_state.json`, JSONL, analytics, `decision_timeline`, `insights_engine` y config read-only.
 
 **Lo usan:** navegador local/servicio dashboard.

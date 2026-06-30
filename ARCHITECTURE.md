@@ -24,6 +24,8 @@ bot.py --------------------------+
    +--> decision_snapshots.jsonl
    +--> data/history/*.jsonl
    +--> data/history/stats.json
+   +--> data/history/insights.json
+   +--> data/history/timeline.jsonl
    |
    +--> Telegram read-only
    +--> Dashboard read-only
@@ -48,13 +50,13 @@ bot.py main()
    +-- scan Long candidates
    +-- scan Short candidates
    +-- open accepted positions
-   +-- write analytics and decision snapshots
+   +-- write analytics, timeline events and decision snapshots
    +-- build/persist bot_state.json
    +-- save state.json
    +-- release lock
 ```
 
-El ciclo principal vive en `trading/bot.py`. Su responsabilidad es orquestar; las decisiones de mercado viven en `market.py`, la ejecucion Long en `longs.py`, la ejecucion Short en `shorts.py`, los guardrails en `capital_manager.py` y la observabilidad en `analytics.py`/`bot_state.py`.
+El ciclo principal vive en `trading/bot.py`. Su responsabilidad es orquestar; las decisiones de mercado viven en `market.py`, la ejecucion Long en `longs.py`, la ejecucion Short en `shorts.py`, los guardrails en `capital_manager.py` y la observabilidad en `analytics.py`/`decision_timeline.py`/`bot_state.py`.
 
 ## Flujo de Apertura
 
@@ -175,6 +177,10 @@ Telegram no modifica `state.json`, no abre ordenes y no cierra ordenes. Las aler
 
 La seccion `Estadisticas` de Telegram lee exclusivamente `data/history/stats.json` mediante `analytics_engine.py`. Si el indice no existe o esta corrupto, el engine lo reconstruye desde JSONL; Telegram no consulta `trades.jsonl` directamente.
 
+La seccion `Insights` de Telegram lee conclusiones desde `insights_engine.py`. El motor de insights consume `stats.json` mediante `analytics_engine` y no lee `trades.jsonl` ni participa en decisiones.
+
+La pagina `Timeline` y el comando `/timeline` leen exclusivamente `data/history/timeline.jsonl` mediante `decision_timeline.py`. Soporta filtros simples por categoria o simbolo y no envia notificaciones por evento.
+
 ## Flujo Healthcheck
 
 ```text
@@ -217,6 +223,8 @@ Estos scripts no abren ordenes ni cambian estrategia.
 | `analytics.py` | Eventos JSONL, snapshots, export CSV y puente hacia historia pasiva | runtime config | `bot.py`, guardian, analizadores |
 | `history.py` | Memoria historica pasiva de trades, decisiones y snapshots | JSONL en `data/history/` | `analytics.py`, tests, futuras herramientas offline |
 | `analytics_engine.py` | Indice estadistico pasivo precalculado desde historia JSONL | `data/history/*.jsonl`, `stats.json` | futuras consultas Telegram/dashboard, tests |
+| `insights_engine.py` | Conclusiones pasivas derivadas de estadisticas | `data/history/stats.json`, `insights.json` | Telegram, dashboard, tests |
+| `decision_timeline.py` | Timeline cronologico de decisiones y eventos operativos | `data/history/timeline.jsonl` | `bot.py`, `rebalance.py`, `longs.py`, `shorts.py`, `capital_manager.py`, `sl_guardian.py`, Telegram, dashboard |
 | `bot_state.py` | Snapshot observable de estado/capital/sistema | `state`, `capital_manager`, `rebalance`, systemd | `bot.py`, Telegram, dashboard |
 | `telegram_commands.py` | Menu y comandos read-only | `bot_state`, JSONL, `state`, `analytics_engine` | servicio Telegram |
 | `telegram_alerts.py` | Alertas configurables por tipo | env, Telegram API | `utils`/flujos de alerta |
@@ -236,6 +244,8 @@ Estos scripts no abren ordenes ni cambian estrategia.
 | `data/history/decisions.jsonl` | JSONL append-only | Contexto explicativo de decisiones |
 | `data/history/snapshots.jsonl` | JSONL append-only | Contexto de mercado/capital |
 | `data/history/stats.json` | JSON derivado | Indice precalculado de estadisticas; se puede reconstruir |
+| `data/history/insights.json` | JSON derivado | Conclusiones y alertas pasivas generadas desde `stats.json` |
+| `data/history/timeline.jsonl` | JSONL rotado | Timeline cronologico de eventos de decision y observabilidad |
 | `trading/.cycle_baseline.json` | JSON | Baseline local pre/post ciclo |
 | `trading/telegram_offset.json` | JSON | Offset de updates Telegram |
 | `trading/blacklist_dynamic.json` | JSON | Blacklist dinamica persistida |
@@ -247,9 +257,9 @@ La observabilidad actual tiene tres capas:
 1. **Estado actual:** `state.json` y `bot_state.json`.
 2. **Historico estructurado:** `trade_analytics.jsonl` y `decision_snapshots.jsonl`.
 3. **Memoria historica pasiva:** `data/history/trades.jsonl`, `data/history/decisions.jsonl`, `data/history/snapshots.jsonl`.
-4. **Interfaces read-only:** Telegram, dashboard, analyzers, healthcheck.
-
-No existe aun un `decision_timeline.py` en el estado actual del codigo; queda como item pendiente en backlog/roadmap.
+4. **Decision Timeline:** `data/history/timeline.jsonl` para eventos compactos por ciclo, senal, sizing, rebalance, orden, proteccion, guardian, capital y analytics.
+5. **Insights derivados:** `data/history/insights.json` para conclusiones automaticas sobre rendimiento, riesgo, simbolos, direccion, regimen, tiempo y salidas.
+6. **Interfaces read-only:** Telegram, dashboard, analyzers, healthcheck.
 
 ## Historical Persistence
 
@@ -268,6 +278,18 @@ analytics_engine.py
    +-- rebuild_statistics() -> data/history/stats.json
    +-- update_trade()       -> actualiza solo agregados afectados
    +-- get_*_stats()        -> lee solo stats.json
+
+insights_engine.py
+   |
+   +-- rebuild_insights()   -> data/history/insights.json desde stats.json
+   +-- load_insights()      -> reconstruye insights si falta/corrupto
+   +-- get_*_insights()     -> lee conclusiones ya generadas
+
+decision_timeline.py
+   |
+   +-- record_event()       -> data/history/timeline.jsonl
+   +-- read_recent_events() -> ultimos eventos, con filtro por categoria/simbolo
+   +-- compact_event_for_telegram()
 ```
 
 Propiedades:
@@ -278,6 +300,7 @@ Propiedades:
 - Si encuentra JSON invalido durante lectura, registra WARNING y continua.
 - `get_trade(trade_id)` reconstruye el ultimo estado conocido del trade.
 - `stats.json` no es fuente de verdad: si falta o esta corrupto, se reconstruye desde JSONL.
+- `timeline.jsonl` rota al superar 5 MB y preserva eventos recientes.
 - Los archivos runtime bajo `data/history/` no se versionan.
 
 ## Riesgos Arquitectonicos
