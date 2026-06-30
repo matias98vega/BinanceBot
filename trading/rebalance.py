@@ -19,11 +19,14 @@ Filosofía de cambio de tendencia:
   para saber hacia dónde ir, pero solo transfiere lo que está disponible ahora.
 """
 
-import sys, os, logging
+import sys, os, logging, json
+from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(__file__))
 import utils, config, market, capital_manager, decision_timeline, binance_client
+from config_loader import PROJECT_DIR
 
 BINANCE = binance_client.get_default_client()
+REBALANCE_STATUS_FILE = os.path.join(PROJECT_DIR, 'data', 'history', 'rebalance_status.json')
 
 
 def _env_float(name, default):
@@ -69,6 +72,154 @@ def _rebalance_log(message):
         decision_timeline.record_rebalance_event(event, line, level=level, details={'raw': message})
     except Exception:
         pass
+
+
+def _now_iso():
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+
+
+def _safe_float(value):
+    try:
+        return round(float(value), 8)
+    except (TypeError, ValueError):
+        return None
+
+
+def _direction_arrow(direction):
+    labels = {
+        'SPOT_TO_FUTURES': 'Spot -> Futures',
+        'FUTURES_TO_SPOT': 'Futures -> Spot',
+    }
+    return labels.get(str(direction or '').upper(), str(direction or 'UNKNOWN'))
+
+
+def read_rebalance_status():
+    try:
+        with open(REBALANCE_STATUS_FILE, encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception as exc:
+        logging.warning('REBALANCE STATUS read failed path=%s error=%s', REBALANCE_STATUS_FILE, exc)
+        return {}
+
+
+def _write_rebalance_status(payload):
+    try:
+        os.makedirs(os.path.dirname(REBALANCE_STATUS_FILE), exist_ok=True)
+        tmp = f'{REBALANCE_STATUS_FILE}.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.write('\n')
+        os.replace(tmp, REBALANCE_STATUS_FILE)
+        try:
+            os.chmod(REBALANCE_STATUS_FILE, 0o600)
+        except Exception:
+            pass
+        return True
+    except Exception as exc:
+        logging.warning('REBALANCE STATUS write failed path=%s error=%s', REBALANCE_STATUS_FILE, exc)
+        return False
+
+
+def clear_rebalance_status():
+    payload = {
+        'pending': False,
+        'direction': None,
+        'amount': None,
+        'first_failure': None,
+        'last_attempt': _now_iso(),
+        'attempts': 0,
+        'last_http_status': None,
+        'last_binance_code': None,
+        'last_message': None,
+        'last_raw_body': None,
+    }
+    _write_rebalance_status(payload)
+    return payload
+
+
+def _failure_attempts(previous, direction):
+    if previous.get('pending') and previous.get('direction') == direction:
+        try:
+            return int(previous.get('attempts') or 0) + 1
+        except (TypeError, ValueError):
+            return 1
+    return 1
+
+
+def _record_rebalance_failure(direction, amount, error, payload):
+    details = utils.extract_http_error_details(error)
+    details['endpoint'] = details.get('endpoint') or '/sapi/v1/asset/transfer'
+    details['method'] = details.get('method') or 'POST'
+    details['payload'] = utils.safe_order_context(payload or details.get('payload') or {})
+    previous = read_rebalance_status()
+    now = _now_iso()
+    attempts = _failure_attempts(previous, direction)
+    status = {
+        'pending': True,
+        'direction': direction,
+        'amount': _safe_float(amount),
+        'first_failure': previous.get('first_failure') if previous.get('pending') and previous.get('direction') == direction else now,
+        'last_attempt': now,
+        'attempts': attempts,
+        'last_http_status': details.get('status'),
+        'last_binance_code': details.get('code'),
+        'last_message': details.get('msg') or str(error),
+        'last_raw_body': details.get('raw_body'),
+        'endpoint': details.get('endpoint'),
+        'method': details.get('method'),
+        'payload': details.get('payload'),
+    }
+    _write_rebalance_status(status)
+    logging.error(
+        'REBALANCE HTTP ERROR direction=%s amount=%s endpoint=%s method=%s status=%s code=%s msg=%s payload=%s raw_body=%s',
+        _direction_arrow(direction),
+        amount,
+        details.get('endpoint'),
+        details.get('method'),
+        details.get('status'),
+        details.get('code'),
+        details.get('msg'),
+        details.get('payload'),
+        details.get('raw_body'),
+    )
+    try:
+        decision_timeline.record_rebalance_event(
+            'rebalance_error',
+            (
+                f'{_direction_arrow(direction)} {float(amount):.2f} USDT '
+                f'intento #{attempts}: HTTP {details.get("status")} '
+                f'{details.get("msg") or str(error)}'
+            ),
+            level='ERROR',
+            details={
+                'direction': direction,
+                'amount': _safe_float(amount),
+                'attempts': attempts,
+                'http_status': details.get('status'),
+                'binance_code': details.get('code'),
+                'binance_msg': details.get('msg'),
+                'raw_body': details.get('raw_body'),
+                'endpoint': details.get('endpoint'),
+                'method': details.get('method'),
+                'payload': details.get('payload'),
+            },
+        )
+    except Exception:
+        pass
+    return status, details
+
+
+def _format_transfer_error(direction, details, error):
+    label = _direction_arrow(direction)
+    if details.get('status') or details.get('code') is not None or details.get('msg'):
+        return (
+            f'Error al transferir {label}: HTTP {details.get("status")} '
+            f'code={details.get("code")} msg={details.get("msg") or str(error)}'
+        )
+    return f'Error al transferir {label}: {error}'
 
 
 def _transferable_amount(required_amount, source_free, wallet_min=None):
@@ -288,9 +439,11 @@ def rebalance(state, btc_ctx=None):
 
         try:
             _rebalance_log(f'TRANSFER: {amount:.2f} Spot -> Futures')
-            BINANCE.spot_signed('POST', '/sapi/v1/asset/transfer', {
+            transfer_payload = {
                 'type': 'MAIN_UMFUTURE', 'asset': 'USDT', 'amount': str(amount),
-            })
+            }
+            BINANCE.spot_signed('POST', '/sapi/v1/asset/transfer', transfer_payload)
+            clear_rebalance_status()
             state['last_rebalance_trend'] = trend
             if trend_flipped:
                 msg = (f'🔄 Rebalanceo parcial (viraje a BEARISH): ${amount:.2f} Spot → Futures ' 
@@ -299,8 +452,8 @@ def rebalance(state, btc_ctx=None):
                 msg = f'🔄 Rebalanceo ({label}): ${amount:.2f} USDT Spot → Futures'
             return True, msg
         except Exception as e:
-            _rebalance_log(f'ERROR: direction=Spot->Futures amount={amount:.2f} error={e}')
-            return False, f'Error al transferir Spot→Futures: {e}'
+            _, details = _record_rebalance_failure('SPOT_TO_FUTURES', amount, e, transfer_payload)
+            return False, _format_transfer_error('SPOT_TO_FUTURES', details, e)
 
     else:
         # Necesitamos más capital en spot (bullish) — mover Futures → Spot
@@ -340,9 +493,11 @@ def rebalance(state, btc_ctx=None):
 
         try:
             _rebalance_log(f'TRANSFER: {amount:.2f} Futures -> Spot')
-            BINANCE.spot_signed('POST', '/sapi/v1/asset/transfer', {
+            transfer_payload = {
                 'type': 'UMFUTURE_MAIN', 'asset': 'USDT', 'amount': str(amount),
-            })
+            }
+            BINANCE.spot_signed('POST', '/sapi/v1/asset/transfer', transfer_payload)
+            clear_rebalance_status()
             state['last_rebalance_trend'] = trend
             if trend_flipped:
                 msg = (f'🔄 Rebalanceo parcial (viraje a BULLISH): ${amount:.2f} Futures → Spot '
@@ -351,8 +506,8 @@ def rebalance(state, btc_ctx=None):
                 msg = f'🔄 Rebalanceo ({label}): ${amount:.2f} USDT Futures → Spot'
             return True, msg
         except Exception as e:
-            _rebalance_log(f'ERROR: direction=Futures->Spot amount={amount:.2f} error={e}')
-            return False, f'Error al transferir Futures→Spot: {e}'
+            _, details = _record_rebalance_failure('FUTURES_TO_SPOT', amount, e, transfer_payload)
+            return False, _format_transfer_error('FUTURES_TO_SPOT', details, e)
 
 
 if __name__ == '__main__':

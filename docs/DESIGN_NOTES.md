@@ -50,13 +50,15 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Alternativas:** asignacion fija, rebalance manual, rebalance automatico por tendencia BTC.
 
-**Solucion actual:** `rebalance.py` calcula targets segun contexto bullish/bearish/neutral y mueve USDT entre wallets respetando posiciones abiertas, minimo de transferencia y reserva opcional.
+**Solucion actual:** `rebalance.py` calcula targets segun contexto bullish/bearish/neutral y mueve USDT entre wallets respetando posiciones abiertas, minimo de transferencia y reserva opcional. Si una transferencia falla, persiste `data/history/rebalance_status.json` con direccion, monto, intentos, HTTP status, code/msg Binance, raw body seguro, endpoint, metodo y payload sanitizado.
 
-**Ventajas:** separa asignacion de capital de senales de entrada.
+**Ventajas:** separa asignacion de capital de senales de entrada y permite diagnosticar fallos recurrentes desde Telegram/Dashboard sin leer journalctl.
 
-**Desventajas:** depende de balances correctos y de que las transferencias Binance respondan sin retrasos.
+**Desventajas:** depende de balances correctos y de que las transferencias Binance respondan sin retrasos. El estado persistente es diagnostico, no una cola de reintentos.
 
 **Mejoras futuras:** auditoria post-transfer y simulacion dry-run de rebalance.
+
+**Recuperacion:** cuando una transferencia posterior se ejecuta correctamente, `rebalance_status.json` se limpia automaticamente (`pending=false`). Si el fallo persiste, el contador de intentos acumulados y el ultimo motivo Binance se mantienen visibles.
 
 ## Capital Manager
 

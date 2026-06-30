@@ -585,6 +585,44 @@ def _direction_label(direction):
     }.get(str(direction or 'NONE'), str(direction or 'NONE'))
 
 
+def _rebalance_reason_lines(rebalance):
+    http_status = rebalance.get('last_http_status')
+    code = rebalance.get('last_binance_code')
+    message = rebalance.get('last_message')
+    if http_status or code is not None or message:
+        lines = []
+        if http_status:
+            lines.append(f'HTTP {http_status}')
+        if code is not None:
+            lines.append(f'code={code}')
+        if message:
+            lines.append(str(message))
+        return lines
+    return ['Motivo desconocido.']
+
+
+def _rebalance_pending_lines(rebalance, direction_label, amount):
+    lines = [
+        '\u23f3 Rebalance pendiente',
+        '',
+        'Dirección:',
+        direction_label,
+        '',
+        'Monto:',
+        _fmt_money(amount),
+        '',
+        'Intentos:',
+        str(rebalance.get('attempts') or 0),
+        '',
+        'Último intento:',
+        _fmt_uy(rebalance.get('last_attempt')) if rebalance.get('last_attempt') else 'No disponible',
+        '',
+        'Motivo:',
+    ]
+    lines.extend(_rebalance_reason_lines(rebalance))
+    return lines
+
+
 def _status_icon(status):
     if status in {'ONLINE', 'RUNNING', 'OK'}:
         return '\U0001F7E2'
@@ -955,12 +993,8 @@ class CapitalPage(MenuPage):
                 f'{_rebalance_label(rebalance.get("status"))} {direction_label}',
             ])
             if str(rebalance.get('status') or '').upper() == 'PENDING':
-                lines.extend([
-                    '',
-                    'Pendiente:',
-                    direction_label,
-                    _fmt_money(pending_amount),
-                ])
+                lines.extend([''])
+                lines.extend(_rebalance_pending_lines(rebalance, direction_label, pending_amount))
             else:
                 lines.append(f'Monto: {_fmt_money(pending_amount)}')
         if metrics.get('warning'):

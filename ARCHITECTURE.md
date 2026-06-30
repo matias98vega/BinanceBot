@@ -166,9 +166,12 @@ rebalance.rebalance(state, btc_ctx)
    +-- aplica REBALANCE_MIN_USDT
    +-- aplica REBALANCE_MIN_WALLET_USDT opcional
    +-- ejecuta universal transfer si corresponde
+   +-- si Binance rechaza, persiste diagnostico en data/history/rebalance_status.json
+   +-- si la transferencia tiene exito, limpia el estado pendiente
 ```
 
 Rebalance no abre ni cierra trades. Solo mueve USDT entre wallets.
+El estado `rebalance_status.json` es observabilidad: conserva intentos, HTTP status, code/msg Binance, raw body seguro, endpoint, metodo, payload sanitizado, direccion y monto. Telegram y dashboard lo leen para explicar fallos pendientes sin alterar la logica de transferencia.
 
 ## Flujo Telegram
 
@@ -280,9 +283,10 @@ La observabilidad actual tiene tres capas:
 3. **Memoria historica pasiva:** `data/history/trades.jsonl`, `data/history/decisions.jsonl`, `data/history/snapshots.jsonl`.
 4. **Feature Store:** `data/history/features.jsonl` con features de mercado, indicadores, scoring, capital, estado del bot y contexto de decision por apertura.
 5. **Decision Timeline:** `data/history/timeline.jsonl` para eventos compactos por ciclo, senal, sizing, rebalance, orden, proteccion, guardian, capital y analytics.
-6. **Insights derivados:** `data/history/insights.json` para conclusiones automaticas sobre rendimiento, riesgo, simbolos, direccion, regimen, tiempo y salidas.
-7. **Trade Inspector:** reconstruccion de trades individuales desde historia, decisiones, snapshots, timeline y analytics.
-8. **Interfaces read-only:** Telegram, dashboard, analyzers, healthcheck.
+6. **Diagnostico Rebalance:** `data/history/rebalance_status.json` para el ultimo rebalance pendiente/fallido y su detalle Binance.
+7. **Insights derivados:** `data/history/insights.json` para conclusiones automaticas sobre rendimiento, riesgo, simbolos, direccion, regimen, tiempo y salidas.
+8. **Trade Inspector:** reconstruccion de trades individuales desde historia, decisiones, snapshots, timeline y analytics.
+9. **Interfaces read-only:** Telegram, dashboard, analyzers, healthcheck.
 
 ## Historical Persistence
 

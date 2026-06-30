@@ -232,7 +232,9 @@ class TelegramStatsTests(unittest.TestCase):
         with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics):
             text = telegram_commands._render_page('capital')['text']
 
-        self.assertIn('Pendiente:\nSpot → Futures\n26.94 USDT', text)
+        self.assertIn('Rebalance pendiente', text)
+        self.assertIn('Dirección:\nSpot → Futures', text)
+        self.assertIn('Monto:\n26.94 USDT', text)
 
 
 if __name__ == '__main__':

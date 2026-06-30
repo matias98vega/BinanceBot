@@ -70,6 +70,33 @@ function renderHealth(data) {
   setText('last-error', data.last_error || 'N/A');
 }
 
+function directionLabel(direction) {
+  const labels = {
+    SPOT_TO_FUTURES: 'Spot → Futures',
+    FUTURES_TO_SPOT: 'Futures → Spot',
+  };
+  return labels[String(direction || '').toUpperCase()] || value(direction);
+}
+
+function renderRebalance(data) {
+  const card = $('rebalance-card');
+  if (!data || !data.pending) {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+  setText('rebalance-direction', directionLabel(data.direction));
+  setText('rebalance-amount', `${number(data.amount, 2)} USDT`);
+  setText('rebalance-attempts', data.attempts || 0);
+  setText('rebalance-last-attempt', data.last_attempt);
+  const reason = [
+    data.last_http_status ? `HTTP ${data.last_http_status}` : null,
+    data.last_binance_code !== null && data.last_binance_code !== undefined ? `code=${data.last_binance_code}` : null,
+    data.last_message || 'Motivo desconocido.',
+  ].filter(Boolean).join('\n');
+  setText('rebalance-reason', reason);
+}
+
 function renderTrades(data) {
   const body = $('trades-body');
   const rows = data.trades || [];
@@ -102,18 +129,20 @@ function renderSnapshots(data) {
 
 async function refresh() {
   try {
-    const [status, metrics, health, trades, snapshots] = await Promise.all([
+    const [status, metrics, health, trades, snapshots, rebalance] = await Promise.all([
       getJSON('/api/status'),
       getJSON('/api/metrics'),
       getJSON('/api/health'),
       getJSON('/api/trades'),
       getJSON('/api/snapshots'),
+      getJSON('/api/rebalance'),
     ]);
     renderStatus(status);
     renderMetrics(metrics);
     renderHealth(health);
     renderTrades(trades);
     renderSnapshots(snapshots);
+    renderRebalance(rebalance);
   } catch (err) {
     setText('last-error', err.message || String(err));
   }

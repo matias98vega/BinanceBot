@@ -262,15 +262,43 @@ def _build_rebalance_diagnostics(spot_real, futures_real, spot_target, futures_t
         'futures_real': _round_or_none(futures_real, 4),
         'futures_target': _round_or_none(futures_target, 4),
     }
+
+    def _merge_persistent_status(base):
+        try:
+            import rebalance
+            status = rebalance.read_rebalance_status()
+        except Exception:
+            status = {}
+        if not isinstance(status, dict) or not status.get('pending'):
+            return base
+        if status.get('direction') and base.get('direction') not in (None, 'NONE', status.get('direction')):
+            return base
+        enriched = dict(base)
+        enriched.update({
+            'status': 'PENDING',
+            'direction': status.get('direction') or base.get('direction'),
+            'amount_pending': status.get('amount') if status.get('amount') is not None else base.get('amount_pending'),
+            'reason': status.get('last_message') or base.get('reason') or 'Rebalance pendiente',
+            'pending_state': status,
+            'attempts': status.get('attempts'),
+            'first_failure': status.get('first_failure'),
+            'last_attempt': status.get('last_attempt'),
+            'last_http_status': status.get('last_http_status'),
+            'last_binance_code': status.get('last_binance_code'),
+            'last_message': status.get('last_message'),
+            'last_raw_body': status.get('last_raw_body'),
+        })
+        return enriched
+
     if total_authorized is None:
         payload.update({'status': 'BLOCKED', 'reason': capital_note or 'Capital autorizado no disponible'})
-        return payload
+        return _merge_persistent_status(payload)
     if spot_real is None or futures_real is None:
         payload.update({'status': 'UNKNOWN', 'reason': 'Balances reales no disponibles'})
-        return payload
+        return _merge_persistent_status(payload)
     if spot_target is None or futures_target is None:
         payload.update({'status': 'UNKNOWN', 'reason': 'Targets de capital no disponibles'})
-        return payload
+        return _merge_persistent_status(payload)
 
     try:
         import rebalance
@@ -288,7 +316,7 @@ def _build_rebalance_diagnostics(spot_real, futures_real, spot_target, futures_t
     futures_diff = abs(futures_real - futures_target)
     if spot_diff <= threshold and futures_diff <= threshold:
         payload.update({'status': 'NOT_REQUIRED', 'direction': 'NONE', 'amount_pending': 0.0, 'reason': 'Capital ya balanceado'})
-        return payload
+        return _merge_persistent_status(payload)
 
     spot_free_est = max(0.0, spot_real - float(spot_used or 0))
     futures_free_est = max(0.0, futures_real - float(futures_used or 0))
@@ -301,7 +329,7 @@ def _build_rebalance_diagnostics(spot_real, futures_real, spot_target, futures_t
                 'amount_pending': 0.0,
                 'reason': 'Capital alineado respetando reserva minima de Spot',
             })
-            return payload
+            return _merge_persistent_status(payload)
         status = 'PENDING'
         reason = 'Esperando rebalance Spot -> Futures'
         if spot_free_est < min(amount, threshold):
@@ -313,7 +341,7 @@ def _build_rebalance_diagnostics(spot_real, futures_real, spot_target, futures_t
             'amount_pending': _round_or_none(amount, 4),
             'reason': reason,
         })
-        return payload
+        return _merge_persistent_status(payload)
     if futures_real > futures_target and spot_real < spot_target:
         amount = min(futures_real - futures_target, spot_target - spot_real)
         if amount <= max(threshold, wallet_min):
@@ -323,7 +351,7 @@ def _build_rebalance_diagnostics(spot_real, futures_real, spot_target, futures_t
                 'amount_pending': 0.0,
                 'reason': 'Capital alineado respetando reserva minima de Futures',
             })
-            return payload
+            return _merge_persistent_status(payload)
         status = 'PENDING'
         reason = 'Esperando rebalance Futures -> Spot'
         if futures_free_est < min(amount, threshold):
@@ -335,7 +363,7 @@ def _build_rebalance_diagnostics(spot_real, futures_real, spot_target, futures_t
             'amount_pending': _round_or_none(amount, 4),
             'reason': reason,
         })
-        return payload
+        return _merge_persistent_status(payload)
 
     pending = max(spot_diff, futures_diff)
     if pending <= max(threshold, wallet_min):
@@ -345,7 +373,7 @@ def _build_rebalance_diagnostics(spot_real, futures_real, spot_target, futures_t
             'amount_pending': 0.0,
             'reason': 'Capital alineado respetando reserva minima de wallet',
         })
-        return payload
+        return _merge_persistent_status(payload)
 
     payload.update({
         'status': 'PENDING',
@@ -353,7 +381,7 @@ def _build_rebalance_diagnostics(spot_real, futures_real, spot_target, futures_t
         'amount_pending': _round_or_none(pending, 4),
         'reason': 'Capital fuera de target',
     })
-    return payload
+    return _merge_persistent_status(payload)
 
 
 def _build_diagnostics(

@@ -74,11 +74,11 @@ Guia de alto nivel de los modulos principales.
 
 **Proposito:** asignar capital entre Spot y Futures segun regimen.
 
-**Responsabilidades:** calcular targets, detectar tendencia persistente, respetar reserva opcional, calcular transferencias y ejecutar universal transfer.
+**Responsabilidades:** calcular targets, detectar tendencia persistente, respetar reserva opcional, calcular transferencias, ejecutar universal transfer y persistir diagnostico read-only de fallos en `data/history/rebalance_status.json`.
 
-**Consume:** `utils`, `config`, `state`, contexto BTC y `decision_timeline`.
+**Consume:** `utils`, `config`, `state`, contexto BTC, `decision_timeline` y `binance_client`.
 
-**Lo usan:** `bot.py`, `bot_state.py`.
+**Lo usan:** `bot.py`, `bot_state.py`, Telegram y dashboard. El archivo `rebalance_status.json` conserva intentos, direccion, monto, HTTP status, code/msg Binance, raw body seguro, endpoint, metodo y payload sanitizado; se limpia automaticamente cuando una transferencia se ejecuta con exito.
 
 ## `trading/longs.py`
 

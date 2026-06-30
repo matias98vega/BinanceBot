@@ -24,6 +24,7 @@ import trade_inspector  # noqa: E402
 
 CONFIG = load_config(require_api=False)
 BOT_STATE_FILE = os.path.join(TRADING_DIR, 'bot_state.json')
+REBALANCE_STATUS_FILE = os.path.join(PROJECT_DIR, 'data', 'history', 'rebalance_status.json')
 HOST = os.environ.get('DASHBOARD_HOST', '127.0.0.1')
 PORT = int(os.environ.get('DASHBOARD_PORT', '8080'))
 
@@ -285,6 +286,11 @@ def _timeline_payload(limit=20):
     return {'events': decision_timeline.read_recent_events(limit=limit)}
 
 
+def _rebalance_payload():
+    data = _read_json(REBALANCE_STATUS_FILE, {}) or {}
+    return data if isinstance(data, dict) else {}
+
+
 def _insights_payload():
     return insights_engine.load_insights()
 
@@ -306,6 +312,8 @@ def _api_payload(path):
         return _metrics_payload()
     if path == '/api/timeline':
         return _timeline_payload()
+    if path == '/api/rebalance':
+        return _rebalance_payload()
     if path == '/api/insights':
         return _insights_payload()
     if path.startswith('/api/trade/'):
