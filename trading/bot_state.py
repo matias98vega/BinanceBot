@@ -270,6 +270,18 @@ def _build_rebalance_diagnostics(spot_real, futures_real, spot_target, futures_t
         except Exception:
             status = {}
         if not isinstance(status, dict) or not status.get('pending'):
+            if isinstance(status, dict) and status.get('recovered'):
+                enriched = dict(base)
+                enriched.update({
+                    'recovered': True,
+                    'recovered_direction': status.get('recovered_direction'),
+                    'recovered_attempt': status.get('recovered_attempt'),
+                    'original_amount': status.get('original_amount'),
+                    'final_amount': status.get('final_amount'),
+                    'buffer_applied': status.get('buffer_applied'),
+                    'last_attempt': status.get('last_attempt'),
+                })
+                return enriched
             return base
         if status.get('direction') and base.get('direction') not in (None, 'NONE', status.get('direction')):
             return base
@@ -287,6 +299,9 @@ def _build_rebalance_diagnostics(spot_real, futures_real, spot_target, futures_t
             'last_binance_code': status.get('last_binance_code'),
             'last_message': status.get('last_message'),
             'last_raw_body': status.get('last_raw_body'),
+            'buffer_applied': status.get('buffer_applied'),
+            'requested_amount': status.get('requested_amount'),
+            'retried_amount': status.get('retried_amount'),
         })
         return enriched
 

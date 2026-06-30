@@ -50,11 +50,11 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Alternativas:** asignacion fija, rebalance manual, rebalance automatico por tendencia BTC.
 
-**Solucion actual:** `rebalance.py` calcula targets segun contexto bullish/bearish/neutral y mueve USDT entre wallets respetando posiciones abiertas, minimo de transferencia y reserva opcional. Si una transferencia falla, persiste `data/history/rebalance_status.json` con direccion, monto, intentos, HTTP status, code/msg Binance, raw body seguro, endpoint, metodo y payload sanitizado.
+**Solucion actual:** `rebalance.py` calcula targets segun contexto bullish/bearish/neutral y mueve USDT entre wallets respetando posiciones abiertas, minimo de transferencia, reserva opcional y un pequeno `REBALANCE_TRANSFER_BUFFER_USDT` sobre el monto final. Si Binance rechaza una transferencia con `code=-5013` por saldo insuficiente, el bot reintenta una sola vez descontando otro buffer. Si una transferencia falla, persiste `data/history/rebalance_status.json` con direccion, monto, intentos, HTTP status, code/msg Binance, raw body seguro, endpoint, metodo y payload sanitizado.
 
 **Ventajas:** separa asignacion de capital de senales de entrada y permite diagnosticar fallos recurrentes desde Telegram/Dashboard sin leer journalctl.
 
-**Desventajas:** depende de balances correctos y de que las transferencias Binance respondan sin retrasos. El estado persistente es diagnostico, no una cola de reintentos.
+**Desventajas:** depende de balances correctos y de que las transferencias Binance respondan sin retrasos. El buffer puede dejar una fraccion minima sin mover, pero reduce rechazos por redondeos, locks temporales o diferencias entre saldo libre visible y saldo realmente transferible. El estado persistente es diagnostico, no una cola de reintentos.
 
 **Mejoras futuras:** auditoria post-transfer y simulacion dry-run de rebalance.
 

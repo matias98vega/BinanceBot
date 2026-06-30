@@ -611,6 +611,9 @@ def _rebalance_pending_lines(rebalance, direction_label, amount):
         'Monto:',
         _fmt_money(amount),
         '',
+        'Buffer aplicado:',
+        _fmt_money(rebalance.get('buffer_applied')),
+        '',
         'Intentos:',
         str(rebalance.get('attempts') or 0),
         '',
@@ -620,6 +623,17 @@ def _rebalance_pending_lines(rebalance, direction_label, amount):
         'Motivo:',
     ]
     lines.extend(_rebalance_reason_lines(rebalance))
+    return lines
+
+
+def _rebalance_recovered_lines(rebalance):
+    lines = [
+        '\u2705 Recuperado autom\u00e1ticamente.',
+    ]
+    if rebalance.get('final_amount') is not None:
+        lines.extend(['Monto final:', _fmt_money(rebalance.get('final_amount'))])
+    if rebalance.get('buffer_applied') is not None:
+        lines.extend(['Buffer aplicado:', _fmt_money(rebalance.get('buffer_applied'))])
     return lines
 
 
@@ -992,6 +1006,9 @@ class CapitalPage(MenuPage):
                 'Rebalance:',
                 f'{_rebalance_label(rebalance.get("status"))} {direction_label}',
             ])
+            if rebalance.get('recovered'):
+                lines.extend([''])
+                lines.extend(_rebalance_recovered_lines(rebalance))
             if str(rebalance.get('status') or '').upper() == 'PENDING':
                 lines.extend([''])
                 lines.extend(_rebalance_pending_lines(rebalance, direction_label, pending_amount))

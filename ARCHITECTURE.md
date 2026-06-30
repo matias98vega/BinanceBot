@@ -165,13 +165,16 @@ rebalance.rebalance(state, btc_ctx)
    +-- calcula monto transferible
    +-- aplica REBALANCE_MIN_USDT
    +-- aplica REBALANCE_MIN_WALLET_USDT opcional
+   +-- descuenta REBALANCE_TRANSFER_BUFFER_USDT al monto final
    +-- ejecuta universal transfer si corresponde
+   +-- si Binance devuelve -5013 por saldo insuficiente, reintenta una vez con otro buffer
    +-- si Binance rechaza, persiste diagnostico en data/history/rebalance_status.json
    +-- si la transferencia tiene exito, limpia el estado pendiente
 ```
 
 Rebalance no abre ni cierra trades. Solo mueve USDT entre wallets.
 El estado `rebalance_status.json` es observabilidad: conserva intentos, HTTP status, code/msg Binance, raw body seguro, endpoint, metodo, payload sanitizado, direccion y monto. Telegram y dashboard lo leen para explicar fallos pendientes sin alterar la logica de transferencia.
+El buffer de transferencia deja un pequeno saldo libre para evitar rechazos por redondeos, comisiones, locks temporales o diferencias entre saldo visible y transferible real. La recuperacion automatica se limita al codigo Binance `-5013` y a un maximo de dos intentos por ciclo.
 
 ## Flujo Telegram
 

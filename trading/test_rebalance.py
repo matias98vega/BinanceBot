@@ -31,6 +31,19 @@ def http_error(status=400, body='{"code":-2010,"msg":"Insufficient balance"}'):
     return err
 
 
+class FakeBinance:
+    def __init__(self, outcomes):
+        self.outcomes = list(outcomes)
+        self.calls = []
+
+    def spot_signed(self, method, path, params):
+        self.calls.append((method, path, dict(params)))
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
 class RebalanceReserveTests(unittest.TestCase):
     def test_transfer_amount_with_zero_wallet_reserve(self):
         amount = rebalance._transferable_amount(
@@ -47,6 +60,10 @@ class RebalanceReserveTests(unittest.TestCase):
             wallet_min=3,
         )
         self.assertEqual(amount, 48.41)
+
+    def test_transfer_buffer_applied_and_never_negative(self):
+        self.assertEqual(rebalance._apply_transfer_buffer(51.41, buffer=0.10), 51.31)
+        self.assertEqual(rebalance._apply_transfer_buffer(0.05, buffer=0.10), 0.0)
 
 
 class RebalanceDiagnosticsTests(unittest.TestCase):
@@ -140,6 +157,7 @@ class RebalanceDiagnosticsTests(unittest.TestCase):
                 'last_http_status': 400,
                 'last_binance_code': -2010,
                 'last_message': 'Insufficient balance',
+                'buffer_applied': 0.10,
             },
             'max_exposure_percent': 80.0,
             'max_position_percent': None,
@@ -152,10 +170,119 @@ class RebalanceDiagnosticsTests(unittest.TestCase):
         self.assertIn('Rebalance pendiente', text)
         self.assertIn('Dirección:\nSpot → Futures', text)
         self.assertIn('Monto:\n26.94 USDT', text)
+        self.assertIn('Buffer aplicado:\n0.10 USDT', text)
         self.assertIn('Intentos:\n17', text)
         self.assertIn('HTTP 400', text)
         self.assertIn('code=-2010', text)
         self.assertIn('Insufficient balance', text)
+
+    def test_transfer_success_first_attempt(self):
+        fake = FakeBinance([{'tranId': 1}])
+        with patch.object(rebalance, 'BINANCE', fake), \
+             patch.object(rebalance, 'REBALANCE_TRANSFER_BUFFER_USDT', 0.10), \
+             patch.object(rebalance.decision_timeline, 'record_rebalance_event'):
+            ok, amount, meta = rebalance._transfer_with_recovery('SPOT_TO_FUTURES', 26.84)
+
+        self.assertTrue(ok)
+        self.assertEqual(amount, 26.84)
+        self.assertEqual(meta['attempts'], 1)
+        self.assertEqual(len(fake.calls), 1)
+        self.assertEqual(fake.calls[0][2]['amount'], '26.84')
+        self.assertFalse(self.read_status()['pending'])
+
+    def test_transfer_recovers_on_minus_5013_second_attempt(self):
+        fake = FakeBinance([
+            http_error(body='{"code":-5013,"msg":"Asset transfer failed: insufficient balance"}'),
+            {'tranId': 2},
+        ])
+        with patch.object(rebalance, 'BINANCE', fake), \
+             patch.object(rebalance, 'REBALANCE_TRANSFER_BUFFER_USDT', 0.10), \
+             patch.object(rebalance.decision_timeline, 'record_rebalance_event') as timeline:
+            ok, amount, meta = rebalance._transfer_with_recovery('SPOT_TO_FUTURES', 26.84)
+
+        self.assertTrue(ok)
+        self.assertEqual(amount, 26.74)
+        self.assertTrue(meta['recovered'])
+        self.assertEqual(len(fake.calls), 2)
+        self.assertEqual(fake.calls[0][2]['amount'], '26.84')
+        self.assertEqual(fake.calls[1][2]['amount'], '26.74')
+        saved = self.read_status()
+        self.assertFalse(saved['pending'])
+        self.assertTrue(saved['recovered'])
+        self.assertEqual(saved['final_amount'], 26.74)
+        messages = [call.args[1] for call in timeline.call_args_list]
+        self.assertTrue(any('Rebalance recuperado automaticamente' in message for message in messages))
+
+    def test_transfer_double_failure_keeps_pending(self):
+        fake = FakeBinance([
+            http_error(body='{"code":-5013,"msg":"Asset transfer failed: insufficient balance"}'),
+            http_error(body='{"code":-5013,"msg":"Asset transfer failed: insufficient balance"}'),
+        ])
+        with patch.object(rebalance, 'BINANCE', fake), \
+             patch.object(rebalance, 'REBALANCE_TRANSFER_BUFFER_USDT', 0.10), \
+             patch.object(rebalance.decision_timeline, 'record_rebalance_event') as timeline:
+            ok, message, meta = rebalance._transfer_with_recovery('SPOT_TO_FUTURES', 26.84)
+
+        self.assertFalse(ok)
+        self.assertIn('code=-5013', message)
+        self.assertEqual(meta['attempts'], 2)
+        self.assertEqual(len(fake.calls), 2)
+        saved = self.read_status()
+        self.assertTrue(saved['pending'])
+        self.assertEqual(saved['attempts'], 2)
+        self.assertEqual(saved['requested_amount'], 26.84)
+        self.assertEqual(saved['retried_amount'], 26.74)
+        self.assertEqual(saved['buffer_applied'], 0.10)
+        messages = [call.args[1] for call in timeline.call_args_list]
+        self.assertTrue(any('Rebalance pendiente' in message for message in messages))
+
+    def test_transfer_does_not_retry_other_errors(self):
+        fake = FakeBinance([
+            http_error(body='{"code":-2010,"msg":"Other failure"}'),
+            {'tranId': 3},
+        ])
+        with patch.object(rebalance, 'BINANCE', fake), \
+             patch.object(rebalance, 'REBALANCE_TRANSFER_BUFFER_USDT', 0.10), \
+             patch.object(rebalance.decision_timeline, 'record_rebalance_event'):
+            ok, message, meta = rebalance._transfer_with_recovery('SPOT_TO_FUTURES', 26.84)
+
+        self.assertFalse(ok)
+        self.assertIn('code=-2010', message)
+        self.assertEqual(meta['attempts'], 1)
+        self.assertEqual(len(fake.calls), 1)
+
+    def test_telegram_capital_shows_auto_recovered_rebalance(self):
+        metrics = {
+            'total_real': 54.0,
+            'total_limit': 54.0,
+            'total_authorized': 54.0,
+            'spot_real': 26.9,
+            'spot_target': 0.0,
+            'spot_used': 8.4,
+            'spot_reserved': 0,
+            'futures_real': 27.1,
+            'futures_target': 54.0,
+            'futures_used': 18.2,
+            'futures_reserved': 0,
+            'rebalance': {
+                'status': 'NOT_REQUIRED',
+                'direction': 'NONE',
+                'amount_pending': 0,
+                'recovered': True,
+                'final_amount': 26.74,
+                'buffer_applied': 0.10,
+            },
+            'max_exposure_percent': 80.0,
+            'max_position_percent': None,
+            'warning': None,
+        }
+
+        with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics):
+            text = telegram_commands._render_page('capital')['text']
+
+        self.assertIn('Recuperado autom', text)
+        self.assertIn('Monto final:\n26.74 USDT', text)
+        self.assertIn('Buffer aplicado:\n0.10 USDT', text)
 
 
 if __name__ == '__main__':

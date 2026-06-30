@@ -47,6 +47,7 @@ RATIO_VERY_BULLISH_SPOT    = 0.80   # spot recibe 80% cuando alcista >3 días co
 VERY_BULLISH_DAYS          = 3.0    # umbral de días consecutivos alcistas
 REBALANCE_MIN_USDT         = 2.0    # no transferir menos de $2
 REBALANCE_MIN_WALLET       = _env_float('REBALANCE_MIN_WALLET_USDT', 0.0)  # reserva minima opcional por wallet
+REBALANCE_TRANSFER_BUFFER_USDT = _env_float('REBALANCE_TRANSFER_BUFFER_USDT', 0.10)  # colchon para evitar -5013 por saldo libre exacto
 
 
 def _rebalance_log(message):
@@ -123,7 +124,7 @@ def _write_rebalance_status(payload):
         return False
 
 
-def clear_rebalance_status():
+def clear_rebalance_status(recovery=None):
     payload = {
         'pending': False,
         'direction': None,
@@ -136,6 +137,15 @@ def clear_rebalance_status():
         'last_message': None,
         'last_raw_body': None,
     }
+    if isinstance(recovery, dict):
+        payload.update({
+            'recovered': True,
+            'recovered_direction': recovery.get('direction'),
+            'recovered_attempt': recovery.get('attempt'),
+            'original_amount': _safe_float(recovery.get('original_amount')),
+            'final_amount': _safe_float(recovery.get('final_amount')),
+            'buffer_applied': _safe_float(recovery.get('buffer_applied')),
+        })
     _write_rebalance_status(payload)
     return payload
 
@@ -149,7 +159,7 @@ def _failure_attempts(previous, direction):
     return 1
 
 
-def _record_rebalance_failure(direction, amount, error, payload):
+def _record_rebalance_failure(direction, amount, error, payload, extra=None):
     details = utils.extract_http_error_details(error)
     details['endpoint'] = details.get('endpoint') or '/sapi/v1/asset/transfer'
     details['method'] = details.get('method') or 'POST'
@@ -172,6 +182,8 @@ def _record_rebalance_failure(direction, amount, error, payload):
         'method': details.get('method'),
         'payload': details.get('payload'),
     }
+    if isinstance(extra, dict):
+        status.update(extra)
     _write_rebalance_status(status)
     logging.error(
         'REBALANCE HTTP ERROR direction=%s amount=%s endpoint=%s method=%s status=%s code=%s msg=%s payload=%s raw_body=%s',
@@ -226,6 +238,157 @@ def _transferable_amount(required_amount, source_free, wallet_min=None):
     reserve = REBALANCE_MIN_WALLET if wallet_min is None else float(wallet_min or 0)
     reserve = max(0.0, reserve)
     return round(min(float(required_amount or 0), float(source_free or 0) - reserve), 2)
+
+
+def _transfer_buffer(buffer=None):
+    value = REBALANCE_TRANSFER_BUFFER_USDT if buffer is None else buffer
+    try:
+        return max(0.0, float(value or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _apply_transfer_buffer(amount, buffer=None):
+    return round(max(0.0, float(amount or 0) - _transfer_buffer(buffer)), 2)
+
+
+def _is_insufficient_transfer(details):
+    msg = str((details or {}).get('msg') or '').lower()
+    return (details or {}).get('code') == -5013 and 'insufficient balance' in msg
+
+
+def _transfer_type(direction):
+    return 'MAIN_UMFUTURE' if direction == 'SPOT_TO_FUTURES' else 'UMFUTURE_MAIN'
+
+
+def _record_rebalance_recovered(direction, original_amount, final_amount, buffer, attempt):
+    try:
+        decision_timeline.record_rebalance_event(
+            'rebalance_recovered',
+            (
+                f'Rebalance recuperado automaticamente {_direction_arrow(direction)} '
+                f'intento {attempt}: original={float(original_amount):.2f} '
+                f'final={float(final_amount):.2f} buffer={float(buffer):.2f}'
+            ),
+            level='INFO',
+            details={
+                'direction': direction,
+                'attempt': attempt,
+                'original_amount': _safe_float(original_amount),
+                'final_amount': _safe_float(final_amount),
+                'buffer_applied': _safe_float(buffer),
+            },
+        )
+    except Exception:
+        pass
+
+
+def _transfer_with_recovery(direction, calculated_amount):
+    buffer = _transfer_buffer()
+    attempt_1 = round(float(calculated_amount or 0), 2)
+    if attempt_1 <= 0:
+        return False, None, {'attempts': 0, 'final_amount': 0.0, 'buffer_applied': buffer}
+    transfer_type = _transfer_type(direction)
+    payload = {'type': transfer_type, 'asset': 'USDT', 'amount': str(attempt_1)}
+    logging.warning(
+        'REBALANCE TRANSFER attempt=1 direction=%s calculated_amount=%s buffer=%s attempt_1=%s',
+        _direction_arrow(direction), calculated_amount, buffer, attempt_1,
+    )
+    try:
+        BINANCE.spot_signed('POST', '/sapi/v1/asset/transfer', payload)
+        clear_rebalance_status()
+        logging.warning(
+            'REBALANCE TRANSFER result=success direction=%s calculated_amount=%s buffer=%s attempt_1=%s final_amount=%s',
+            _direction_arrow(direction), calculated_amount, buffer, attempt_1, attempt_1,
+        )
+        return True, attempt_1, {'attempts': 1, 'final_amount': attempt_1, 'buffer_applied': buffer}
+    except Exception as exc:
+        first_status, first_details = _record_rebalance_failure(
+            direction,
+            attempt_1,
+            exc,
+            payload,
+            extra={
+                'buffer_applied': _safe_float(buffer),
+                'requested_amount': _safe_float(attempt_1),
+            },
+        )
+        if not _is_insufficient_transfer(first_details):
+            logging.warning(
+                'REBALANCE TRANSFER result=failed direction=%s calculated_amount=%s buffer=%s attempt_1=%s final_amount=%s code=%s msg=%s',
+                _direction_arrow(direction), calculated_amount, buffer, attempt_1, attempt_1,
+                first_details.get('code'), first_details.get('msg'),
+            )
+            return False, _format_transfer_error(direction, first_details, exc), {'attempts': 1, 'final_amount': attempt_1, 'buffer_applied': buffer, 'status': first_status}
+
+        attempt_2 = _apply_transfer_buffer(attempt_1, buffer)
+        if attempt_2 <= 0:
+            logging.warning(
+                'REBALANCE TRANSFER result=failed_no_retry direction=%s calculated_amount=%s buffer=%s attempt_1=%s attempt_2=%s',
+                _direction_arrow(direction), calculated_amount, buffer, attempt_1, attempt_2,
+            )
+            return False, _format_transfer_error(direction, first_details, exc), {'attempts': 1, 'final_amount': attempt_1, 'buffer_applied': buffer, 'status': first_status}
+
+        payload_2 = {'type': transfer_type, 'asset': 'USDT', 'amount': str(attempt_2)}
+        logging.warning(
+            'REBALANCE TRANSFER attempt=2 direction=%s calculated_amount=%s buffer=%s attempt_1=%s attempt_2=%s',
+            _direction_arrow(direction), calculated_amount, buffer, attempt_1, attempt_2,
+        )
+        try:
+            BINANCE.spot_signed('POST', '/sapi/v1/asset/transfer', payload_2)
+            clear_rebalance_status({
+                'direction': direction,
+                'attempt': 2,
+                'original_amount': calculated_amount,
+                'final_amount': attempt_2,
+                'buffer_applied': buffer,
+            })
+            _record_rebalance_recovered(direction, calculated_amount, attempt_2, buffer, 2)
+            logging.warning(
+                'REBALANCE TRANSFER result=recovered direction=%s calculated_amount=%s buffer=%s attempt_1=%s attempt_2=%s final_amount=%s',
+                _direction_arrow(direction), calculated_amount, buffer, attempt_1, attempt_2, attempt_2,
+            )
+            return True, attempt_2, {'attempts': 2, 'final_amount': attempt_2, 'buffer_applied': buffer, 'recovered': True}
+        except Exception as retry_exc:
+            retry_status, retry_details = _record_rebalance_failure(
+                direction,
+                attempt_2,
+                retry_exc,
+                payload_2,
+                extra={
+                    'buffer_applied': _safe_float(buffer),
+                    'requested_amount': _safe_float(attempt_1),
+                    'retried_amount': _safe_float(attempt_2),
+                },
+            )
+            logging.warning(
+                'REBALANCE TRANSFER result=failed direction=%s calculated_amount=%s buffer=%s attempt_1=%s attempt_2=%s final_amount=%s code=%s msg=%s',
+                _direction_arrow(direction), calculated_amount, buffer, attempt_1, attempt_2, attempt_2,
+                retry_details.get('code'), retry_details.get('msg'),
+            )
+            try:
+                decision_timeline.record_rebalance_event(
+                    'rebalance_pending',
+                    (
+                        f'Rebalance pendiente {_direction_arrow(direction)}: '
+                        f'motivo={retry_details.get("msg") or retry_exc} '
+                        f'solicitado={attempt_1:.2f} reintentado={attempt_2:.2f}'
+                    ),
+                    level='ERROR',
+                    details={
+                        'direction': direction,
+                        'requested_amount': _safe_float(attempt_1),
+                        'retried_amount': _safe_float(attempt_2),
+                        'buffer_applied': _safe_float(buffer),
+                        'attempts': 2,
+                        'http_status': retry_details.get('status'),
+                        'binance_code': retry_details.get('code'),
+                        'binance_msg': retry_details.get('msg'),
+                    },
+                )
+            except Exception:
+                pass
+            return False, _format_transfer_error(direction, retry_details, retry_exc), {'attempts': 2, 'final_amount': attempt_2, 'buffer_applied': buffer, 'status': retry_status}
 
 
 def _capital_total(state):
@@ -406,19 +569,27 @@ def rebalance(state, btc_ctx=None):
 
     if diff_fut > 0:
         # Necesitamos más capital en futures (bearish) — mover Spot → Futures
-        amount = _transferable_amount(diff_fut, spot_free)
-        _rebalance_log(f'CHECK: direction=Spot->Futures calculated_amount={amount:.2f}')
+        calculated_amount = _transferable_amount(diff_fut, spot_free)
+        _rebalance_log(
+            f'CHECK: direction=Spot->Futures calculated_amount={calculated_amount:.2f} '
+            f'buffer={_transfer_buffer():.2f}'
+        )
         try:
-            capped_amount = capital_manager.cap_transfer_amount('FUTURES', fut_actual, amount)
+            capped_amount = capital_manager.cap_transfer_amount('FUTURES', fut_actual, calculated_amount)
         except Exception as e:
             _rebalance_log(f'SKIP: reason=capital_manager error direction=Spot->Futures error={e}')
             return False, f'Capital limit: rebalanceo Spot->Futures bloqueado ({e})'
-        if capped_amount < amount:
-            _rebalance_log(f'CHECK: capital_manager capped Spot->Futures requested={amount:.2f} capped={capped_amount:.2f}')
-            amount = round(capped_amount, 2)
-            if amount < REBALANCE_MIN_USDT:
+        if capped_amount < calculated_amount:
+            _rebalance_log(f'CHECK: capital_manager capped Spot->Futures requested={calculated_amount:.2f} capped={capped_amount:.2f}')
+            calculated_amount = round(capped_amount, 2)
+            if calculated_amount < REBALANCE_MIN_USDT:
                 _rebalance_log('SKIP: reason=capital_manager cap_transfer_amount returned 0')
                 return False, 'Capital limit: no se transfiere a Futures porque la wallet destino ya alcanzo el limite configurado'
+        amount = _apply_transfer_buffer(calculated_amount)
+        _rebalance_log(
+            f'CHECK: direction=Spot->Futures calculated_amount={calculated_amount:.2f} '
+            f'buffer={_transfer_buffer():.2f} final_amount={amount:.2f}'
+        )
         if amount < REBALANCE_MIN_USDT:
             if trend_flipped and longs_open:
                 # Cambio a bearish pero hay longs viejos: esperar que cierren
@@ -439,11 +610,10 @@ def rebalance(state, btc_ctx=None):
 
         try:
             _rebalance_log(f'TRANSFER: {amount:.2f} Spot -> Futures')
-            transfer_payload = {
-                'type': 'MAIN_UMFUTURE', 'asset': 'USDT', 'amount': str(amount),
-            }
-            BINANCE.spot_signed('POST', '/sapi/v1/asset/transfer', transfer_payload)
-            clear_rebalance_status()
+            transfer_ok, transfer_result, transfer_meta = _transfer_with_recovery('SPOT_TO_FUTURES', amount)
+            if not transfer_ok:
+                return False, transfer_result
+            amount = transfer_result
             state['last_rebalance_trend'] = trend
             if trend_flipped:
                 msg = (f'🔄 Rebalanceo parcial (viraje a BEARISH): ${amount:.2f} Spot → Futures ' 
@@ -452,24 +622,31 @@ def rebalance(state, btc_ctx=None):
                 msg = f'🔄 Rebalanceo ({label}): ${amount:.2f} USDT Spot → Futures'
             return True, msg
         except Exception as e:
-            _, details = _record_rebalance_failure('SPOT_TO_FUTURES', amount, e, transfer_payload)
-            return False, _format_transfer_error('SPOT_TO_FUTURES', details, e)
+            return False, f'Error al transferir Spot→Futures: {e}'
 
     else:
         # Necesitamos más capital en spot (bullish) — mover Futures → Spot
-        amount = _transferable_amount(-diff_fut, fut_free)
-        _rebalance_log(f'CHECK: direction=Futures->Spot calculated_amount={amount:.2f}')
+        calculated_amount = _transferable_amount(-diff_fut, fut_free)
+        _rebalance_log(
+            f'CHECK: direction=Futures->Spot calculated_amount={calculated_amount:.2f} '
+            f'buffer={_transfer_buffer():.2f}'
+        )
         try:
-            capped_amount = capital_manager.cap_transfer_amount('SPOT', spot_actual, amount)
+            capped_amount = capital_manager.cap_transfer_amount('SPOT', spot_actual, calculated_amount)
         except Exception as e:
             _rebalance_log(f'SKIP: reason=capital_manager error direction=Futures->Spot error={e}')
             return False, f'Capital limit: rebalanceo Futures->Spot bloqueado ({e})'
-        if capped_amount < amount:
-            _rebalance_log(f'CHECK: capital_manager capped Futures->Spot requested={amount:.2f} capped={capped_amount:.2f}')
-            amount = round(capped_amount, 2)
-            if amount < REBALANCE_MIN_USDT:
+        if capped_amount < calculated_amount:
+            _rebalance_log(f'CHECK: capital_manager capped Futures->Spot requested={calculated_amount:.2f} capped={capped_amount:.2f}')
+            calculated_amount = round(capped_amount, 2)
+            if calculated_amount < REBALANCE_MIN_USDT:
                 _rebalance_log('SKIP: reason=capital_manager cap_transfer_amount returned 0')
                 return False, 'Capital limit: no se transfiere a Spot porque la wallet destino ya alcanzo el limite configurado'
+        amount = _apply_transfer_buffer(calculated_amount)
+        _rebalance_log(
+            f'CHECK: direction=Futures->Spot calculated_amount={calculated_amount:.2f} '
+            f'buffer={_transfer_buffer():.2f} final_amount={amount:.2f}'
+        )
         if amount < REBALANCE_MIN_USDT:
             if trend_flipped and shorts_open:
                 # Cambio a bullish pero hay shorts viejos: esperar que cierren
@@ -493,11 +670,10 @@ def rebalance(state, btc_ctx=None):
 
         try:
             _rebalance_log(f'TRANSFER: {amount:.2f} Futures -> Spot')
-            transfer_payload = {
-                'type': 'UMFUTURE_MAIN', 'asset': 'USDT', 'amount': str(amount),
-            }
-            BINANCE.spot_signed('POST', '/sapi/v1/asset/transfer', transfer_payload)
-            clear_rebalance_status()
+            transfer_ok, transfer_result, transfer_meta = _transfer_with_recovery('FUTURES_TO_SPOT', amount)
+            if not transfer_ok:
+                return False, transfer_result
+            amount = transfer_result
             state['last_rebalance_trend'] = trend
             if trend_flipped:
                 msg = (f'🔄 Rebalanceo parcial (viraje a BULLISH): ${amount:.2f} Futures → Spot '
@@ -506,8 +682,7 @@ def rebalance(state, btc_ctx=None):
                 msg = f'🔄 Rebalanceo ({label}): ${amount:.2f} USDT Futures → Spot'
             return True, msg
         except Exception as e:
-            _, details = _record_rebalance_failure('FUTURES_TO_SPOT', amount, e, transfer_payload)
-            return False, _format_transfer_error('FUTURES_TO_SPOT', details, e)
+            return False, f'Error al transferir Futures→Spot: {e}'
 
 
 if __name__ == '__main__':
