@@ -100,6 +100,20 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Mejoras futuras:** evaluar sensibilidad de ATR por regimen y simular impacto antes de tocar live.
 
+## SL Nativo Futures y Fallback
+
+**Problema:** Binance puede rechazar el `STOP_MARKET` nativo de Futures con HTTP 400 aunque la posicion siga cubierta por Guardian software.
+
+**Alternativas:** tratar todo rechazo como error critico, silenciarlo, o clasificarlo segun exista fallback.
+
+**Solucion actual:** si falla el SL nativo pero Guardian queda activo, se registra WARNING operativo y se conserva el detalle tecnico en logs. Solo se eleva a CRITICAL si no queda fallback activo.
+
+**Ventajas:** evita alarmas falsas de posicion desprotegida sin ocultar el diagnostico tecnico.
+
+**Desventajas:** requiere que Guardian siga siendo una garantia operativa valida.
+
+**Mejoras futuras:** reconciliacion explicita de fallback activo antes de cada alerta.
+
 ## Long Spot OCO y Recovery
 
 **Problema:** despues de comprar Spot, fees/redondeos/filtros pueden dejar menos balance libre que la cantidad teorica. Si OCO o emergency sell usan la cantidad teorica, Binance puede rechazar con `-2010`.

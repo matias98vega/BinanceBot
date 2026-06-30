@@ -24,6 +24,7 @@ Este backlog agrupa trabajo pendiente. No implica autorizacion para modificar es
 | Validacion periodica de consistencia `stats.json` vs JSONL | Media | Baja | Detectar indices stale o corruptos |
 | Validacion de freshness de `insights.json` vs `stats.json` | Media | Baja | Evitar conclusiones derivadas de estadisticas stale |
 | Enriquecer Trade Inspector con mas motivos de filtros | Media | Media | Explicar mejor rechazos y cambios relevantes |
+| Validar fallback Guardian tras rechazo de SL nativo | Media | Media | Confirmar proteccion software antes de clasificar alertas |
 
 ## UI
 

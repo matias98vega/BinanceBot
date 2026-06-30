@@ -17,7 +17,7 @@ def _place_stop_market(symbol, side, stop_price, quantity, reduce_only=True):
     retorna None silenciosamente — el guardian software cubre como fallback.
     El endpoint Algo (/fapi/v1/order/algo) no está disponible en esta cuenta.
     """
-    import json as _json, urllib.error as _ue
+    import urllib.error as _ue
     params = {
         'symbol':     symbol,
         'side':       side,
@@ -29,22 +29,69 @@ def _place_stop_market(symbol, side, stop_price, quantity, reduce_only=True):
     try:
         return utils.fut_signed('POST', '/fapi/v1/order', params)
     except _ue.HTTPError as e:
-        body = ''
+        details = utils.extract_http_error_details(e)
+        body = details.get('raw_body') or ''
+        code = details.get('code') if details.get('code') is not None else -1
         try:
-            body = e.read().decode('utf-8')
-        except Exception:
-            pass
-        code = -1
-        try:
-            code = _json.loads(body).get('code', -1)
+            e.binance_body = body
         except Exception:
             pass
         if code == -4120:
             # SL nativo no soportado en esta cuenta para este par
             # Guardian software cubre como fallback — no es un error crítico
             return None
-        # Otro error: relanzar con cuerpo legible
-        raise _ue.HTTPError(e.url, e.code, f'{e.reason} - {body}', e.headers, None)
+        utils.log_binance_http_error('futures native stop market', symbol, side, 'STOP_MARKET', params, e)
+        raise
+
+
+def _guardian_fallback_active():
+    return True
+
+
+def _notify_native_sl_failure(symbol, stop_price, quantity, current_price, error, fallback_active=None):
+    import logging
+    fallback = _guardian_fallback_active() if fallback_active is None else bool(fallback_active)
+    error_msg = str(error)
+    details = {
+        'stopPrice': stop_price,
+        'quantity': quantity,
+        'price': current_price,
+        'error': error_msg,
+    }
+    if isinstance(error, _ue.HTTPError):
+        http_details = utils.extract_http_error_details(error)
+        details.update({
+            'status': http_details.get('status'),
+            'code': http_details.get('code'),
+            'msg': http_details.get('msg'),
+            'raw_body': http_details.get('raw_body'),
+            'endpoint': http_details.get('endpoint'),
+            'method': http_details.get('method'),
+        })
+    level = 'WARNING' if fallback else 'CRITICAL'
+    event = 'sl_native_failed_fallback' if fallback else 'sl_native_failed_unprotected'
+    if fallback:
+        user_msg = f'⚠️ SL nativo rechazado para {symbol}. Guardian software activo como fallback. Posición protegida.'
+    else:
+        user_msg = f'🚨 SL nativo rechazado para {symbol} y no hay fallback activo. Revisar protección inmediatamente.'
+    decision_timeline.record_protection_event(
+        event,
+        symbol,
+        'SHORT',
+        user_msg,
+        level=level,
+        details=details,
+    )
+    logging.error(
+        'SL nativo %s: stopPrice=%s qty=%s price=%s error=%s details=%s',
+        symbol, stop_price, quantity, current_price, error_msg, details,
+    )
+    try:
+        from telegram_alerts import send_telegram_alert
+        send_telegram_alert(level, 'BinanceBot', user_msg, notification_type=level)
+    except Exception:
+        utils.send_alert(user_msg)
+    return level, user_msg, details
 
 
 def _ensure_leverage(symbol, leverage):
@@ -285,18 +332,7 @@ def open_short(candidate, state, max_shorts=None):
                     details={'stopPrice': real_sl, 'quantity': actual_qty},
                 )
         except Exception as e:
-            import logging
-            error_msg = str(e)
-            decision_timeline.record_protection_event(
-                'sl_native_failed',
-                sym,
-                'SHORT',
-                f'Native SL protection failed for {sym}: {error_msg}',
-                level='WARNING',
-                details={'stopPrice': real_sl, 'quantity': actual_qty},
-            )
-            logging.error(f'SL nativo {sym}: stopPrice={real_sl}, qty={actual_qty}, price={actual_price}, error={error_msg}')
-            utils.send_alert(f'⚠️ SL nativo {sym} no se pudo colocar: {error_msg}. Guardian software activo como fallback.')
+            _notify_native_sl_failure(sym, real_sl, actual_qty, actual_price, e)
 
     pos = {
         'id':            f'short_{sym}_{int(time.time())}',
