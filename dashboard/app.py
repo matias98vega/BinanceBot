@@ -19,6 +19,7 @@ from config_loader import load_config  # noqa: E402
 import capital_manager  # noqa: E402
 import decision_timeline  # noqa: E402
 import insights_engine  # noqa: E402
+import trade_inspector  # noqa: E402
 
 
 CONFIG = load_config(require_api=False)
@@ -288,6 +289,10 @@ def _insights_payload():
     return insights_engine.load_insights()
 
 
+def _trade_payload(trade_id):
+    return trade_inspector.inspect_trade(trade_id=trade_id)
+
+
 def _api_payload(path):
     if path == '/api/status':
         return _status_payload()
@@ -303,6 +308,9 @@ def _api_payload(path):
         return _timeline_payload()
     if path == '/api/insights':
         return _insights_payload()
+    if path.startswith('/api/trade/'):
+        trade_id = path.rsplit('/', 1)[-1]
+        return _trade_payload(trade_id)
     return None
 
 

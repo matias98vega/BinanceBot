@@ -24,6 +24,7 @@ El sistema ya cuenta con:
 - Analytics Engine pasivo con `data/history/stats.json`.
 - Insights Engine pasivo con `data/history/insights.json`.
 - Decision Timeline cronologico en `data/history/timeline.jsonl`.
+- Trade Inspector pasivo para reconstruccion individual de trades.
 - Healthcheck, preflight, post-cycle y validadores de observabilidad.
 - Tests unitarios para capital, rebalance, hardening de trades y notificaciones.
 
@@ -41,6 +42,7 @@ El sistema ya cuenta con:
 | Construir Analytics Engine pasivo | Alta | Historia JSONL | Implementado base |
 | Integrar Analytics Engine en Telegram | Alta | `stats.json` | Implementado base |
 | Construir Insights Engine pasivo | Alta | `stats.json` | Implementado base |
+| Construir Trade Inspector pasivo | Alta | Historia JSONL y timeline | Implementado base |
 | Validar cierre preventivo BTC con orden real de salida | Alta | Auditoria de `bot.py` | Pendiente |
 | Separar estado observable de calculos de presentacion | Media | `bot_state.py` actual | En desarrollo |
 | Revisar documentos legacy | Media | Docs canonicas | En curso |
@@ -89,6 +91,7 @@ El sistema ya cuenta con:
 - Guardrails de capital por exposicion y slots.
 - Telegram read-only con menu, capital, posiciones, health, diagnostico, trades, snapshots y estadisticas.
 - Telegram `Insights` con conclusiones compactas generadas desde `stats.json`.
+- Telegram `Inspeccionar Trade` para ultimo trade, ultimo ganador, ultimo perdedor y detalle por id.
 - Telegram `/timeline` read-only con filtros simples por categoria o simbolo.
 - Notificaciones Telegram configurables por tipo.
 - Dashboard local con estado, trades, snapshots, health y metricas.
@@ -97,6 +100,7 @@ El sistema ya cuenta con:
 - Estadisticas precalculadas en `data/history/stats.json`.
 - Insights precalculados en `data/history/insights.json`.
 - Timeline rotado de decisiones y eventos operativos en `data/history/timeline.jsonl`.
+- Trade Inspector read-only con endpoint `/api/trade/<id>`.
 - Validadores de observabilidad y healthcheck local.
 - Hardening Long Spot para no proteger/vender mas que balance real disponible.
 
@@ -112,6 +116,7 @@ El sistema ya cuenta con:
 
 - UI visual avanzada para Decision Timeline en dashboard.
 - UI visual avanzada para Insights en dashboard.
+- UI visual avanzada para Trade Inspector en dashboard.
 - Auditoria state-vs-exchange antes de operar.
 - Backtesting offline.
 - Dataset historico local.

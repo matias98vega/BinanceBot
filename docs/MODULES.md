@@ -66,9 +66,9 @@ Guia de alto nivel de los modulos principales.
 
 **Proposito:** interfaz Telegram read-only.
 
-**Responsabilidades:** recibir updates, validar chat autorizado, renderizar paginas, responder comandos/callbacks, mostrar estadisticas desde `analytics_engine`, insights desde `insights_engine`, timeline desde `decision_timeline` y guardar offset.
+**Responsabilidades:** recibir updates, validar chat autorizado, renderizar paginas, responder comandos/callbacks, mostrar estadisticas desde `analytics_engine`, insights desde `insights_engine`, timeline desde `decision_timeline`, inspeccion historica de trades desde `trade_inspector` y guardar offset.
 
-**Consume:** `bot_state.json`, `state.json`, JSONL, `analytics_engine`, `insights_engine`, `decision_timeline`, `config_loader`, systemd status.
+**Consume:** `bot_state.json`, `state.json`, JSONL, `analytics_engine`, `insights_engine`, `decision_timeline`, `trade_inspector`, `config_loader`, systemd status.
 
 **Lo usan:** servicio Telegram.
 
@@ -162,6 +162,16 @@ Guia de alto nivel de los modulos principales.
 
 **Lo usan:** `bot.py`, `rebalance.py`, `longs.py`, `shorts.py`, `capital_manager.py`, `sl_guardian.py`, `analytics.py`, `history.py`, Telegram, dashboard y tests. No alimenta estrategia ni sizing.
 
+## `trading/trade_inspector.py`
+
+**Proposito:** reconstruir la historia completa de un trade desde datos historicos locales.
+
+**Responsabilidades:** buscar trades por id o simbolo/fecha cercana, reconstruir resumen, mercado, capital, protecciones, timeline relevante y conclusion deterministica; tolerar datos incompletos y lineas corruptas.
+
+**Consume:** `data/history/trades.jsonl`, `decisions.jsonl`, `snapshots.jsonl`, `timeline.jsonl` y `analytics_engine`.
+
+**Lo usan:** Telegram, dashboard y tests. No consulta Binance, no depende de `state.json` y no participa en decisiones operativas.
+
 ## `trading/utils.py`
 
 **Proposito:** capa compartida de infraestructura.
@@ -186,8 +196,8 @@ Guia de alto nivel de los modulos principales.
 
 **Proposito:** dashboard local read-only.
 
-**Responsabilidades:** servir UI estatica y endpoints `/api/status`, `/api/trades`, `/api/snapshots`, `/api/health`, `/api/metrics`, `/api/timeline`, `/api/insights`.
+**Responsabilidades:** servir UI estatica y endpoints `/api/status`, `/api/trades`, `/api/snapshots`, `/api/health`, `/api/metrics`, `/api/timeline`, `/api/insights`, `/api/trade/<id>`.
 
-**Consume:** `bot_state.json`, JSONL, analytics, `decision_timeline`, `insights_engine` y config read-only.
+**Consume:** `bot_state.json`, JSONL, analytics, `decision_timeline`, `insights_engine`, `trade_inspector` y config read-only.
 
 **Lo usan:** navegador local/servicio dashboard.

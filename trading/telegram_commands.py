@@ -17,6 +17,7 @@ import bot_state as bot_state_module
 import analytics_engine
 import decision_timeline
 import insights_engine
+import trade_inspector
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -755,6 +756,29 @@ def _insights_payload():
         return {'warnings': [f'WARNING: no pude cargar insights ({exc}).'], 'summary': []}
 
 
+def _trade_inspector_text(mode='latest', trade_id=None):
+    if trade_id:
+        report = trade_inspector.inspect_trade(trade_id=trade_id)
+        return trade_inspector.format_for_telegram(report)
+    if mode == 'winner':
+        return trade_inspector.format_for_telegram(trade_inspector.inspect_latest(result='WIN'))
+    if mode == 'loser':
+        return trade_inspector.format_for_telegram(trade_inspector.inspect_latest(result='LOSS'))
+    if mode == 'list':
+        rows = trade_inspector.list_recent_trades(limit=8)
+        lines = ['\U0001F50D Seleccionar trade', '']
+        if not rows:
+            lines.append('Sin trades registrados.')
+        for row in rows:
+            lines.append(
+                f'{row.get("trade_id")} | {row.get("symbol")} {row.get("direction")} | '
+                f'{_fmt_pnl(row.get("pnl_usdt"))} | {row.get("exit_reason")}'
+            )
+        lines.extend(['', 'Use /inspect <trade_id> para ver el detalle.'])
+        return '\n'.join(lines)
+    return trade_inspector.format_for_telegram(trade_inspector.inspect_latest())
+
+
 class MenuPage:
     page_id = ''
 
@@ -806,7 +830,8 @@ class HomePage(MenuPage):
     def keyboard(self):
         return [
             [_button('\U0001F4B0 Capital', 'capital'), _button('\U0001F4C2 Posiciones', 'positions')],
-            [_button('\U0001F4C8 Trades', 'trades'), _button('\u2764\ufe0f Salud', 'health')],
+            [_button('\U0001F4C8 Trades', 'trades'), _button('\U0001F50D Inspeccionar Trade', 'inspect')],
+            [_button('\u2764\ufe0f Salud', 'health')],
             [_button('\U0001FA7A Diagnostico', 'diagnostics'), _button('\U0001F4F8 Snapshots', 'snapshots')],
             [_button('\U0001F4DC Timeline', 'timeline'), _button('\U0001F4A1 Insights', 'insights')],
             [_button('\U0001F4CA Estadisticas', 'stats'), _button('\u2699 Sistema', 'system')],
@@ -982,6 +1007,28 @@ class TradesPage(MenuPage):
             )
         lines.extend(['', '────────────'])
         return '\n'.join(lines)
+
+
+class TradeInspectorPage(MenuPage):
+    page_id = 'inspect'
+
+    def render(self):
+        return '\n'.join([
+            '\U0001F50D Inspeccionar Trade',
+            '',
+            'Seleccione una opcion.',
+            '',
+            'Tambien puede usar:',
+            '/inspect <trade_id>',
+        ])
+
+    def keyboard(self):
+        return [
+            [_button('Ultimo trade', 'inspect:latest')],
+            [_button('Ultimo ganador', 'inspect:winner'), _button('Ultimo perdedor', 'inspect:loser')],
+            [_button('Historial', 'inspect:list')],
+            [_button('\u25C0 Menu', 'home'), _button('\U0001F504 Actualizar', 'r:inspect')],
+        ]
 
 
 class SnapshotsPage(MenuPage):
@@ -1251,6 +1298,7 @@ MENU_PAGES = {
     'health': HealthPage(),
     'diagnostics': DiagnosticsPage(),
     'trades': TradesPage(),
+    'inspect': TradeInspectorPage(),
     'snapshots': SnapshotsPage(),
     'timeline': TimelinePage(),
     'insights': InsightsPage(),
@@ -1274,6 +1322,7 @@ COMMAND_ALIASES = {
     '/health': 'health',
     '/diagnostics': 'diagnostics',
     '/lasttrades': 'trades',
+    '/inspect': 'inspect',
     '/snapshots': 'snapshots',
     '/timeline': 'timeline',
     '/insights': 'insights',
@@ -1300,6 +1349,7 @@ def command_help():
         '/capital',
         '/positions',
         '/lasttrades',
+        '/inspect',
         '/snapshots',
         '/timeline',
         '/insights',
@@ -1329,6 +1379,12 @@ def _dispatch_text(text):
             'text': _timeline_text(parts[1] if len(parts) > 1 else None),
             'reply_markup': {'inline_keyboard': MENU_PAGES['timeline'].keyboard()},
         }
+    if command == '/inspect' and len(parts) > 1:
+        return {
+            'page_id': 'inspect',
+            'text': _trade_inspector_text(trade_id=parts[1]),
+            'reply_markup': {'inline_keyboard': MENU_PAGES['inspect'].keyboard()},
+        }
     page_id = COMMAND_ALIASES.get(command)
     if page_id:
         return _render_page(page_id)
@@ -1343,6 +1399,13 @@ def _dispatch_callback(data):
         data = data.split(':', 1)[1] or 'home'
     if data == 'refresh':
         data = 'home'
+    if data.startswith('inspect:'):
+        mode = data.split(':', 1)[1] or 'latest'
+        return {
+            'page_id': 'inspect',
+            'text': _trade_inspector_text(mode=mode),
+            'reply_markup': {'inline_keyboard': MENU_PAGES['inspect'].keyboard()},
+        }
     return _render_page(data if data in MENU_PAGES else 'home')
 
 

@@ -23,6 +23,7 @@ Este backlog agrupa trabajo pendiente. No implica autorizacion para modificar es
 | Rotacion de `data/history/*.jsonl` | Media | Baja | Evitar crecimiento indefinido de memoria historica |
 | Validacion periodica de consistencia `stats.json` vs JSONL | Media | Baja | Detectar indices stale o corruptos |
 | Validacion de freshness de `insights.json` vs `stats.json` | Media | Baja | Evitar conclusiones derivadas de estadisticas stale |
+| Enriquecer Trade Inspector con mas motivos de filtros | Media | Media | Explicar mejor rechazos y cambios relevantes |
 
 ## UI
 
@@ -30,6 +31,7 @@ Este backlog agrupa trabajo pendiente. No implica autorizacion para modificar es
 |---|---|---:|---|
 | Vista compacta de timeline en dashboard | Alta | Media | Diagnostico rapido |
 | Vista compacta de insights en dashboard | Media | Media | Mostrar conclusiones sin depender de Telegram |
+| Vista visual de Trade Inspector | Media | Media | Auditar un trade completo desde navegador |
 | Vista de capacidad real por wallet | Alta | Baja | Entender slots disponibles |
 | Separar paneles de capital, riesgo y sistema | Media | Media | Lectura mas clara |
 | Filtros por simbolo/direccion/regimen | Media | Media | Analisis mas util |
@@ -40,6 +42,7 @@ Este backlog agrupa trabajo pendiente. No implica autorizacion para modificar es
 |---|---|---:|---|
 | Paginacion y filtros avanzados para `/timeline` | Media | Media | Navegar historiales largos desde celular |
 | Filtros avanzados para `/insights` | Media | Baja | Consultar conclusiones por categoria |
+| Seleccion interactiva avanzada de Trade Inspector | Media | Media | Elegir trades desde Telegram sin escribir ids |
 | Notificaciones de recovery/critical mas claras | Alta | Baja | Mejor respuesta operativa |
 | Paginacion avanzada de rankings estadisticos Telegram | Media | Media | Navegar historiales largos sin mensajes extensos |
 | Healthcheck resumido periodico configurable | Media | Media | Detectar degradacion sin revisar manualmente |
@@ -51,6 +54,7 @@ Este backlog agrupa trabajo pendiente. No implica autorizacion para modificar es
 |---|---|---:|---|
 | UI visual para `/api/timeline` | Media | Media | Exponer eventos cronologicos en el dashboard web |
 | UI visual para `/api/insights` | Media | Media | Exponer conclusiones generadas por el Insights Engine |
+| UI visual para `/api/trade/<id>` | Media | Media | Navegar timeline, capital y protecciones de un trade |
 | Graficos PnL por dia/simbolo/direccion | Media | Media | Mejor analisis de performance |
 | Tabla de rechazos frecuentes | Media | Media | Detectar filtros dominantes |
 | Panel de freshness de archivos | Media | Baja | Identificar observabilidad stale |

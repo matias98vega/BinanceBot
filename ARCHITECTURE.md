@@ -181,6 +181,8 @@ La seccion `Insights` de Telegram lee conclusiones desde `insights_engine.py`. E
 
 La pagina `Timeline` y el comando `/timeline` leen exclusivamente `data/history/timeline.jsonl` mediante `decision_timeline.py`. Soporta filtros simples por categoria o simbolo y no envia notificaciones por evento.
 
+La seccion `Inspeccionar Trade` y el endpoint `/api/trade/<id>` usan `trade_inspector.py` para reconstruir un trade desde `data/history/*.jsonl`, `timeline.jsonl` y `analytics_engine`. No consulta Binance, no depende de `state.json` y no participa en entradas/salidas.
+
 ## Flujo Healthcheck
 
 ```text
@@ -225,6 +227,7 @@ Estos scripts no abren ordenes ni cambian estrategia.
 | `analytics_engine.py` | Indice estadistico pasivo precalculado desde historia JSONL | `data/history/*.jsonl`, `stats.json` | futuras consultas Telegram/dashboard, tests |
 | `insights_engine.py` | Conclusiones pasivas derivadas de estadisticas | `data/history/stats.json`, `insights.json` | Telegram, dashboard, tests |
 | `decision_timeline.py` | Timeline cronologico de decisiones y eventos operativos | `data/history/timeline.jsonl` | `bot.py`, `rebalance.py`, `longs.py`, `shorts.py`, `capital_manager.py`, `sl_guardian.py`, Telegram, dashboard |
+| `trade_inspector.py` | Reconstruccion historica pasiva de un trade | `data/history/*.jsonl`, `timeline.jsonl`, `analytics_engine` | Telegram, dashboard, tests |
 | `bot_state.py` | Snapshot observable de estado/capital/sistema | `state`, `capital_manager`, `rebalance`, systemd | `bot.py`, Telegram, dashboard |
 | `telegram_commands.py` | Menu y comandos read-only | `bot_state`, JSONL, `state`, `analytics_engine` | servicio Telegram |
 | `telegram_alerts.py` | Alertas configurables por tipo | env, Telegram API | `utils`/flujos de alerta |
@@ -259,7 +262,8 @@ La observabilidad actual tiene tres capas:
 3. **Memoria historica pasiva:** `data/history/trades.jsonl`, `data/history/decisions.jsonl`, `data/history/snapshots.jsonl`.
 4. **Decision Timeline:** `data/history/timeline.jsonl` para eventos compactos por ciclo, senal, sizing, rebalance, orden, proteccion, guardian, capital y analytics.
 5. **Insights derivados:** `data/history/insights.json` para conclusiones automaticas sobre rendimiento, riesgo, simbolos, direccion, regimen, tiempo y salidas.
-6. **Interfaces read-only:** Telegram, dashboard, analyzers, healthcheck.
+6. **Trade Inspector:** reconstruccion de trades individuales desde historia, decisiones, snapshots, timeline y analytics.
+7. **Interfaces read-only:** Telegram, dashboard, analyzers, healthcheck.
 
 ## Historical Persistence
 
@@ -290,6 +294,12 @@ decision_timeline.py
    +-- record_event()       -> data/history/timeline.jsonl
    +-- read_recent_events() -> ultimos eventos, con filtro por categoria/simbolo
    +-- compact_event_for_telegram()
+
+trade_inspector.py
+   |
+   +-- inspect_trade()      -> reporte completo por trade_id o simbolo/fecha
+   +-- inspect_latest()     -> ultimo trade / ultimo ganador / ultimo perdedor
+   +-- format_for_telegram()
 ```
 
 Propiedades:
@@ -301,6 +311,7 @@ Propiedades:
 - `get_trade(trade_id)` reconstruye el ultimo estado conocido del trade.
 - `stats.json` no es fuente de verdad: si falta o esta corrupto, se reconstruye desde JSONL.
 - `timeline.jsonl` rota al superar 5 MB y preserva eventos recientes.
+- `trade_inspector.py` tolera datos incompletos y lineas corruptas mostrando `Dato no disponible`.
 - Los archivos runtime bajo `data/history/` no se versionan.
 
 ## Riesgos Arquitectonicos
