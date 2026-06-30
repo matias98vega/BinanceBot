@@ -132,6 +132,16 @@ Guia de alto nivel de los modulos principales.
 
 **Lo usan:** `analytics.py`, tests y futuras herramientas offline. No lo usa la estrategia para decidir.
 
+## `trading/feature_store.py`
+
+**Proposito:** persistencia rica y append-only de features por trade abierto.
+
+**Responsabilidades:** registrar identificacion, mercado, indicadores del simbolo, scoring, capital, estado del bot y contexto de decision en `data/history/features.jsonl`; sanitizar secretos; ignorar `NaN`; tolerar errores de escritura sin romper el ciclo.
+
+**Consume:** datos ya presentes en `analytics.py` durante la apertura de trade.
+
+**Lo usan:** `analytics.py` y tests. Es base futura para Shadow Mode, Auto Optimizer, Replay, RL e IA, pero actualmente no participa en decisiones operativas.
+
 ## `trading/analytics_engine.py`
 
 **Proposito:** motor analitico pasivo e indice precalculado.

@@ -23,6 +23,7 @@ bot.py --------------------------+
    +--> trade_analytics.jsonl
    +--> decision_snapshots.jsonl
    +--> data/history/*.jsonl
+   +--> data/history/features.jsonl
    +--> data/history/stats.json
    +--> data/history/insights.json
    +--> data/history/timeline.jsonl
@@ -183,6 +184,8 @@ La pagina `Timeline` y el comando `/timeline` leen exclusivamente `data/history/
 
 La seccion `Inspeccionar Trade` y el endpoint `/api/trade/<id>` usan `trade_inspector.py` para reconstruir un trade desde `data/history/*.jsonl`, `timeline.jsonl` y `analytics_engine`. No consulta Binance, no depende de `state.json` y no participa en entradas/salidas.
 
+`feature_store.py` registra un vector rico por trade abierto en `data/history/features.jsonl`. Es una base pasiva para Shadow Mode, Auto Optimizer, Replay, RL e IA futura; actualmente no participa en estrategia, scoring, sizing, TP/SL ni ordenes.
+
 ## Flujo Healthcheck
 
 ```text
@@ -224,6 +227,7 @@ Estos scripts no abren ordenes ni cambian estrategia.
 | `config_loader.py` | Cargar `.env` y rutas sin requerir API en herramientas read-only | `.env` | `config`, dashboard, Telegram, tools |
 | `analytics.py` | Eventos JSONL, snapshots, export CSV y puente hacia historia pasiva | runtime config | `bot.py`, guardian, analizadores |
 | `history.py` | Memoria historica pasiva de trades, decisiones y snapshots | JSONL en `data/history/` | `analytics.py`, tests, futuras herramientas offline |
+| `feature_store.py` | Persistencia rica de features por trade abierto | `data/history/features.jsonl` | `analytics.py`, tests, futuras herramientas de aprendizaje |
 | `analytics_engine.py` | Indice estadistico pasivo precalculado desde historia JSONL | `data/history/*.jsonl`, `stats.json` | futuras consultas Telegram/dashboard, tests |
 | `insights_engine.py` | Conclusiones pasivas derivadas de estadisticas | `data/history/stats.json`, `insights.json` | Telegram, dashboard, tests |
 | `decision_timeline.py` | Timeline cronologico de decisiones y eventos operativos | `data/history/timeline.jsonl` | `bot.py`, `rebalance.py`, `longs.py`, `shorts.py`, `capital_manager.py`, `sl_guardian.py`, Telegram, dashboard |
@@ -246,6 +250,7 @@ Estos scripts no abren ordenes ni cambian estrategia.
 | `data/history/trades.jsonl` | JSONL append-only | Historia normalizada de aperturas/cierres |
 | `data/history/decisions.jsonl` | JSONL append-only | Contexto explicativo de decisiones |
 | `data/history/snapshots.jsonl` | JSONL append-only | Contexto de mercado/capital |
+| `data/history/features.jsonl` | JSONL append-only | Feature Store pasivo para aprendizaje futuro |
 | `data/history/stats.json` | JSON derivado | Indice precalculado de estadisticas; se puede reconstruir |
 | `data/history/insights.json` | JSON derivado | Conclusiones y alertas pasivas generadas desde `stats.json` |
 | `data/history/timeline.jsonl` | JSONL rotado | Timeline cronologico de eventos de decision y observabilidad |
@@ -260,10 +265,11 @@ La observabilidad actual tiene tres capas:
 1. **Estado actual:** `state.json` y `bot_state.json`.
 2. **Historico estructurado:** `trade_analytics.jsonl` y `decision_snapshots.jsonl`.
 3. **Memoria historica pasiva:** `data/history/trades.jsonl`, `data/history/decisions.jsonl`, `data/history/snapshots.jsonl`.
-4. **Decision Timeline:** `data/history/timeline.jsonl` para eventos compactos por ciclo, senal, sizing, rebalance, orden, proteccion, guardian, capital y analytics.
-5. **Insights derivados:** `data/history/insights.json` para conclusiones automaticas sobre rendimiento, riesgo, simbolos, direccion, regimen, tiempo y salidas.
-6. **Trade Inspector:** reconstruccion de trades individuales desde historia, decisiones, snapshots, timeline y analytics.
-7. **Interfaces read-only:** Telegram, dashboard, analyzers, healthcheck.
+4. **Feature Store:** `data/history/features.jsonl` con features de mercado, indicadores, scoring, capital, estado del bot y contexto de decision por apertura.
+5. **Decision Timeline:** `data/history/timeline.jsonl` para eventos compactos por ciclo, senal, sizing, rebalance, orden, proteccion, guardian, capital y analytics.
+6. **Insights derivados:** `data/history/insights.json` para conclusiones automaticas sobre rendimiento, riesgo, simbolos, direccion, regimen, tiempo y salidas.
+7. **Trade Inspector:** reconstruccion de trades individuales desde historia, decisiones, snapshots, timeline y analytics.
+8. **Interfaces read-only:** Telegram, dashboard, analyzers, healthcheck.
 
 ## Historical Persistence
 
@@ -282,6 +288,10 @@ analytics_engine.py
    +-- rebuild_statistics() -> data/history/stats.json
    +-- update_trade()       -> actualiza solo agregados afectados
    +-- get_*_stats()        -> lee solo stats.json
+
+feature_store.py
+   |
+   +-- record_trade_features() -> append en data/history/features.jsonl
 
 insights_engine.py
    |

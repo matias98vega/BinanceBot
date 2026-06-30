@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from config_loader import load_config
 import history
 import decision_timeline
+import feature_store
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -274,6 +275,43 @@ class AnalyticsLogger:
         except Exception as exc:
             import logging
             logging.warning('history trade open write failed: %s', exc)
+        self._record_feature_open(record, extra)
+
+    def _record_feature_open(self, record, extra):
+        try:
+            feature_store.record_trade_features(
+                trade_id=record.get('trade_id'),
+                timestamp=record.get('entry_time'),
+                symbol=record.get('symbol'),
+                side=record.get('side'),
+                wallet=extra.get('wallet'),
+                bot_version=extra.get('bot_version'),
+                market_regime=record.get('market_regime'),
+                btc_context=extra.get('btc_context') or {},
+                volatility=extra.get('volatility') or record.get('atr_pct'),
+                entry_price=record.get('entry_price'),
+                ema20=record.get('ema20'),
+                ema50=record.get('ema50'),
+                rsi=record.get('rsi'),
+                macd_hist=record.get('macd_hist'),
+                atr=record.get('atr'),
+                volume_ratio=record.get('volume_ratio'),
+                score=record.get('score'),
+                reasons=record.get('reject_reasons'),
+                open_reason=record.get('reject_reason'),
+                capital_used=record.get('capital_at_entry'),
+                position_final=record.get('capital_at_entry'),
+                quantity=extra.get('quantity'),
+                current_regime=record.get('market_regime'),
+                extra={
+                    'source': 'analytics_trade_open',
+                    'strategy_version': extra.get('strategy_version'),
+                    'btc_correlation': record.get('btc_correlation'),
+                },
+            )
+        except Exception as exc:
+            import logging
+            logging.warning('feature store trade open write failed: %s', exc)
 
     def _record_history_close(self, record, extra):
         try:

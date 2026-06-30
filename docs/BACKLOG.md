@@ -25,6 +25,7 @@ Este backlog agrupa trabajo pendiente. No implica autorizacion para modificar es
 | Validacion de freshness de `insights.json` vs `stats.json` | Media | Baja | Evitar conclusiones derivadas de estadisticas stale |
 | Enriquecer Trade Inspector con mas motivos de filtros | Media | Media | Explicar mejor rechazos y cambios relevantes |
 | Validar fallback Guardian tras rechazo de SL nativo | Media | Media | Confirmar proteccion software antes de clasificar alertas |
+| Validar completitud del Feature Store | Media | Media | Medir campos faltantes antes de usarlo en aprendizaje |
 
 ## UI
 
@@ -76,6 +77,7 @@ Este backlog agrupa trabajo pendiente. No implica autorizacion para modificar es
 | Item | Prioridad | Complejidad | Impacto esperado |
 |---|---|---:|---|
 | Dataset tabular desde analytics/snapshots | Media | Media | Base para investigacion offline |
+| Export tabular desde Feature Store | Media | Media | Preparar Shadow Mode, Replay y Auto Optimizer |
 | Migracion futura de JSONL historico a SQLite | Media | Media | Consultas mas rapidas sin cambiar el contrato de escritura |
 | Modelo offline de probabilidad TP/SL | Baja | Alta | Evaluar senal predictiva |
 | Feature importance de indicadores | Media | Media | Priorizar filtros utiles |
@@ -88,6 +90,8 @@ Este backlog agrupa trabajo pendiente. No implica autorizacion para modificar es
 | Ajustes por regimen solo en simulacion | Media | Alta | Evitar cambios live sin evidencia |
 | Cooldown dinamico por simbolo | Baja | Media | Ajustar proteccion a comportamiento historico |
 | Risk budget por drawdown reciente | Media | Alta | Gestion de riesgo mas profesional |
+| Shadow Mode sobre Feature Store | Media | Alta | Evaluar cambios sin tocar decisiones live |
+| Auto Optimizer offline | Baja | Alta | Sugerir parametros futuros usando evidencia historica |
 
 ## Testing
 

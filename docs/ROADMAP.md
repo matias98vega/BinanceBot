@@ -21,6 +21,7 @@ El sistema ya cuenta con:
 - Analytics append-only en `trading/analytics.py`.
 - Snapshots de decisiones en `trading/decision_snapshots.jsonl`.
 - Memoria historica pasiva en `data/history/*.jsonl`.
+- Feature Store pasivo en `data/history/features.jsonl`.
 - Analytics Engine pasivo con `data/history/stats.json`.
 - Insights Engine pasivo con `data/history/insights.json`.
 - Decision Timeline cronologico en `data/history/timeline.jsonl`.
@@ -39,6 +40,7 @@ El sistema ya cuenta con:
 | Mejorar diagnostico de errores Binance HTTP | Alta | Wrapper HTTP actual | Implementado parcialmente |
 | Profundizar tests de recovery Long Spot | Alta | Hardening OCO actual | Implementado base |
 | Consolidar memoria historica JSONL | Alta | `history.py` y analytics | Implementado base |
+| Construir Feature Store pasivo | Alta | Analytics de apertura | Implementado base |
 | Construir Analytics Engine pasivo | Alta | Historia JSONL | Implementado base |
 | Integrar Analytics Engine en Telegram | Alta | `stats.json` | Implementado base |
 | Construir Insights Engine pasivo | Alta | `stats.json` | Implementado base |
@@ -97,6 +99,7 @@ El sistema ya cuenta con:
 - Dashboard local con estado, trades, snapshots, health y metricas.
 - Analytics estructurada y snapshots de decisiones.
 - Persistencia historica JSONL de trades, decisiones y snapshots.
+- Feature Store append-only para futuras etapas de aprendizaje.
 - Estadisticas precalculadas en `data/history/stats.json`.
 - Insights precalculados en `data/history/insights.json`.
 - Timeline rotado de decisiones y eventos operativos en `data/history/timeline.jsonl`.
@@ -117,6 +120,7 @@ El sistema ya cuenta con:
 - UI visual avanzada para Decision Timeline en dashboard.
 - UI visual avanzada para Insights en dashboard.
 - UI visual avanzada para Trade Inspector en dashboard.
+- Validadores de calidad para Feature Store.
 - Auditoria state-vs-exchange antes de operar.
 - Backtesting offline.
 - Dataset historico local.
@@ -148,6 +152,7 @@ El sistema ya cuenta con:
 ## Ideas Futuras
 
 - Feature store offline basado en analytics y snapshots.
+- Shadow Mode, Auto Optimizer, Replay, RL e IA sobre Feature Store pasivo.
 - Simulador de ejecucion Binance con filtros reales.
 - Ranking de filtros por impacto historico.
 - Comparacion live-vs-backtest.
