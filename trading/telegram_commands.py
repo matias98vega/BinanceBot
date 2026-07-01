@@ -786,6 +786,28 @@ def _analytics_pnl_summary():
     }
 
 
+def _safe_count(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _live_open_positions_count():
+    metrics = _exposure_metrics()
+    return _safe_count(metrics.get('long_count')) + _safe_count(metrics.get('short_count'))
+
+
+def _stats_live_trade_counts(general):
+    closed = _safe_count((general or {}).get('closed_trades'))
+    opened = _live_open_positions_count()
+    return {
+        'total': closed + opened,
+        'opened': opened,
+        'closed': closed,
+    }
+
+
 def _timeline_category_label(category):
     return decision_timeline.CATEGORY_LABELS_ES.get(str(category or '').upper(), str(category or ''))
 
@@ -1235,11 +1257,12 @@ class StatsMenuPage(MenuPage):
     def render(self):
         stats, warning = _stats_payload()
         general = stats.get('general', {})
+        counts = _stats_live_trade_counts(general)
         lines = ['\U0001F4CA Estadisticas', '']
         lines.extend(_stats_warning_lines(warning))
         lines.extend([
-            f'Trades: {_fmt_count(general.get("total_trades"))}',
-            f'Cerrados: {_fmt_count(general.get("closed_trades"))}',
+            f'Trades: {_fmt_count(counts["total"])}',
+            f'Cerrados: {_fmt_count(counts["closed"])}',
             f'Win Rate: {_fmt_stat_pct(general.get("win_rate"))}',
             f'PnL total: {_fmt_pnl(general.get("pnl_total"))}',
             '',
@@ -1263,14 +1286,15 @@ class StatsGeneralPage(MenuPage):
     def render(self):
         stats, warning = _stats_payload()
         general = stats.get('general', {})
+        counts = _stats_live_trade_counts(general)
         best = general.get('best_trade') or {}
         worst = general.get('worst_trade') or {}
         lines = ['\U0001F4C8 Resumen General', '']
         lines.extend(_stats_warning_lines(warning))
         lines.extend([
-            f'Trades totales: {_fmt_count(general.get("total_trades"))}',
-            f'Abiertos: {_fmt_count(general.get("open_trades"))}',
-            f'Cerrados: {_fmt_count(general.get("closed_trades"))}',
+            f'Trades totales: {_fmt_count(counts["total"])}',
+            f'Abiertos: {_fmt_count(counts["opened"])}',
+            f'Cerrados: {_fmt_count(counts["closed"])}',
             '',
             f'Win: {_fmt_count(general.get("win"))}',
             f'Loss: {_fmt_count(general.get("loss"))}',

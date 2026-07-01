@@ -88,8 +88,33 @@ class TelegramStatsTests(unittest.TestCase):
             load_stats=lambda: stats or sample_stats(),
         )
 
+    def _metrics(self, long_count=0, short_count=0):
+        return {
+            'long_count': long_count,
+            'short_count': short_count,
+            'max_longs': 2,
+            'max_shorts': 2,
+            'total_real': 54.0,
+            'total_limit': 54.0,
+            'total_authorized': 54.0,
+            'spot_real': 26.9,
+            'spot_target': 26.9,
+            'spot_used': 8.4,
+            'spot_reserved': 0,
+            'futures_real': 27.1,
+            'futures_target': 27.1,
+            'futures_used': 18.2,
+            'futures_reserved': 0,
+            'rebalance': {},
+            'max_exposure_percent': 80.0,
+            'max_position_percent': None,
+            'warning': None,
+            'note': None,
+        }
+
     def test_stats_general_format(self):
-        with self._patch_stats():
+        with self._patch_stats(), \
+             patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics(long_count=1)):
             response = telegram_commands._render_page('stats_general')
 
         text = response['text']
@@ -109,7 +134,8 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertIn('PF N/A', text)
 
     def test_stats_missing_file_warns_and_uses_engine(self):
-        with self._patch_stats():
+        with self._patch_stats(), \
+             patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics(long_count=1)):
             response = telegram_commands._render_page('stats')
 
         self.assertIn('Stats no existia; reconstruido desde historial.', response['text'])
@@ -184,6 +210,69 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertIn('Spot: 8.40 USDT / 26.90 USDT', text)
         self.assertIn('Futures: 18.20 USDT / 27.10 USDT', text)
         self.assertNotIn('+99.00 USDT', text)
+
+    def test_stats_general_uses_live_open_positions_count(self):
+        stats = sample_stats()
+        stats['general']['closed_trades'] = 17
+        stats['general']['total_trades'] = 17
+        stats['general']['open_trades'] = 0
+
+        with patch.object(telegram_commands, '_stats_payload', return_value=(stats, None)), \
+             patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics(short_count=2)):
+            text = telegram_commands._render_page('stats_general')['text']
+
+        self.assertIn('Trades totales: 19', text)
+        self.assertIn('Abiertos: 2', text)
+        self.assertIn('Cerrados: 17', text)
+
+    def test_stats_general_zero_live_positions(self):
+        stats = sample_stats()
+        stats['general']['closed_trades'] = 17
+        stats['general']['total_trades'] = 17
+        stats['general']['open_trades'] = 4
+
+        with patch.object(telegram_commands, '_stats_payload', return_value=(stats, None)), \
+             patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics()):
+            text = telegram_commands._render_page('stats_general')['text']
+
+        self.assertIn('Trades totales: 17', text)
+        self.assertIn('Abiertos: 0', text)
+        self.assertIn('Cerrados: 17', text)
+
+    def test_home_and_stats_share_live_positions_source(self):
+        stats = sample_stats()
+        stats['general']['closed_trades'] = 17
+        metrics = self._metrics(short_count=2)
+
+        with patch.object(telegram_commands, '_stats_payload', return_value=(stats, None)), \
+             patch.object(telegram_commands, '_exposure_metrics', return_value=metrics), \
+             patch.object(telegram_commands, '_bot_state', return_value={'system': {'health': 'OK'}}), \
+             patch.object(telegram_commands, '_state', return_value={}), \
+             patch.object(telegram_commands, '_health_summary', return_value=('OK', [], [])), \
+             patch.object(telegram_commands, '_bot_status', return_value='ONLINE'), \
+             patch.object(telegram_commands, '_guardian_status', return_value='ONLINE'):
+            home = telegram_commands._render_page('home')['text']
+            stats_text = telegram_commands._render_page('stats_general')['text']
+
+        self.assertIn('Shorts: 2/2', home)
+        self.assertIn('Abiertos: 2', stats_text)
+
+    def test_live_open_positions_do_not_change_historical_stats(self):
+        stats = sample_stats()
+        stats['general']['closed_trades'] = 17
+        stats['general']['win_rate'] = 64.7
+        stats['general']['profit_factor'] = 1.85
+        stats['general']['expectancy'] = 0.73
+        stats['general']['pnl_total'] = 12.34
+
+        with patch.object(telegram_commands, '_stats_payload', return_value=(stats, None)), \
+             patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics(long_count=1, short_count=1)):
+            text = telegram_commands._render_page('stats_general')['text']
+
+        self.assertIn('Win Rate: 64.7%', text)
+        self.assertIn('Profit Factor: 1.85', text)
+        self.assertIn('Expectancy: +0.73 USDT', text)
+        self.assertIn('PnL total: +12.34 USDT', text)
 
     def test_insights_low_sample_suppresses_misleading_comparisons(self):
         stats = sample_stats()
