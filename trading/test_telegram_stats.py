@@ -41,11 +41,11 @@ def sample_stats():
             'SHORT': {'trades': 1, 'closed': 1, 'win_rate': 0, 'pnl_total': -5, 'profit_factor': 0, 'expectancy': -5, 'duration_average_minutes': 30},
         },
         'by_regime': {
-            'BULL': {'trades': 1, 'win_rate': 100, 'pnl_total': 10},
-            'BEAR': {'trades': 1, 'win_rate': 0, 'pnl_total': -5},
-            'SIDEWAYS': {'trades': 0, 'win_rate': 0, 'pnl_total': 0},
-            'NEUTRAL': {'trades': 0, 'win_rate': 0, 'pnl_total': 0},
-            'UNKNOWN': {'trades': 1, 'win_rate': 0, 'pnl_total': 0},
+            'bull': {'trades': 1, 'win_rate': 100, 'pnl_total': 10},
+            'bear': {'trades': 1, 'win_rate': 0, 'pnl_total': -5},
+            'sideways': {'trades': 0, 'win_rate': 0, 'pnl_total': 0},
+            'neutral': {'trades': 0, 'win_rate': 0, 'pnl_total': 0},
+            'unknown': {'trades': 1, 'win_rate': 0, 'pnl_total': 0},
         },
         'by_exit_reason': {
             'TP': {'closed': 1},
@@ -134,6 +134,16 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertIn('SL: 1 | 50.0%', exits)
         self.assertIn('2026-01-01: +10.00 USDT', temporal)
 
+    def test_stats_regimes_uses_canonical_labels(self):
+        with self._patch_stats():
+            text = telegram_commands._render_page('stats_regimes')['text']
+
+        self.assertIn('Bull: Trades 1', text)
+        self.assertIn('Bear: Trades 1', text)
+        self.assertIn('Sideways: Trades 0', text)
+        self.assertIn('Neutral: Trades 0', text)
+        self.assertIn('Unknown: Trades 1', text)
+
     def test_split_text_keeps_long_messages(self):
         chunks = telegram_commands._split_text('a\n' * 5000, limit=1000)
         self.assertGreater(len(chunks), 1)
@@ -181,7 +191,7 @@ class TelegramStatsTests(unittest.TestCase):
         stats['general']['closed'] = 1
         stats['by_symbol'] = {'ETHUSDT': {'closed': 1, 'pnl_total': 10}}
         stats['by_direction'] = {'LONG': {'closed': 1}, 'SHORT': {'closed': 0}}
-        stats['by_regime'] = {'BULL': {'closed': 1}}
+        stats['by_regime'] = {'bull': {'closed': 1}}
         stats['time'] = {'hour': {'14': {'closed': 1}}}
         insights = {
             'warnings': [],

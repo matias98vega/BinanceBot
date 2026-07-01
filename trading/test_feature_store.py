@@ -71,6 +71,8 @@ class FeatureStoreTests(unittest.TestCase):
         self.assertEqual(record['identification']['trade_id'], 't1')
         self.assertEqual(row['identification']['symbol'], 'ADAUSDT')
         self.assertEqual(row['identification']['direction'], 'SHORT')
+        self.assertEqual(row['market']['regime'], 'bear')
+        self.assertEqual(row['market']['btc_regime'], 'bearish')
         self.assertEqual(row['market']['hour_utc'], 12)
         self.assertEqual(row['market']['weekday'], 1)
 
@@ -92,6 +94,7 @@ class FeatureStoreTests(unittest.TestCase):
         )
 
         self.assertIsNone(record['identification']['direction'])
+        self.assertEqual(record['market']['regime'], 'unknown')
         self.assertIsNone(record['market']['btc_price'])
         self.assertIsNone(record['symbol_indicators']['ema200'])
         self.assertEqual(record['scoring']['reason_count'], 0)

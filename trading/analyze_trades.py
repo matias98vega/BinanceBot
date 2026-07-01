@@ -6,6 +6,7 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(__file__))
 from analytics import AnalyticsLogger
+import analytics_engine
 
 
 def _float(value, default=0.0):
@@ -65,7 +66,7 @@ def main():
     by_regime = defaultdict(list)
     for trade in trades:
         by_symbol[trade.get('symbol') or 'UNKNOWN'] += _float(trade.get('pnl_usdt'))
-        by_regime[trade.get('market_regime') or 'UNKNOWN'].append(trade)
+        by_regime[analytics_engine._trade_regime_value(trade)].append(trade)
 
     ranked = sorted(by_symbol.items(), key=lambda item: item[1], reverse=True)
 

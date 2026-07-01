@@ -49,6 +49,7 @@ class HistoryStoreTests(unittest.TestCase):
         self.assertEqual(record['trade_id'], 't1')
         self.assertEqual(record['wallet'], 'SPOT')
         self.assertEqual(record['capital_used'], 50.0)
+        self.assertEqual(record['regime'], 'bull')
 
     def test_record_trade_close_appends_and_marks_closed(self):
         self.store.record_trade_open(
@@ -139,7 +140,9 @@ class HistoryStoreTests(unittest.TestCase):
         snapshots = self._read_lines(self.store.snapshots_file)
         self.assertEqual(decisions[0]['event_type'], 'DECISION')
         self.assertEqual(decisions[0]['steps'][0], 'BTC bearish')
+        self.assertEqual(decisions[0]['regime'], 'unknown')
         self.assertEqual(snapshots[0]['event_type'], 'MARKET_SNAPSHOT')
+        self.assertEqual(snapshots[0]['regime'], 'bear')
         self.assertEqual(snapshots[0]['capital']['futures'], 40)
 
 

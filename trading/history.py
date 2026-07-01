@@ -84,6 +84,22 @@ def _normalise_exit_reason(reason):
     return mapping.get(value, value or None)
 
 
+def normalise_regime(value):
+    value = str(value or '').strip().lower()
+    mapping = {
+        'bullish': 'bull',
+        'bull': 'bull',
+        'bearish': 'bear',
+        'bear': 'bear',
+        'sideways': 'sideways',
+        'chop': 'sideways',
+        'range': 'sideways',
+        'neutral': 'neutral',
+        'neutro': 'neutral',
+    }
+    return mapping.get(value, 'unknown')
+
+
 def _bot_version():
     path = os.path.join(PROJECT_DIR, 'VERSION')
     try:
@@ -142,6 +158,7 @@ class HistoryStore:
             'rsi': _float_or_none(rsi),
             'volatility': _float_or_none(volatility),
             'btc_context': btc_context or {},
+            'regime': normalise_regime(market_regime or (btc_context or {}).get('trend') or (btc_context or {}).get('regime')),
             'market_regime': market_regime,
             'strategy_version': strategy_version or os.environ.get('STRATEGY_VERSION') or 'current',
             'bot_version': bot_version or _bot_version(),
@@ -229,6 +246,7 @@ class HistoryStore:
             'reason': reason,
             'steps': steps or [],
             'score': _float_or_none(score),
+            'regime': normalise_regime(market_regime or (btc_context or {}).get('trend') or (btc_context or {}).get('regime')),
             'market_regime': market_regime,
             'btc_context': btc_context or {},
             'details': details or {},
@@ -246,10 +264,12 @@ class HistoryStore:
 
     def record_snapshot(self, market=None, capital=None, exposure=None, positions=None,
                         max_positions=None, timestamp=None, details=None):
+        market_payload = market or {}
         record = {
             'event_type': 'MARKET_SNAPSHOT',
             'timestamp': _iso(timestamp),
-            'market': market or {},
+            'regime': normalise_regime(market_payload.get('regime') or market_payload.get('trend') or market_payload.get('btc_trend')),
+            'market': market_payload,
             'capital': capital or {},
             'exposure': exposure or {},
             'positions': positions or {},

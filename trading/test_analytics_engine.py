@@ -126,10 +126,106 @@ class AnalyticsEngineTests(unittest.TestCase):
         self.assertEqual(stats['by_symbol']['ETHUSDT']['pnl_total'], 10.0)
         self.assertEqual(stats['by_direction']['LONG']['win_rate'], 100.0)
         self.assertEqual(stats['by_direction']['SHORT']['win_rate'], 0.0)
-        self.assertEqual(stats['by_regime']['BULL']['pnl_total'], 10.0)
-        self.assertEqual(stats['by_regime']['BEAR']['pnl_total'], -5.0)
+        self.assertEqual(stats['by_regime']['bull']['pnl_total'], 10.0)
+        self.assertEqual(stats['by_regime']['bear']['pnl_total'], -5.0)
         self.assertEqual(stats['by_exit_reason']['TP']['closed'], 1)
         self.assertEqual(stats['by_exit_reason']['SL']['closed'], 1)
+
+    def test_regime_direct_field(self):
+        self.store._append(self.trades, {
+            'trade_id': 'direct',
+            'symbol': 'ETHUSDT',
+            'side': 'LONG',
+            'opened_at': '2026-01-01T00:00:00Z',
+            'closed_at': '2026-01-01T01:00:00Z',
+            'status': 'CLOSED',
+            'regime': 'bear',
+            'pnl_usdt': 1,
+        })
+
+        stats = self._rebuild()
+
+        self.assertEqual(stats['by_regime']['bear']['closed'], 1)
+        self.assertEqual(stats['by_regime']['unknown']['closed'], 0)
+
+    def test_regime_market_regime_legacy(self):
+        self.store._append(self.trades, {
+            'trade_id': 'legacy_market',
+            'symbol': 'ETHUSDT',
+            'side': 'LONG',
+            'status': 'CLOSED',
+            'market_regime': 'bullish',
+            'pnl_usdt': 1,
+        })
+
+        stats = self._rebuild()
+
+        self.assertEqual(stats['by_regime']['bull']['closed'], 1)
+
+    def test_regime_btc_regime_legacy(self):
+        self.store._append(self.trades, {
+            'trade_id': 'legacy_btc',
+            'symbol': 'ETHUSDT',
+            'side': 'LONG',
+            'status': 'CLOSED',
+            'btc_regime': 'BEAR',
+            'pnl_usdt': 1,
+        })
+
+        stats = self._rebuild()
+
+        self.assertEqual(stats['by_regime']['bear']['closed'], 1)
+
+    def test_regime_uppercase_bearish_normalizes(self):
+        self.store._append(self.trades, {
+            'trade_id': 'upper',
+            'symbol': 'ETHUSDT',
+            'side': 'LONG',
+            'status': 'CLOSED',
+            'market_regime': 'BEARISH',
+            'pnl_usdt': 1,
+        })
+
+        stats = self._rebuild()
+
+        self.assertEqual(stats['by_regime']['bear']['closed'], 1)
+
+    def test_missing_regime_is_unknown(self):
+        self.store._append(self.trades, {
+            'trade_id': 'missing',
+            'symbol': 'ETHUSDT',
+            'side': 'LONG',
+            'status': 'CLOSED',
+            'pnl_usdt': 1,
+        })
+
+        stats = self._rebuild()
+
+        self.assertEqual(stats['by_regime']['unknown']['closed'], 1)
+
+    def test_legacy_regimes_do_not_all_go_unknown(self):
+        self.store._append(self.trades, {
+            'trade_id': 'm1',
+            'symbol': 'ETHUSDT',
+            'side': 'LONG',
+            'status': 'CLOSED',
+            'market_regime': 'bullish',
+            'pnl_usdt': 1,
+        })
+        self.store._append(self.trades, {
+            'trade_id': 'm2',
+            'symbol': 'BTCUSDT',
+            'side': 'SHORT',
+            'status': 'CLOSED',
+            'btc_regime': 'bearish',
+            'pnl_usdt': 1,
+        })
+
+        stats = self._rebuild()
+
+        self.assertEqual(stats['by_regime']['bull']['closed'], 1)
+        self.assertEqual(stats['by_regime']['bear']['closed'], 1)
+        self.assertEqual(stats['by_regime']['unknown']['closed'], 0)
 
     def test_load_stats_missing_rebuilds(self):
         self._seed_closed_trades()

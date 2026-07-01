@@ -820,7 +820,7 @@ def _insufficient_insight_lines(stats):
     if _closed_count(directions.get('LONG')) < MIN_INSIGHT_SAMPLE or _closed_count(directions.get('SHORT')) < MIN_INSIGHT_SAMPLE:
         lines.append('Muestra insuficiente para comparar LONG vs SHORT.')
 
-    regimes = [bucket for name, bucket in (stats.get('by_regime') or {}).items() if name != 'UNKNOWN']
+    regimes = [bucket for name, bucket in (stats.get('by_regime') or {}).items() if str(name).lower() != 'unknown']
     if not _has_comparable_sample(regimes):
         lines.append('Muestra insuficiente para comparar regímenes.')
 
@@ -1335,11 +1335,11 @@ class StatsRegimesPage(MenuPage):
     def render(self):
         stats, warning = _stats_payload()
         data = stats.get('by_regime') or {}
-        labels = [('BULL', 'Bull'), ('BEAR', 'Bear'), ('SIDEWAYS', 'Sideways'), ('NEUTRAL', 'Neutral'), ('UNKNOWN', 'Unknown')]
+        labels = [('bull', 'Bull'), ('bear', 'Bear'), ('sideways', 'Sideways'), ('neutral', 'Neutral'), ('unknown', 'Unknown')]
         lines = ['\U0001F4C8 Por regimen', '']
         lines.extend(_stats_warning_lines(warning))
         for key, label in labels:
-            bucket = data.get(key, {})
+            bucket = data.get(key) or data.get(key.upper()) or {}
             lines.append(f'{label}: Trades {_fmt_count(bucket.get("trades"))} | WR {_fmt_stat_pct(bucket.get("win_rate"))} | PnL {_fmt_pnl(bucket.get("pnl_total"))}')
         return '\n'.join(lines)
 

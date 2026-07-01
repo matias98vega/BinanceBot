@@ -12,7 +12,7 @@ DEFAULT_STATS_FILE = os.path.join(history.DEFAULT_HISTORY_DIR, 'stats.json')
 
 EXIT_REASONS = ('TP', 'SL', 'TRAILING', 'PARTIAL', 'STALE', 'RECOVERY', 'EMERGENCY', 'MANUAL', 'UNKNOWN')
 DIRECTIONS = ('LONG', 'SHORT', 'UNKNOWN')
-REGIMES = ('BULL', 'BEAR', 'SIDEWAYS', 'NEUTRAL', 'UNKNOWN')
+REGIMES = ('bull', 'bear', 'sideways', 'neutral', 'unknown')
 
 
 def _empty_bucket():
@@ -149,16 +149,37 @@ def _normalise_exit_reason(value):
 
 
 def _normalise_regime(value):
-    value = str(value or '').lower()
-    if value in ('bull', 'bullish'):
-        return 'BULL'
-    if value in ('bear', 'bearish'):
-        return 'BEAR'
-    if value in ('sideways', 'chop', 'range'):
-        return 'SIDEWAYS'
-    if value in ('neutral', 'neutro'):
-        return 'NEUTRAL'
-    return 'UNKNOWN'
+    value = str(value or '').strip().lower()
+    mapping = {
+        'bull': 'bull',
+        'bullish': 'bull',
+        'bear': 'bear',
+        'bearish': 'bear',
+        'sideways': 'sideways',
+        'chop': 'sideways',
+        'range': 'sideways',
+        'neutral': 'neutral',
+        'neutro': 'neutral',
+    }
+    return mapping.get(value, 'unknown')
+
+
+def _trade_regime_value(trade):
+    if not isinstance(trade, dict):
+        return 'unknown'
+    for key in ('regime', 'market_regime', 'btc_regime', 'regime_at_entry', 'context_regime'):
+        value = trade.get(key)
+        if value not in (None, ''):
+            return _normalise_regime(value)
+    context = trade.get('context')
+    if isinstance(context, dict) and context.get('regime') not in (None, ''):
+        return _normalise_regime(context.get('regime'))
+    btc_context = trade.get('btc_context')
+    if isinstance(btc_context, dict):
+        for key in ('regime', 'trend'):
+            if btc_context.get(key) not in (None, ''):
+                return _normalise_regime(btc_context.get(key))
+    return 'unknown'
 
 
 def _result(pnl):
@@ -299,7 +320,7 @@ def _add_trade(stats, trade, mark_processed=True):
     status = str(trade.get('status') or '').upper()
     symbol = trade.get('symbol') or 'UNKNOWN'
     side = _normalise_direction(trade.get('side'))
-    regime = _normalise_regime(trade.get('market_regime'))
+    regime = _trade_regime_value(trade)
     trade_id = trade.get('trade_id')
 
     if trade_id:
@@ -308,6 +329,7 @@ def _add_trade(stats, trade, mark_processed=True):
             'trade_id': trade_id,
             'symbol': symbol,
             'side': side,
+            'regime': regime,
             'market_regime': trade.get('market_regime'),
             'opened_at': trade.get('opened_at'),
             'entry_price': trade.get('entry_price'),
@@ -572,7 +594,7 @@ def _convert_bucket_open_to_closed(bucket):
 def _convert_open_to_closed(stats, trade):
     symbol = trade.get('symbol') or 'UNKNOWN'
     side = _normalise_direction(trade.get('side'))
-    regime = _normalise_regime(trade.get('market_regime'))
+    regime = _trade_regime_value(trade)
     _convert_bucket_open_to_closed(stats['general'])
     for bucket in (
         stats.get('by_symbol', {}).get(symbol),

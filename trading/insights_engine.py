@@ -231,7 +231,7 @@ def _add_direction_insights(target, stats):
 
 def _add_regime_insights(target, stats):
     regimes = stats.get('by_regime') or {}
-    items = [(name, bucket) for name, bucket in regimes.items() if name != 'UNKNOWN']
+    items = [(name, bucket) for name, bucket in regimes.items() if str(name).lower() != 'unknown']
     best = _best(items, 'pnl_total')
     worst = _worst(items, 'pnl_total')
     if best[0]:

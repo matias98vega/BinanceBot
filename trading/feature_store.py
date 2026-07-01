@@ -102,6 +102,22 @@ def _btc_value(ctx, *keys):
     return None
 
 
+def _normalise_regime(value):
+    value = str(value or '').strip().lower()
+    mapping = {
+        'bullish': 'bull',
+        'bull': 'bull',
+        'bearish': 'bear',
+        'bear': 'bear',
+        'sideways': 'sideways',
+        'chop': 'sideways',
+        'range': 'sideways',
+        'neutral': 'neutral',
+        'neutro': 'neutral',
+    }
+    return mapping.get(value, 'unknown')
+
+
 def _record_from_kwargs(kwargs):
     timestamp = kwargs.get('timestamp') or kwargs.get('entry_time') or kwargs.get('opened_at') or _now_iso()
     dt = _parse_dt(timestamp)
@@ -123,6 +139,7 @@ def _record_from_kwargs(kwargs):
     ema20 = kwargs.get('ema20')
     ema50 = kwargs.get('ema50')
     ema200 = kwargs.get('ema200')
+    regime = _normalise_regime(kwargs.get('regime') or kwargs.get('market_regime') or _btc_value(btc_context, 'trend', 'regime'))
 
     return {
         'schema_version': 1,
@@ -136,6 +153,7 @@ def _record_from_kwargs(kwargs):
             'bot_version': kwargs.get('bot_version'),
         },
         'market': {
+            'regime': regime,
             'btc_regime': kwargs.get('market_regime') or _btc_value(btc_context, 'trend', 'regime'),
             'btc_price': _float_or_none(_btc_value(btc_context, 'btc_price', 'price')),
             'btc_change_4h': _float_or_none(_btc_value(btc_context, 'btc_change_4h', 'change_4h', 'btc_change_4h')),
@@ -187,7 +205,7 @@ def _record_from_kwargs(kwargs):
             'active_cooldowns': kwargs.get('active_cooldowns'),
             'guardian_active': kwargs.get('guardian_active'),
             'directional_mode': kwargs.get('directional_mode'),
-            'current_regime': kwargs.get('current_regime') or kwargs.get('market_regime'),
+            'current_regime': _normalise_regime(kwargs.get('current_regime') or kwargs.get('market_regime')),
         },
         'decision_context': {
             'open_reason': kwargs.get('open_reason') or kwargs.get('reject_reason'),

@@ -54,9 +54,9 @@ class InsightsEngineTests(unittest.TestCase):
                 'SHORT': bucket(trades=8, closed=8, win=6, loss=2, pnl=6.5, win_rate=75.0, pf=2.4, expectancy=0.81),
             },
             'by_regime': {
-                'BULL': bucket(trades=5, closed=5, win=3, loss=2, pnl=2.0, win_rate=60, pf=1.5, expectancy=0.4),
-                'BEAR': bucket(trades=6, closed=6, win=4, loss=2, pnl=4.0, win_rate=66.7, pf=2.0, expectancy=0.67),
-                'SIDEWAYS': bucket(trades=3, closed=3, win=1, loss=2, pnl=-1.5, win_rate=33.3, pf=0.5, expectancy=-0.5),
+                'bull': bucket(trades=5, closed=5, win=3, loss=2, pnl=2.0, win_rate=60, pf=1.5, expectancy=0.4),
+                'bear': bucket(trades=6, closed=6, win=4, loss=2, pnl=4.0, win_rate=66.7, pf=2.0, expectancy=0.67),
+                'sideways': bucket(trades=3, closed=3, win=1, loss=2, pnl=-1.5, win_rate=33.3, pf=0.5, expectancy=-0.5),
             },
             'by_exit_reason': {
                 'TP': bucket(trades=5, closed=5),
