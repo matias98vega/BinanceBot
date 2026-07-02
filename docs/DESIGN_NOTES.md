@@ -74,6 +74,20 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Mejoras futuras:** eliminar `BOT_MAX_POSITION_PERCENT` cuando no quede compatibilidad pendiente.
 
+## Capital Ledger
+
+**Problema:** el capital total puede cambiar por depositos, retiros, rebalanceos internos, comisiones o funding. Si esos movimientos se mezclan con PnL, un deposito manual podria parecer rendimiento de trading.
+
+**Alternativas consideradas:** corregir PnL directamente en Analytics, inferir depositos por diferencias de balance, o crear una capa contable separada.
+
+**Solucion actual:** `capital_ledger.py` introduce `data/history/capital_ledger.jsonl` como ledger append-only de movimientos de capital. Registra tipos explicitos como `external_deposit`, `external_withdrawal`, `rebalance`, `realized_pnl`, `commission` y `funding_fee`, con API dedicada para escribir y leer sin acoplar el resto del bot al formato JSONL.
+
+**Ventajas:** separa rendimiento operativo de flujos externos, mantiene auditoria cronologica y deja preparada la base para calcular PnL ajustado sin cambiar metricas actuales.
+
+**Desventajas:** esta primera etapa no detecta depositos automaticamente; requiere registros explicitos o integraciones futuras.
+
+**Mejoras futuras:** reconciliar balances contra Binance, registrar comisiones/funding desde eventos reales y exponer PnL ajustado en Analytics/Telegram una vez validada la contabilidad.
+
 ## Scoring
 
 **Problema:** seleccionar candidatos con multiples senales sin cambiar manualmente cada ciclo.
