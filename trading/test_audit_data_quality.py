@@ -109,10 +109,48 @@ class AuditDataQualityTests(unittest.TestCase):
 
         report = audit_data_quality.audit_project(self.project)
 
-        self.assertTrue(any('cierre sin apertura previa' in item for item in report.errors))
+        self.assertTrue(any('cierre total sin apertura previa' in item for item in report.errors))
         self.assertTrue(any('pnl_usdt faltante' in item for item in report.errors))
         self.assertTrue(any('side invalido' in item for item in report.errors))
         self.assertTrue(any('duration negativa' in item for item in report.errors))
+        text = audit_data_quality.format_report(report)
+        self.assertIn('Ejemplos de errores criticos', text)
+        self.assertIn('line=1', text)
+        self.assertIn('trade_id=t1', text)
+
+    def test_partial_close_with_base_trade_existing_is_warning_not_critical(self):
+        self.valid_bot_state()
+        self.write_jsonl('trading/decision_snapshots.jsonl', [{'timestamp': '2026-01-01T00:00:00Z'}])
+        self.write_jsonl('data/history/trades.jsonl', [
+            {
+                'timestamp': '2026-01-01T00:00:00Z',
+                'event_type': 'TRADE_OPEN',
+                'trade_id': 'short_WLDUSDT_1782763085',
+                'symbol': 'WLDUSDT',
+                'side': 'SHORT',
+                'status': 'OPEN',
+                'entry_price': 1.2,
+            },
+            {
+                'timestamp': '2026-01-01T00:05:00Z',
+                'event_type': 'TRADE_CLOSE',
+                'trade_id': 'short_WLDUSDT_1782763085:partial',
+                'symbol': 'WLDUSDT',
+                'side': 'SHORT',
+                'status': 'CLOSED',
+                'exit_price': 1.1,
+                'pnl_usdt': 0.5,
+            },
+        ])
+        self.write_jsonl('trading/trade_analytics.jsonl', [])
+
+        report = audit_data_quality.audit_project(self.project)
+        text = audit_data_quality.format_report(report)
+
+        self.assertFalse(any('short_WLDUSDT_1782763085:partial' in item for item in report.errors))
+        self.assertTrue(any('cierre parcial sin apertura exacta' in item for item in report.warnings))
+        self.assertIn('Posibles falsos positivos', text)
+        self.assertIn('short_WLDUSDT_1782763085:partial', text)
 
     def test_feature_store_validations_and_trade_relation(self):
         self.valid_bot_state()
@@ -174,6 +212,26 @@ class AuditDataQualityTests(unittest.TestCase):
         self.assertTrue(any('market.regime faltante' in item for item in report.warnings))
         self.assertTrue(any('posiciones short actuales superan max' in item for item in report.warnings))
 
+    def test_bot_state_btc_aliases_are_accepted(self):
+        self.write_json('trading/bot_state.json', {
+            'market': {
+                'trend': 'bearish',
+                'price': 60000,
+                'change_4h': -1.2,
+                'directional_mode': True,
+            },
+            'capital': {'spot_real': 2, 'spot_used': 1},
+            'positions': {},
+        })
+        self.write_jsonl('trading/decision_snapshots.jsonl', [{'timestamp': '2026-01-01T00:00:00Z'}])
+        self.write_jsonl('trading/trade_analytics.jsonl', [])
+
+        report = audit_data_quality.audit_project(self.project)
+
+        self.assertFalse(any('market.regime faltante' in item for item in report.warnings))
+        self.assertFalse(any('market.btc_price faltante' in item for item in report.warnings))
+        self.assertFalse(any('market.btc_change_4h faltante' in item for item in report.warnings))
+
     def test_rebalance_pending_validations(self):
         self.minimal_runtime_files()
         self.write_json('data/history/rebalance_status.json', {
@@ -187,6 +245,24 @@ class AuditDataQualityTests(unittest.TestCase):
         self.assertTrue(any('pending=true sin pending_reason' in item for item in report.errors))
         self.assertTrue(any('pending=true con attempts=0 sin blocked_reason' in item for item in report.errors))
         self.assertTrue(any('error Binance sin last_http_status' in item for item in report.warnings))
+
+    def test_rebalance_without_binance_error_does_not_require_http_details(self):
+        self.minimal_runtime_files()
+        self.write_json('data/history/rebalance_status.json', {
+            'pending': True,
+            'attempts': 0,
+            'pending_reason': 'Pendiente por shorts activos',
+            'blocked_reason': 'active_shorts',
+            'last_check': '2026-01-01T00:00:00Z',
+            'direction': 'FUTURES_TO_SPOT',
+            'amount': 22.16,
+        })
+
+        report = audit_data_quality.audit_project(self.project)
+
+        self.assertFalse(any('error Binance sin last_http_status' in item for item in report.warnings))
+        self.assertFalse(any('error Binance sin last_binance_code' in item for item in report.warnings))
+        self.assertFalse(any('error Binance sin last_raw_body' in item for item in report.warnings))
 
     def test_format_report_and_main_exit_codes(self):
         self.minimal_runtime_files()
