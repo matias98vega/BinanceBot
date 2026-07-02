@@ -588,13 +588,13 @@ def _direction_label(direction):
 def _market_regime_label(value):
     key = str(value or 'unknown').lower()
     labels = {
-        'bull': 'Alcista',
-        'bullish': 'Alcista',
-        'bear': 'Bajista',
-        'bearish': 'Bajista',
-        'sideways': 'Lateral',
+        'bull': 'Bull',
+        'bullish': 'Bull',
+        'bear': 'Bear',
+        'bearish': 'Bear',
+        'sideways': 'Sideways',
         'neutral': 'Neutral',
-        'unknown': 'No disponible',
+        'unknown': 'Unknown',
     }
     icons = {
         'bull': '\U0001F7E2',
@@ -608,10 +608,46 @@ def _market_regime_label(value):
     return icons.get(key, '\u26AA'), labels.get(key, str(value or 'No disponible').capitalize())
 
 
-def _current_market_regime(snapshot=None):
+def _market_info(snapshot=None):
     data = snapshot if isinstance(snapshot, dict) else _bot_state()
     market_info = data.get('market') if isinstance(data.get('market'), dict) else {}
-    return _market_regime_label(market_info.get('regime'))
+    return market_info
+
+
+def _current_market_regime(snapshot=None):
+    return _market_regime_label(_market_info(snapshot).get('regime'))
+
+
+def _fmt_signed_pct(value):
+    try:
+        return f'{float(value):+.2f}%'
+    except (TypeError, ValueError):
+        return 'No disponible'
+
+
+def _fmt_usd_price(value):
+    try:
+        return f'${float(value):,.2f}'
+    except (TypeError, ValueError):
+        return 'No disponible'
+
+
+def _market_summary_lines(snapshot=None):
+    market_info = _market_info(snapshot)
+    regime_icon, regime_label = _market_regime_label(market_info.get('regime'))
+    directional = market_info.get('directional_mode')
+    if directional is True:
+        directional_label = 'Activo'
+    elif directional is False:
+        directional_label = 'Inactivo'
+    else:
+        directional_label = 'No disponible'
+    return [
+        f'{regime_icon} Régimen actual: {regime_label}',
+        f'BTC 4h: {_fmt_signed_pct(market_info.get("btc_change_4h"))}',
+        f'BTC precio: {_fmt_usd_price(market_info.get("btc_price"))}',
+        f'Modo direccional: {directional_label}',
+    ]
 
 
 def _rebalance_reason_lines(rebalance):
@@ -624,7 +660,7 @@ def _rebalance_reason_lines(rebalance):
         lines.append(f'Bloqueo: {blocked_reason}')
     http_status = rebalance.get('last_http_status')
     code = rebalance.get('last_binance_code')
-    message = rebalance.get('last_message')
+    message = rebalance.get('last_message') or rebalance.get('last_error')
     if http_status or code is not None or message:
         if http_status:
             lines.append(f'HTTP {http_status}')
@@ -1000,14 +1036,15 @@ class HomePage(MenuPage):
         bot = _bot_status()
         guardian = _guardian_status()
         metrics = _exposure_metrics()
-        regime_icon, regime_label = _current_market_regime(snapshot)
         max_longs = _display_capacity(metrics["long_count"], metrics["max_longs"])
         max_shorts = _display_capacity(metrics["short_count"], metrics["max_shorts"])
         lines = [
             f'{_status_icon(bot)} Bot: {bot}',
             f'{_status_icon(guardian)} Guardian: {guardian}',
             f'\u2764\ufe0f Healthcheck: {health}',
-            f'{regime_icon} Regimen: {regime_label}',
+            '',
+            'Mercado:',
+            *_market_summary_lines(snapshot),
             '',
             f'PnL hoy: {_fmt_pnl(pnl.get("today"))}',
             f'PnL total: {_fmt_pnl(pnl.get("total"))}',
@@ -1040,12 +1077,16 @@ class CapitalPage(MenuPage):
 
     def render(self):
         metrics = _exposure_metrics()
+        snapshot = _bot_state()
         max_exposure = metrics.get('max_exposure_percent')
         max_position = metrics.get('max_position_percent')
         rebalance = metrics.get('rebalance') or {}
         direction_label = _direction_label(rebalance.get('direction'))
         lines = [
             '\U0001F4B0 Capital',
+            '',
+            'Mercado:',
+            *_market_summary_lines(snapshot),
             '',
             'Total:',
             f'Real: {_fmt_money(metrics["total_real"])}',
@@ -1141,14 +1182,13 @@ class DiagnosticsPage(MenuPage):
         metrics = _exposure_metrics()
         rebalance = diagnostics.get('rebalance') or {}
         direction_label = _direction_label(rebalance.get('direction'))
-        regime_icon, regime_label = _current_market_regime()
         max_longs = _display_capacity(metrics["long_count"], metrics["max_longs"])
         max_shorts = _display_capacity(metrics["short_count"], metrics["max_shorts"])
         return '\n'.join([
             '\U0001FA7A Diagnostico',
             '',
             'Mercado:',
-            f'{regime_icon} Regimen: {regime_label}',
+            *_market_summary_lines(),
             '',
             'Capacidad',
             '',

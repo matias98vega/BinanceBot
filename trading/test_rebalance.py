@@ -102,6 +102,7 @@ class RebalanceDiagnosticsTests(unittest.TestCase):
         self.assertEqual(saved['last_http_status'], 400)
         self.assertEqual(saved['last_binance_code'], -2010)
         self.assertEqual(saved['last_message'], 'Insufficient balance')
+        self.assertEqual(saved['last_error'], 'Insufficient balance')
         self.assertIn('Insufficient balance', saved['last_raw_body'])
         self.assertEqual(details['payload']['amount'], '26.94')
         timeline.assert_called()
@@ -110,6 +111,7 @@ class RebalanceDiagnosticsTests(unittest.TestCase):
         self.assertIn('intento #1', args[1])
         self.assertIn('Insufficient balance', args[1])
         self.assertEqual(kwargs['details']['attempts'], 1)
+        self.assertEqual(kwargs['details']['reason'], 'Insufficient balance')
         self.assertEqual(kwargs['details']['binance_code'], -2010)
 
     def test_failure_attempts_increment(self):
@@ -144,6 +146,23 @@ class RebalanceDiagnosticsTests(unittest.TestCase):
         args, kwargs = timeline.call_args
         self.assertEqual(args[0], 'rebalance_blocked')
         self.assertEqual(kwargs['details']['attempts'], 0)
+
+    def test_pending_created_event_without_block(self):
+        with patch.object(rebalance.decision_timeline, 'record_rebalance_event') as timeline:
+            rebalance._record_rebalance_pending_check(
+                'FUTURES_TO_SPOT',
+                22.16,
+                'Capital aun fuera de tolerancia de alineacion',
+                context={'spot_real': 27.1, 'futures_real': 26.9, 'target_spot': 49.26, 'target_futures': 4.74},
+            )
+
+        saved = self.read_status()
+        self.assertTrue(saved['pending'])
+        self.assertEqual(saved['pending_reason'], 'Capital aun fuera de tolerancia de alineacion')
+        args, kwargs = timeline.call_args
+        self.assertEqual(args[0], 'rebalance_pending_created')
+        self.assertEqual(kwargs['details']['reason'], 'Capital aun fuera de tolerancia de alineacion')
+        self.assertEqual(kwargs['details']['spot_real'], 27.1)
 
     def test_clear_rebalance_status_after_success(self):
         with patch.object(rebalance.decision_timeline, 'record_rebalance_event'):
@@ -207,6 +226,24 @@ class RebalanceDiagnosticsTests(unittest.TestCase):
         self.assertIn('HTTP 400', text)
         self.assertIn('code=-2010', text)
         self.assertIn('Insufficient balance', text)
+
+    def test_rebalance_attempt_event_is_recorded_before_transfer(self):
+        fake = FakeBinance([{'tranId': 1}])
+        with patch.object(rebalance, 'BINANCE', fake), \
+             patch.object(rebalance.decision_timeline, 'record_rebalance_event') as timeline:
+            ok, amount, meta = rebalance._transfer_with_recovery(
+                'FUTURES_TO_SPOT',
+                22.16,
+                context={'spot_real': 27.1, 'futures_real': 26.9, 'target_spot': 49.26, 'target_futures': 4.74},
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(amount, 22.16)
+        self.assertEqual(meta['attempts'], 1)
+        self.assertEqual(fake.calls[0][2]['amount'], '22.16')
+        self.assertEqual(timeline.call_args_list[0].args[0], 'rebalance_attempt')
+        self.assertEqual(timeline.call_args_list[0].kwargs['details']['amount'], 22.16)
+        self.assertEqual(timeline.call_args_list[0].kwargs['details']['target_spot'], 49.26)
 
     def test_telegram_capital_shows_pending_without_attempt_reason(self):
         metrics = {
@@ -413,7 +450,10 @@ class RebalanceDiagnosticsTests(unittest.TestCase):
         self.assertIsNone(resolved)
         self.assertTrue(saved['pending'])
         self.assertEqual(saved['last_binance_code'], -5013)
-        timeline.assert_not_called()
+        timeline.assert_called_once()
+        args, kwargs = timeline.call_args
+        self.assertEqual(args[0], 'rebalance_pending_check')
+        self.assertEqual(kwargs['details']['diff_futures'], 4.0)
 
     def test_reconciliation_does_not_change_targets(self):
         with patch.object(rebalance.decision_timeline, 'record_rebalance_event'):

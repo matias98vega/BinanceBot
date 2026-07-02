@@ -312,6 +312,7 @@ def _build_rebalance_diagnostics(spot_real, futures_real, spot_target, futures_t
             'last_http_status': status.get('last_http_status'),
             'last_binance_code': status.get('last_binance_code'),
             'last_message': status.get('last_message'),
+            'last_error': status.get('last_error'),
             'last_raw_body': status.get('last_raw_body'),
             'buffer_applied': status.get('buffer_applied'),
             'requested_amount': status.get('requested_amount'),
@@ -741,6 +742,8 @@ def build_bot_state(
         'timezone': 'America/Montevideo',
         'market': {
             'regime': btc_ctx.get('trend') if isinstance(btc_ctx, dict) else 'unknown',
+            'btc_price': _round_or_none(btc_ctx.get('btc_price'), 4) if isinstance(btc_ctx, dict) else None,
+            'btc_change_4h': _round_or_none(btc_ctx.get('change_4h'), 4) if isinstance(btc_ctx, dict) else None,
             'directional_mode': getattr(config, 'DIRECTIONAL_MODE', None),
             'force_mode': btc_ctx.get('force_mode') if isinstance(btc_ctx, dict) else None,
         },

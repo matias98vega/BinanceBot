@@ -183,7 +183,7 @@ class TelegramStatsTests(unittest.TestCase):
         bot_snapshot = {
             'system': {'health': 'OK', 'last_execution': '2026-01-01T12:00:00Z'},
             'pnl': {'today': 99, 'total': 99},
-            'market': {'regime': 'bearish'},
+            'market': {'regime': 'bearish', 'btc_change_4h': -1.23, 'btc_price': 61234.56, 'directional_mode': True},
             'capital': {
                 'spot_real': 26.9,
                 'spot_target': 25.0,
@@ -208,10 +208,42 @@ class TelegramStatsTests(unittest.TestCase):
 
         self.assertIn('PnL hoy: +1.23 USDT', text)
         self.assertIn('PnL total: +12.34 USDT', text)
-        self.assertIn('Regimen: Bajista', text)
+        self.assertIn('Régimen actual: Bear', text)
+        self.assertIn('BTC 4h: -1.23%', text)
+        self.assertIn('BTC precio: $61,234.56', text)
+        self.assertIn('Modo direccional: Activo', text)
         self.assertIn('Spot: 8.40 USDT / 26.90 USDT', text)
         self.assertIn('Futures: 18.20 USDT / 27.10 USDT', text)
         self.assertNotIn('+99.00 USDT', text)
+
+    def test_capital_market_regime_fallback_when_missing(self):
+        with patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics()), \
+             patch.object(telegram_commands, '_bot_state', return_value={}):
+            text = telegram_commands._render_page('capital')['text']
+
+        self.assertIn('Mercado:', text)
+        self.assertIn('Régimen actual: Unknown', text)
+        self.assertIn('BTC 4h: No disponible', text)
+        self.assertIn('BTC precio: No disponible', text)
+        self.assertIn('Modo direccional: No disponible', text)
+
+    def test_capital_shows_current_market_regime(self):
+        snapshot = {
+            'market': {
+                'regime': 'bullish',
+                'btc_change_4h': 2.5,
+                'btc_price': 70000,
+                'directional_mode': False,
+            }
+        }
+        with patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics()), \
+             patch.object(telegram_commands, '_bot_state', return_value=snapshot):
+            text = telegram_commands._render_page('capital')['text']
+
+        self.assertIn('Régimen actual: Bull', text)
+        self.assertIn('BTC 4h: +2.50%', text)
+        self.assertIn('BTC precio: $70,000.00', text)
+        self.assertIn('Modo direccional: Inactivo', text)
 
     def test_stats_general_uses_live_open_positions_count(self):
         stats = sample_stats()

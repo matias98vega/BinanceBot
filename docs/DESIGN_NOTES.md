@@ -22,7 +22,7 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Alternativas consideradas:** duplicar calculos en cada pagina, leer siempre `bot_state.json`, o usar los indices pasivos ya existentes como fuente de presentacion.
 
-**Solucion actual:** Home usa Analytics Engine como fuente unica visible para PnL, igual que Estadisticas. Estadisticas combina Analytics para metricas historicas/cerradas con el estado vivo del bot para posiciones abiertas; "Abiertos" representa posiciones activas actuales, no trades historicos abiertos. Timeline conserva categorias tecnicas en JSONL pero presenta etiquetas localizadas al usuario. Insights filtra conclusiones comparativas cuando la muestra es baja y muestra mensajes de muestra insuficiente.
+**Solucion actual:** Home usa Analytics Engine como fuente unica visible para PnL, igual que Estadisticas. Estadisticas combina Analytics para metricas historicas/cerradas con el estado vivo del bot para posiciones abiertas; "Abiertos" representa posiciones activas actuales, no trades historicos abiertos. Home, Capital y Diagnostico muestran el regimen actual, BTC 4h, precio BTC y modo direccional leyendo `bot_state.market`, sin recalcular contexto ni tocar decisiones. Timeline conserva categorias tecnicas en JSONL pero presenta etiquetas localizadas al usuario. Insights filtra conclusiones comparativas cuando la muestra es baja y muestra mensajes de muestra insuficiente.
 
 **Ventajas:** reduce contradicciones visuales y evita conclusiones prematuras con pocos trades.
 

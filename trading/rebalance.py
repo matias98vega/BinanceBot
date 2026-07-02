@@ -191,6 +191,7 @@ def _record_rebalance_pending_check(direction, amount, pending_reason, blocked_r
         'last_http_status': previous.get('last_http_status') if same_direction else None,
         'last_binance_code': previous.get('last_binance_code') if same_direction else None,
         'last_message': previous.get('last_message') if same_direction else pending_reason,
+        'last_error': previous.get('last_error') if same_direction else None,
         'last_raw_body': previous.get('last_raw_body') if same_direction else None,
     }
     if isinstance(context, dict):
@@ -200,9 +201,12 @@ def _record_rebalance_pending_check(direction, amount, pending_reason, blocked_r
         'REBALANCE PENDING CHECK status=%s direction=%s amount=%s attempts=%s pending_reason=%s blocked_reason=%s context=%s',
         status, _direction_arrow(effective_direction), effective_amount, attempts, pending_reason, blocked_reason, context or {},
     )
+    event_name = 'rebalance_blocked' if blocked_reason else 'rebalance_pending_created'
+    if previous.get('pending') and not blocked_reason:
+        event_name = 'rebalance_pending_check'
     try:
         decision_timeline.record_rebalance_event(
-            'rebalance_blocked' if blocked_reason else 'rebalance_pending_check',
+            event_name,
             (
                 f'{_direction_arrow(effective_direction)} pendiente: {pending_reason}'
                 + (f' | bloqueo={blocked_reason}' if blocked_reason else '')
@@ -212,6 +216,7 @@ def _record_rebalance_pending_check(direction, amount, pending_reason, blocked_r
                 'direction': effective_direction,
                 'amount': _safe_float(effective_amount),
                 'attempts': attempts,
+                'reason': pending_reason,
                 'pending_reason': pending_reason,
                 'blocked_reason': blocked_reason,
                 'last_check': now,
@@ -221,6 +226,27 @@ def _record_rebalance_pending_check(direction, amount, pending_reason, blocked_r
     except Exception:
         pass
     return payload
+
+
+def _record_rebalance_attempt(direction, amount, attempt, context=None):
+    logging.warning(
+        'REBALANCE ATTEMPT direction=%s amount=%s attempt=%s context=%s',
+        _direction_arrow(direction), amount, attempt, context or {},
+    )
+    try:
+        decision_timeline.record_rebalance_event(
+            'rebalance_attempt',
+            f'{_direction_arrow(direction)} intento #{attempt}: {float(amount):.2f} USDT',
+            level='INFO',
+            details={
+                'direction': direction,
+                'amount': _safe_float(amount),
+                'attempts': attempt,
+                **(context or {}),
+            },
+        )
+    except Exception:
+        pass
 
 
 def _record_rebalance_failure(direction, amount, error, payload, extra=None):
@@ -244,6 +270,7 @@ def _record_rebalance_failure(direction, amount, error, payload, extra=None):
         'last_http_status': details.get('status'),
         'last_binance_code': details.get('code'),
         'last_message': details.get('msg') or str(error),
+        'last_error': details.get('msg') or str(error),
         'last_raw_body': details.get('raw_body'),
         'endpoint': details.get('endpoint'),
         'method': details.get('method'),
@@ -277,6 +304,7 @@ def _record_rebalance_failure(direction, amount, error, payload, extra=None):
                 'direction': direction,
                 'amount': _safe_float(amount),
                 'attempts': attempts,
+                'reason': details.get('msg') or str(error),
                 'http_status': details.get('status'),
                 'binance_code': details.get('code'),
                 'binance_msg': details.get('msg'),
@@ -312,6 +340,21 @@ def reconcile_rebalance_status_if_aligned(spot_actual, fut_actual, target_spot, 
         target_spot, target_fut, spot_actual, fut_actual, diff_spot, diff_fut, tol, aligned,
     )
     if not aligned:
+        _record_rebalance_pending_check(
+            status.get('direction'),
+            status.get('amount'),
+            'Capital aun fuera de tolerancia de alineacion',
+            context={
+                'spot_real': _safe_float(spot_actual),
+                'futures_real': _safe_float(fut_actual),
+                'target_spot': _safe_float(target_spot),
+                'target_futures': _safe_float(target_fut),
+                'diff_spot': _safe_float(diff_spot),
+                'diff_futures': _safe_float(diff_fut),
+                'tolerance': _safe_float(tol),
+            },
+            only_existing=True,
+        )
         return None
 
     now = _now_iso()
@@ -426,7 +469,7 @@ def _record_rebalance_recovered(direction, original_amount, final_amount, buffer
         pass
 
 
-def _transfer_with_recovery(direction, calculated_amount):
+def _transfer_with_recovery(direction, calculated_amount, context=None):
     buffer = _transfer_buffer()
     attempt_1 = round(float(calculated_amount or 0), 2)
     if attempt_1 <= 0:
@@ -437,6 +480,7 @@ def _transfer_with_recovery(direction, calculated_amount):
         'REBALANCE TRANSFER attempt=1 direction=%s calculated_amount=%s buffer=%s attempt_1=%s',
         _direction_arrow(direction), calculated_amount, buffer, attempt_1,
     )
+    _record_rebalance_attempt(direction, attempt_1, 1, context=context)
     try:
         BINANCE.spot_signed('POST', '/sapi/v1/asset/transfer', payload)
         clear_rebalance_status()
@@ -454,6 +498,7 @@ def _transfer_with_recovery(direction, calculated_amount):
             extra={
                 'buffer_applied': _safe_float(buffer),
                 'requested_amount': _safe_float(attempt_1),
+                **(context or {}),
             },
         )
         if not _is_insufficient_transfer(first_details):
@@ -477,6 +522,7 @@ def _transfer_with_recovery(direction, calculated_amount):
             'REBALANCE TRANSFER attempt=2 direction=%s calculated_amount=%s buffer=%s attempt_1=%s attempt_2=%s',
             _direction_arrow(direction), calculated_amount, buffer, attempt_1, attempt_2,
         )
+        _record_rebalance_attempt(direction, attempt_2, 2, context=context)
         try:
             BINANCE.spot_signed('POST', '/sapi/v1/asset/transfer', payload_2)
             clear_rebalance_status({
@@ -502,6 +548,7 @@ def _transfer_with_recovery(direction, calculated_amount):
                     'buffer_applied': _safe_float(buffer),
                     'requested_amount': _safe_float(attempt_1),
                     'retried_amount': _safe_float(attempt_2),
+                    **(context or {}),
                 },
             )
             logging.warning(
@@ -810,7 +857,15 @@ def rebalance(state, btc_ctx=None):
 
         try:
             _rebalance_log(f'TRANSFER: {amount:.2f} Spot -> Futures')
-            transfer_ok, transfer_result, transfer_meta = _transfer_with_recovery('SPOT_TO_FUTURES', amount)
+            transfer_ok, transfer_result, transfer_meta = _transfer_with_recovery('SPOT_TO_FUTURES', amount, context={
+                'spot_real': _safe_float(spot_actual),
+                'futures_real': _safe_float(fut_actual),
+                'target_spot': _safe_float(target_spot),
+                'target_futures': _safe_float(target_fut),
+                'diff_spot': _safe_float(diff_spot),
+                'diff_futures': _safe_float(diff_fut),
+                'reason': 'rebalance_transfer_required',
+            })
             if not transfer_ok:
                 return False, transfer_result
             amount = transfer_result
@@ -910,7 +965,15 @@ def rebalance(state, btc_ctx=None):
 
         try:
             _rebalance_log(f'TRANSFER: {amount:.2f} Futures -> Spot')
-            transfer_ok, transfer_result, transfer_meta = _transfer_with_recovery('FUTURES_TO_SPOT', amount)
+            transfer_ok, transfer_result, transfer_meta = _transfer_with_recovery('FUTURES_TO_SPOT', amount, context={
+                'spot_real': _safe_float(spot_actual),
+                'futures_real': _safe_float(fut_actual),
+                'target_spot': _safe_float(target_spot),
+                'target_futures': _safe_float(target_fut),
+                'diff_spot': _safe_float(diff_spot),
+                'diff_futures': _safe_float(diff_fut),
+                'reason': 'rebalance_transfer_required',
+            })
             if not transfer_ok:
                 return False, transfer_result
             amount = transfer_result
