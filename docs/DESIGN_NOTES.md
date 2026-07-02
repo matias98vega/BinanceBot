@@ -88,6 +88,8 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Formulas:** `Adjusted Equity = current_equity - external_deposits + external_withdrawals`. `Adjusted PnL = Adjusted Equity - starting_equity`. `Adjusted ROI = Adjusted PnL / starting_equity * 100`. Los depositos externos se restan porque no son rendimiento; los retiros se suman de vuelta porque reducen equity actual sin representar perdida de trading. Comisiones, funding y realized PnL quedan disponibles como componentes contables separados para reportes futuros.
 
+**Presentacion en Telegram:** `/capital` muestra una seccion de contabilidad con depositos externos, retiros, flujo neto, equity ajustado, PnL ajustado y ROI ajustado. `/stats` y `Resumen General` muestran un bloque resumido de capital ajustado junto a las metricas actuales, sin reemplazarlas. Telegram consume exclusivamente `analytics_engine`; no lee el ledger ni la capa accounting directamente. Si faltan equity actual o baseline, las metricas ajustadas se muestran como `No disponible`.
+
 **Mejoras futuras:** reconciliar balances contra Binance, registrar comisiones/funding desde eventos reales y exponer PnL ajustado en Telegram/Dashboard una vez validada la contabilidad.
 
 ## Scoring

@@ -139,6 +139,15 @@ def _fmt_money(value):
         return 'N/A'
 
 
+def _fmt_money_or_unavailable(value):
+    try:
+        if value is None:
+            return 'No disponible'
+        return f'{float(value):.2f} USDT'
+    except (TypeError, ValueError):
+        return 'No disponible'
+
+
 def _fmt_pnl(value):
     try:
         return f'{float(value):+.2f} USDT'
@@ -175,6 +184,15 @@ def _fmt_pct_plain(value):
         return f'{float(value):.1f}%'
     except (TypeError, ValueError):
         return 'N/A'
+
+
+def _fmt_pct_or_unavailable(value):
+    try:
+        if value is None:
+            return 'No disponible'
+        return f'{float(value):.2f}%'
+    except (TypeError, ValueError):
+        return 'No disponible'
 
 
 def _fmt_price(value):
@@ -860,6 +878,53 @@ def _analytics_pnl_summary():
     }
 
 
+def _capital_accounting_payload(metrics=None):
+    metrics = metrics or _exposure_metrics()
+    current_equity = metrics.get('total_real')
+    starting_equity = metrics.get('total_limit')
+    try:
+        summary = analytics_engine.get_capital_accounting_stats(
+            current_equity=current_equity,
+            starting_equity=starting_equity,
+        ) or {}
+    except Exception:
+        summary = {}
+    payload = {
+        'external_deposits': summary.get('external_deposits', 0.0),
+        'external_withdrawals': summary.get('external_withdrawals', 0.0),
+        'net_external_flows': summary.get('net_external_flows', 0.0),
+        'commissions': summary.get('commissions', 0.0),
+        'funding': summary.get('funding', 0.0),
+        'realized_trading_pnl': summary.get('realized_trading_pnl', 0.0),
+        'adjusted_equity': summary.get('adjusted_equity') if current_equity is not None else None,
+        'adjusted_pnl': summary.get('adjusted_pnl') if current_equity is not None and starting_equity is not None else None,
+        'adjusted_roi': summary.get('adjusted_roi') if current_equity is not None and starting_equity is not None else None,
+    }
+    return payload
+
+
+def _capital_accounting_lines(metrics=None, compact=False):
+    accounting = _capital_accounting_payload(metrics)
+    if compact:
+        return [
+            'Capital ajustado:',
+            f'PnL Trading: {_fmt_money_or_unavailable(accounting.get("adjusted_pnl"))}',
+            f'ROI Trading: {_fmt_pct_or_unavailable(accounting.get("adjusted_roi"))}',
+            f'Aportes netos: {_fmt_money_or_unavailable(accounting.get("net_external_flows"))}',
+            f'Comisiones: {_fmt_money_or_unavailable(accounting.get("commissions"))}',
+            f'Funding: {_fmt_money_or_unavailable(accounting.get("funding"))}',
+        ]
+    return [
+        'Contabilidad:',
+        f'Depositos externos: {_fmt_money_or_unavailable(accounting.get("external_deposits"))}',
+        f'Retiros externos: {_fmt_money_or_unavailable(accounting.get("external_withdrawals"))}',
+        f'Flujo externo neto: {_fmt_money_or_unavailable(accounting.get("net_external_flows"))}',
+        f'Equity ajustado: {_fmt_money_or_unavailable(accounting.get("adjusted_equity"))}',
+        f'PnL ajustado: {_fmt_money_or_unavailable(accounting.get("adjusted_pnl"))}',
+        f'ROI ajustado: {_fmt_pct_or_unavailable(accounting.get("adjusted_roi"))}',
+    ]
+
+
 def _safe_count(value, default=0):
     try:
         return int(value)
@@ -1129,6 +1194,8 @@ class CapitalPage(MenuPage):
                 lines.append(f'Monto: {_fmt_money(pending_amount)}')
         if metrics.get('warning'):
             lines.extend(['', 'Info:', metrics.get('warning')])
+        lines.extend([''])
+        lines.extend(_capital_accounting_lines(metrics))
         risk_lines = []
         if max_exposure is not None:
             risk_lines.append(f'Max exposicion: {max_exposure:.2f}%')
@@ -1342,6 +1409,7 @@ class StatsMenuPage(MenuPage):
         stats, warning = _stats_payload()
         general = stats.get('general', {})
         counts = _stats_live_trade_counts(general)
+        metrics = _exposure_metrics()
         lines = ['\U0001F4CA Estadisticas', '']
         lines.extend(_stats_warning_lines(warning))
         lines.extend([
@@ -1349,6 +1417,10 @@ class StatsMenuPage(MenuPage):
             f'Cerrados: {_fmt_count(counts["closed"])}',
             f'Win Rate: {_fmt_stat_pct(general.get("win_rate"))}',
             f'PnL total: {_fmt_pnl(general.get("pnl_total"))}',
+            '',
+        ])
+        lines.extend(_capital_accounting_lines(metrics, compact=True))
+        lines.extend([
             '',
             'Seleccione una vista.',
         ])
@@ -1371,6 +1443,7 @@ class StatsGeneralPage(MenuPage):
         stats, warning = _stats_payload()
         general = stats.get('general', {})
         counts = _stats_live_trade_counts(general)
+        metrics = _exposure_metrics()
         best = general.get('best_trade') or {}
         worst = general.get('worst_trade') or {}
         lines = ['\U0001F4C8 Resumen General', '']
@@ -1397,6 +1470,8 @@ class StatsGeneralPage(MenuPage):
             f'Peor: {_fmt(worst.get("symbol"))} {_fmt_pnl(worst.get("pnl_usdt"))} ({_fmt_stat_pct(worst.get("pnl_pct"))})',
             f'Drawdown: {_fmt_pnl(general.get("max_drawdown_usdt"))}',
         ])
+        lines.extend([''])
+        lines.extend(_capital_accounting_lines(metrics, compact=True))
         return '\n'.join(lines)
 
     def keyboard(self):

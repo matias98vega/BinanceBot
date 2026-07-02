@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+import inspect
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -111,6 +112,21 @@ class TelegramStatsTests(unittest.TestCase):
             'warning': None,
             'note': None,
         }
+
+    def _accounting(self, **overrides):
+        data = {
+            'external_deposits': 0.0,
+            'external_withdrawals': 0.0,
+            'net_external_flows': 0.0,
+            'commissions': 0.0,
+            'funding': 0.0,
+            'realized_trading_pnl': 0.0,
+            'adjusted_equity': 54.0,
+            'adjusted_pnl': 0.0,
+            'adjusted_roi': 0.0,
+        }
+        data.update(overrides)
+        return data
 
     def test_stats_general_format(self):
         with self._patch_stats(), \
@@ -245,6 +261,62 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertIn('BTC precio: $70,000.00', text)
         self.assertIn('Modo direccional: Inactivo', text)
 
+    def test_capital_shows_capital_accounting_metrics(self):
+        with patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics()), \
+             patch.object(telegram_commands, '_bot_state', return_value={}), \
+             patch.object(
+                 telegram_commands.analytics_engine,
+                 'get_capital_accounting_stats',
+                 return_value=self._accounting(
+                     external_deposits=100,
+                     external_withdrawals=25,
+                     net_external_flows=75,
+                     adjusted_equity=-21,
+                     adjusted_pnl=-75,
+                     adjusted_roi=-138.888,
+                 ),
+             ):
+            text = telegram_commands._render_page('capital')['text']
+
+        self.assertIn('Contabilidad:', text)
+        self.assertIn('Depositos externos: 100.00 USDT', text)
+        self.assertIn('Retiros externos: 25.00 USDT', text)
+        self.assertIn('Flujo externo neto: 75.00 USDT', text)
+        self.assertIn('Equity ajustado: -21.00 USDT', text)
+        self.assertIn('PnL ajustado: -75.00 USDT', text)
+        self.assertIn('ROI ajustado: -138.89%', text)
+
+    def test_capital_accounting_is_safe_without_ledger(self):
+        with patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics()), \
+             patch.object(telegram_commands, '_bot_state', return_value={}), \
+             patch.object(
+                 telegram_commands.analytics_engine,
+                 'get_capital_accounting_stats',
+                 return_value=self._accounting(adjusted_equity=54, adjusted_pnl=0, adjusted_roi=0),
+             ):
+            text = telegram_commands._render_page('capital')['text']
+
+        self.assertIn('Depositos externos: 0.00 USDT', text)
+        self.assertIn('Retiros externos: 0.00 USDT', text)
+        self.assertIn('Flujo externo neto: 0.00 USDT', text)
+
+    def test_capital_accounting_unavailable_without_equity_baseline(self):
+        metrics = self._metrics()
+        metrics['total_real'] = None
+        metrics['total_limit'] = None
+        with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics), \
+             patch.object(telegram_commands, '_bot_state', return_value={}), \
+             patch.object(
+                 telegram_commands.analytics_engine,
+                 'get_capital_accounting_stats',
+                 return_value=self._accounting(adjusted_equity=None, adjusted_pnl=None, adjusted_roi=None),
+             ):
+            text = telegram_commands._render_page('capital')['text']
+
+        self.assertIn('Equity ajustado: No disponible', text)
+        self.assertIn('PnL ajustado: No disponible', text)
+        self.assertIn('ROI ajustado: No disponible', text)
+
     def test_stats_general_uses_live_open_positions_count(self):
         stats = sample_stats()
         stats['general']['closed_trades'] = 17
@@ -307,6 +379,40 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertIn('Profit Factor: 1.85', text)
         self.assertIn('Expectancy: +0.73 USDT', text)
         self.assertIn('PnL total: +12.34 USDT', text)
+
+    def test_stats_adds_capital_accounting_without_replacing_existing_metrics(self):
+        stats = sample_stats()
+        with patch.object(telegram_commands, '_stats_payload', return_value=(stats, None)), \
+             patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics()), \
+             patch.object(
+                 telegram_commands.analytics_engine,
+                 'get_capital_accounting_stats',
+                 return_value=self._accounting(
+                     net_external_flows=75,
+                     commissions=0.5,
+                     funding=-0.1,
+                     adjusted_pnl=-75,
+                     adjusted_roi=-138.89,
+                 ),
+             ):
+            text = telegram_commands._render_page('stats_general')['text']
+
+        self.assertIn('Win Rate: 50.0%', text)
+        self.assertIn('Profit Factor: 2.00', text)
+        self.assertIn('PnL total: +5.00 USDT', text)
+        self.assertIn('Capital ajustado:', text)
+        self.assertIn('PnL Trading: -75.00 USDT', text)
+        self.assertIn('ROI Trading: -138.89%', text)
+        self.assertIn('Aportes netos: 75.00 USDT', text)
+        self.assertIn('Comisiones: 0.50 USDT', text)
+        self.assertIn('Funding: -0.10 USDT', text)
+
+    def test_telegram_uses_analytics_for_capital_accounting_only(self):
+        source = inspect.getsource(telegram_commands)
+
+        self.assertIn('analytics_engine.get_capital_accounting_stats', source)
+        self.assertNotIn('import capital_ledger', source)
+        self.assertNotIn('import capital_accounting', source)
 
     def test_insights_low_sample_suppresses_misleading_comparisons(self):
         stats = sample_stats()
