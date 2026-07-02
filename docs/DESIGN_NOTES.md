@@ -255,3 +255,11 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 **Desventajas:** no hay rotacion uniforme de todos los archivos.
 
 **Mejoras futuras:** retention policy uniforme y export automatico.
+
+## Auditoria Local de Datos
+
+**Problema:** los historicos JSON/JSONL pueden degradarse con campos faltantes, lineas corruptas, timestamps invalidos o relaciones incompletas entre trades, features, timeline, rebalance y ledger.
+
+**Solucion actual:** `audit_data_quality.py` es una herramienta local de solo lectura que valida archivos runtime/historicos, resume errores criticos, warnings, campos faltantes, completitud y recomendaciones. Devuelve exit code `1` si encuentra errores criticos y `0` cuando solo hay warnings o todo esta correcto.
+
+**Ventajas:** permite auditar calidad antes de usar los datos para Analytics avanzado, PnL ajustado o aprendizaje futuro sin tocar estrategia ni estado operativo.
