@@ -183,6 +183,7 @@ class TelegramStatsTests(unittest.TestCase):
         bot_snapshot = {
             'system': {'health': 'OK', 'last_execution': '2026-01-01T12:00:00Z'},
             'pnl': {'today': 99, 'total': 99},
+            'market': {'regime': 'bearish'},
             'capital': {
                 'spot_real': 26.9,
                 'spot_target': 25.0,
@@ -207,6 +208,7 @@ class TelegramStatsTests(unittest.TestCase):
 
         self.assertIn('PnL hoy: +1.23 USDT', text)
         self.assertIn('PnL total: +12.34 USDT', text)
+        self.assertIn('Regimen: Bajista', text)
         self.assertIn('Spot: 8.40 USDT / 26.90 USDT', text)
         self.assertIn('Futures: 18.20 USDT / 27.10 USDT', text)
         self.assertNotIn('+99.00 USDT', text)

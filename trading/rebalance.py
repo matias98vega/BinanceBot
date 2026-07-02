@@ -160,6 +160,69 @@ def _failure_attempts(previous, direction):
     return 1
 
 
+def _existing_attempts(previous, direction):
+    if previous.get('pending') and previous.get('direction') == direction:
+        try:
+            return int(previous.get('attempts') or 0)
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
+def _record_rebalance_pending_check(direction, amount, pending_reason, blocked_reason=None, context=None, status='PENDING', only_existing=False):
+    previous = read_rebalance_status()
+    if only_existing and not previous.get('pending'):
+        return None
+    now = _now_iso()
+    effective_direction = previous.get('direction') if previous.get('pending') and direction in (None, 'NONE') else direction
+    effective_amount = previous.get('amount') if previous.get('pending') and amount is None else amount
+    same_direction = previous.get('pending') and previous.get('direction') == effective_direction
+    attempts = _existing_attempts(previous, effective_direction)
+    payload = {
+        'pending': True,
+        'direction': effective_direction,
+        'amount': _safe_float(effective_amount),
+        'pending_reason': pending_reason,
+        'blocked_reason': blocked_reason,
+        'last_check': now,
+        'last_attempt': previous.get('last_attempt') if same_direction else None,
+        'attempts': attempts,
+        'first_failure': previous.get('first_failure') if same_direction else None,
+        'last_http_status': previous.get('last_http_status') if same_direction else None,
+        'last_binance_code': previous.get('last_binance_code') if same_direction else None,
+        'last_message': previous.get('last_message') if same_direction else pending_reason,
+        'last_raw_body': previous.get('last_raw_body') if same_direction else None,
+    }
+    if isinstance(context, dict):
+        payload.update({key: _safe_float(value) if isinstance(value, (int, float)) else value for key, value in context.items()})
+    _write_rebalance_status(payload)
+    logging.warning(
+        'REBALANCE PENDING CHECK status=%s direction=%s amount=%s attempts=%s pending_reason=%s blocked_reason=%s context=%s',
+        status, _direction_arrow(effective_direction), effective_amount, attempts, pending_reason, blocked_reason, context or {},
+    )
+    try:
+        decision_timeline.record_rebalance_event(
+            'rebalance_blocked' if blocked_reason else 'rebalance_pending_check',
+            (
+                f'{_direction_arrow(effective_direction)} pendiente: {pending_reason}'
+                + (f' | bloqueo={blocked_reason}' if blocked_reason else '')
+            ),
+            level='WARNING' if blocked_reason else 'INFO',
+            details={
+                'direction': effective_direction,
+                'amount': _safe_float(effective_amount),
+                'attempts': attempts,
+                'pending_reason': pending_reason,
+                'blocked_reason': blocked_reason,
+                'last_check': now,
+                **(context or {}),
+            },
+        )
+    except Exception:
+        pass
+    return payload
+
+
 def _record_rebalance_failure(direction, amount, error, payload, extra=None):
     details = utils.extract_http_error_details(error)
     details['endpoint'] = details.get('endpoint') or '/sapi/v1/asset/transfer'
@@ -173,6 +236,9 @@ def _record_rebalance_failure(direction, amount, error, payload, extra=None):
         'direction': direction,
         'amount': _safe_float(amount),
         'first_failure': previous.get('first_failure') if previous.get('pending') and previous.get('direction') == direction else now,
+        'last_check': now,
+        'pending_reason': 'Transferencia rechazada por Binance',
+        'blocked_reason': None,
         'last_attempt': now,
         'attempts': attempts,
         'last_http_status': details.get('status'),
@@ -571,6 +637,15 @@ def rebalance(state, btc_ctx=None):
     total_free = spot_free + fut_free
 
     if REBALANCE_MIN_WALLET > 0 and total_free < REBALANCE_MIN_WALLET * 2:
+        _record_rebalance_pending_check(
+            'NONE',
+            None,
+            f'Capital libre insuficiente para rebalancear (${total_free:.2f})',
+            blocked_reason='free_capital_below_wallet_minimum',
+            context={'trend': trend, 'total_free': total_free, 'spot_free': spot_free, 'fut_free': fut_free},
+            status='BLOCKED',
+            only_existing=True,
+        )
         _rebalance_log(
             f'SKIP: reason=free capital below wallet minimum regime={trend} '
             f'total_free={total_free:.2f} spot_free={spot_free:.2f} fut_free={fut_free:.2f}'
@@ -662,12 +737,28 @@ def rebalance(state, btc_ctx=None):
         try:
             capped_amount = capital_manager.cap_transfer_amount('FUTURES', fut_actual, calculated_amount)
         except Exception as e:
+            _record_rebalance_pending_check(
+                'SPOT_TO_FUTURES',
+                calculated_amount,
+                'Capital manager bloqueo rebalance hacia Futures',
+                blocked_reason=str(e),
+                context={'trend': trend, 'spot_free': spot_free, 'fut_actual': fut_actual, 'target_fut': target_fut},
+                status='BLOCKED',
+            )
             _rebalance_log(f'SKIP: reason=capital_manager error direction=Spot->Futures error={e}')
             return False, f'Capital limit: rebalanceo Spot->Futures bloqueado ({e})'
         if capped_amount < calculated_amount:
             _rebalance_log(f'CHECK: capital_manager capped Spot->Futures requested={calculated_amount:.2f} capped={capped_amount:.2f}')
             calculated_amount = round(capped_amount, 2)
             if calculated_amount < REBALANCE_MIN_USDT:
+                _record_rebalance_pending_check(
+                    'SPOT_TO_FUTURES',
+                    calculated_amount,
+                    'Capital manager dejo el monto bajo el minimo transferible',
+                    blocked_reason='destination_wallet_limit_reached',
+                    context={'trend': trend, 'requested_amount': capped_amount, 'threshold': REBALANCE_MIN_USDT},
+                    status='BLOCKED',
+                )
                 _rebalance_log('SKIP: reason=capital_manager cap_transfer_amount returned 0')
                 return False, 'Capital limit: no se transfiere a Futures porque la wallet destino ya alcanzo el limite configurado'
         amount = _apply_transfer_buffer(calculated_amount)
@@ -678,6 +769,14 @@ def rebalance(state, btc_ctx=None):
         if amount < REBALANCE_MIN_USDT:
             if trend_flipped and longs_open:
                 # Cambio a bearish pero hay longs viejos: esperar que cierren
+                _record_rebalance_pending_check(
+                    'SPOT_TO_FUTURES',
+                    amount,
+                    'Pendiente, pero no transferido porque hay longs activos reteniendo Spot',
+                    blocked_reason='active_longs',
+                    context={'trend': trend, 'active_longs': len(longs_open), 'spot_free': spot_free, 'calculated_amount': calculated_amount},
+                    status='BLOCKED',
+                )
                 _rebalance_log(
                     f'SKIP: reason=trend flipped with active longs count={len(longs_open)} '
                     f'spot_free={spot_free:.2f} amount={amount:.2f}'
@@ -686,10 +785,26 @@ def rebalance(state, btc_ctx=None):
                     f'⏳ Tendencia viró a BEARISH — esperando cierre de {len(longs_open)} long(s) ' 
                     f'para liberar capital spot. Rebalanceo progresivo en curso.'
                 )
+            _record_rebalance_pending_check(
+                'SPOT_TO_FUTURES',
+                amount,
+                'Pendiente, pero no transferido por USDT libre insuficiente en Spot',
+                blocked_reason='insufficient_spot_free',
+                context={'trend': trend, 'spot_free': spot_free, 'calculated_amount': calculated_amount, 'threshold': REBALANCE_MIN_USDT},
+                status='BLOCKED',
+            )
             _rebalance_log(f'SKIP: reason=insufficient spot free spot_free={spot_free:.2f} amount={amount:.2f}')
             return False, f'No hay suficiente USDT libre en spot para transferir (${spot_free:.2f})'
 
         if longs_open and spot_free - amount < REBALANCE_MIN_WALLET:
+            _record_rebalance_pending_check(
+                'SPOT_TO_FUTURES',
+                amount,
+                'Pendiente, pero no transferido porque reduciria Spot bajo la reserva con longs activos',
+                blocked_reason='active_longs_wallet_reserve',
+                context={'trend': trend, 'active_longs': len(longs_open), 'spot_free': spot_free, 'wallet_min': REBALANCE_MIN_WALLET},
+                status='BLOCKED',
+            )
             _rebalance_log(f'SKIP: reason=active longs count={len(longs_open)} spot_free={spot_free:.2f} amount={amount:.2f}')
             return False, f'No se puede reducir spot: hay {len(longs_open)} long(s) activo(s)'
 
@@ -719,12 +834,28 @@ def rebalance(state, btc_ctx=None):
         try:
             capped_amount = capital_manager.cap_transfer_amount('SPOT', spot_actual, calculated_amount)
         except Exception as e:
+            _record_rebalance_pending_check(
+                'FUTURES_TO_SPOT',
+                calculated_amount,
+                'Capital manager bloqueo rebalance hacia Spot',
+                blocked_reason=str(e),
+                context={'trend': trend, 'fut_free': fut_free, 'spot_actual': spot_actual, 'target_spot': target_spot},
+                status='BLOCKED',
+            )
             _rebalance_log(f'SKIP: reason=capital_manager error direction=Futures->Spot error={e}')
             return False, f'Capital limit: rebalanceo Futures->Spot bloqueado ({e})'
         if capped_amount < calculated_amount:
             _rebalance_log(f'CHECK: capital_manager capped Futures->Spot requested={calculated_amount:.2f} capped={capped_amount:.2f}')
             calculated_amount = round(capped_amount, 2)
             if calculated_amount < REBALANCE_MIN_USDT:
+                _record_rebalance_pending_check(
+                    'FUTURES_TO_SPOT',
+                    calculated_amount,
+                    'Capital manager dejo el monto bajo el minimo transferible',
+                    blocked_reason='destination_wallet_limit_reached',
+                    context={'trend': trend, 'requested_amount': capped_amount, 'threshold': REBALANCE_MIN_USDT},
+                    status='BLOCKED',
+                )
                 _rebalance_log('SKIP: reason=capital_manager cap_transfer_amount returned 0')
                 return False, 'Capital limit: no se transfiere a Spot porque la wallet destino ya alcanzo el limite configurado'
         amount = _apply_transfer_buffer(calculated_amount)
@@ -735,6 +866,14 @@ def rebalance(state, btc_ctx=None):
         if amount < REBALANCE_MIN_USDT:
             if trend_flipped and shorts_open:
                 # Cambio a bullish pero hay shorts viejos: esperar que cierren
+                _record_rebalance_pending_check(
+                    'FUTURES_TO_SPOT',
+                    amount,
+                    'Pendiente, pero no transferido porque hay shorts activos reteniendo Futures',
+                    blocked_reason='active_shorts',
+                    context={'trend': trend, 'active_shorts': len(shorts_open), 'fut_free': fut_free, 'calculated_amount': calculated_amount},
+                    status='BLOCKED',
+                )
                 _rebalance_log(
                     f'SKIP: reason=trend flipped with active shorts count={len(shorts_open)} '
                     f'fut_free={fut_free:.2f} amount={amount:.2f}'
@@ -743,10 +882,26 @@ def rebalance(state, btc_ctx=None):
                     f'⏳ Tendencia viró a BULLISH — esperando cierre de {len(shorts_open)} short(s) '
                     f'para liberar capital futures. Rebalanceo progresivo en curso.'
                 )
+            _record_rebalance_pending_check(
+                'FUTURES_TO_SPOT',
+                amount,
+                'Pendiente, pero no transferido por USDT libre insuficiente en Futures',
+                blocked_reason='insufficient_futures_free',
+                context={'trend': trend, 'fut_free': fut_free, 'calculated_amount': calculated_amount, 'threshold': REBALANCE_MIN_USDT},
+                status='BLOCKED',
+            )
             _rebalance_log(f'SKIP: reason=insufficient futures free fut_free={fut_free:.2f} amount={amount:.2f}')
             return False, f'No hay suficiente USDT libre en futures para transferir (${fut_free:.2f})'
 
         if shorts_open and fut_free - amount < REBALANCE_MIN_WALLET:
+            _record_rebalance_pending_check(
+                'FUTURES_TO_SPOT',
+                amount,
+                'Pendiente, pero no transferido porque Futures esta ocupado por shorts activos',
+                blocked_reason='active_shorts_wallet_reserve',
+                context={'trend': trend, 'active_shorts': len(shorts_open), 'fut_free': fut_free, 'wallet_min': REBALANCE_MIN_WALLET},
+                status='BLOCKED',
+            )
             _rebalance_log(f'SKIP: reason=active shorts count={len(shorts_open)} fut_free={fut_free:.2f} amount={amount:.2f}')
             return False, (
                 f'⏳ Futures ocupado ({len(shorts_open)} short(s) con margen). '

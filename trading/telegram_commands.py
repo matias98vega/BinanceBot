@@ -585,20 +585,55 @@ def _direction_label(direction):
     }.get(str(direction or 'NONE'), str(direction or 'NONE'))
 
 
+def _market_regime_label(value):
+    key = str(value or 'unknown').lower()
+    labels = {
+        'bull': 'Alcista',
+        'bullish': 'Alcista',
+        'bear': 'Bajista',
+        'bearish': 'Bajista',
+        'sideways': 'Lateral',
+        'neutral': 'Neutral',
+        'unknown': 'No disponible',
+    }
+    icons = {
+        'bull': '\U0001F7E2',
+        'bullish': '\U0001F7E2',
+        'bear': '\U0001F534',
+        'bearish': '\U0001F534',
+        'sideways': '\U0001F7E1',
+        'neutral': '\U0001F7E1',
+        'unknown': '\u26AA',
+    }
+    return icons.get(key, '\u26AA'), labels.get(key, str(value or 'No disponible').capitalize())
+
+
+def _current_market_regime(snapshot=None):
+    data = snapshot if isinstance(snapshot, dict) else _bot_state()
+    market_info = data.get('market') if isinstance(data.get('market'), dict) else {}
+    return _market_regime_label(market_info.get('regime'))
+
+
 def _rebalance_reason_lines(rebalance):
+    lines = []
+    pending_reason = rebalance.get('pending_reason')
+    blocked_reason = rebalance.get('blocked_reason')
+    if pending_reason:
+        lines.append(str(pending_reason))
+    if blocked_reason:
+        lines.append(f'Bloqueo: {blocked_reason}')
     http_status = rebalance.get('last_http_status')
     code = rebalance.get('last_binance_code')
     message = rebalance.get('last_message')
     if http_status or code is not None or message:
-        lines = []
         if http_status:
             lines.append(f'HTTP {http_status}')
         if code is not None:
             lines.append(f'code={code}')
-        if message:
+        if message and str(message) not in lines:
             lines.append(str(message))
         return lines
-    return ['Motivo desconocido.']
+    return lines or ['Motivo desconocido.']
 
 
 def _rebalance_pending_lines(rebalance, direction_label, amount):
@@ -617,10 +652,13 @@ def _rebalance_pending_lines(rebalance, direction_label, amount):
         'Intentos:',
         str(rebalance.get('attempts') or 0),
         '',
+        'Ultimo check:',
+        _fmt_uy(rebalance.get('last_check')) if rebalance.get('last_check') else 'No disponible',
+        '',
         'Último intento:',
         _fmt_uy(rebalance.get('last_attempt')) if rebalance.get('last_attempt') else 'No disponible',
         '',
-        'Motivo:',
+        'Motivo / bloqueo:',
     ]
     lines.extend(_rebalance_reason_lines(rebalance))
     return lines
@@ -962,12 +1000,14 @@ class HomePage(MenuPage):
         bot = _bot_status()
         guardian = _guardian_status()
         metrics = _exposure_metrics()
+        regime_icon, regime_label = _current_market_regime(snapshot)
         max_longs = _display_capacity(metrics["long_count"], metrics["max_longs"])
         max_shorts = _display_capacity(metrics["short_count"], metrics["max_shorts"])
         lines = [
             f'{_status_icon(bot)} Bot: {bot}',
             f'{_status_icon(guardian)} Guardian: {guardian}',
             f'\u2764\ufe0f Healthcheck: {health}',
+            f'{regime_icon} Regimen: {regime_label}',
             '',
             f'PnL hoy: {_fmt_pnl(pnl.get("today"))}',
             f'PnL total: {_fmt_pnl(pnl.get("total"))}',
@@ -1101,10 +1141,14 @@ class DiagnosticsPage(MenuPage):
         metrics = _exposure_metrics()
         rebalance = diagnostics.get('rebalance') or {}
         direction_label = _direction_label(rebalance.get('direction'))
+        regime_icon, regime_label = _current_market_regime()
         max_longs = _display_capacity(metrics["long_count"], metrics["max_longs"])
         max_shorts = _display_capacity(metrics["short_count"], metrics["max_shorts"])
         return '\n'.join([
             '\U0001FA7A Diagnostico',
+            '',
+            'Mercado:',
+            f'{regime_icon} Regimen: {regime_label}',
             '',
             'Capacidad',
             '',

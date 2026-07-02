@@ -119,6 +119,32 @@ class RebalanceDiagnosticsTests(unittest.TestCase):
 
         self.assertEqual(self.read_status()['attempts'], 2)
 
+    def test_pending_check_without_transfer_records_reason(self):
+        with patch.object(rebalance.decision_timeline, 'record_rebalance_event') as timeline:
+            status = rebalance._record_rebalance_pending_check(
+                'FUTURES_TO_SPOT',
+                22.16,
+                'Pendiente, pero no transferido porque Futures esta ocupado por shorts activos',
+                blocked_reason='active_shorts',
+                context={'active_shorts': 2, 'fut_free': 1.5},
+                status='BLOCKED',
+            )
+
+        saved = self.read_status()
+        self.assertTrue(status['pending'])
+        self.assertTrue(saved['pending'])
+        self.assertEqual(saved['direction'], 'FUTURES_TO_SPOT')
+        self.assertEqual(saved['amount'], 22.16)
+        self.assertEqual(saved['attempts'], 0)
+        self.assertIn('last_check', saved)
+        self.assertIsNone(saved['last_attempt'])
+        self.assertEqual(saved['blocked_reason'], 'active_shorts')
+        self.assertIn('Futures esta ocupado', saved['pending_reason'])
+        timeline.assert_called_once()
+        args, kwargs = timeline.call_args
+        self.assertEqual(args[0], 'rebalance_blocked')
+        self.assertEqual(kwargs['details']['attempts'], 0)
+
     def test_clear_rebalance_status_after_success(self):
         with patch.object(rebalance.decision_timeline, 'record_rebalance_event'):
             rebalance._record_rebalance_failure('SPOT_TO_FUTURES', 26.94, http_error(), {})
@@ -157,6 +183,7 @@ class RebalanceDiagnosticsTests(unittest.TestCase):
                 'direction': 'SPOT_TO_FUTURES',
                 'amount_pending': 26.94,
                 'attempts': 17,
+                'last_check': '2026-06-30T18:31:00Z',
                 'last_attempt': '2026-06-30T18:32:00Z',
                 'last_http_status': 400,
                 'last_binance_code': -2010,
@@ -176,9 +203,51 @@ class RebalanceDiagnosticsTests(unittest.TestCase):
         self.assertIn('Monto:\n26.94 USDT', text)
         self.assertIn('Buffer aplicado:\n0.10 USDT', text)
         self.assertIn('Intentos:\n17', text)
+        self.assertIn('Ultimo check:', text)
         self.assertIn('HTTP 400', text)
         self.assertIn('code=-2010', text)
         self.assertIn('Insufficient balance', text)
+
+    def test_telegram_capital_shows_pending_without_attempt_reason(self):
+        metrics = {
+            'total_real': 54.0,
+            'total_limit': 54.0,
+            'total_authorized': 54.0,
+            'spot_real': 27.1,
+            'spot_target': 49.26,
+            'spot_used': 0.0,
+            'spot_reserved': 0,
+            'futures_real': 26.9,
+            'futures_target': 4.74,
+            'futures_used': 18.2,
+            'futures_reserved': 0,
+            'rebalance': {
+                'status': 'PENDING',
+                'direction': 'FUTURES_TO_SPOT',
+                'amount_pending': 22.16,
+                'attempts': 0,
+                'last_check': '2026-07-02T15:32:00Z',
+                'last_attempt': None,
+                'pending_reason': 'Pendiente, pero no transferido porque Futures esta ocupado por shorts activos',
+                'blocked_reason': 'active_shorts',
+            },
+            'max_exposure_percent': 80.0,
+            'max_position_percent': None,
+            'warning': None,
+        }
+
+        with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics):
+            text = telegram_commands._render_page('capital')['text']
+
+        self.assertIn('Rebalance pendiente', text)
+        self.assertIn('Dirección:\nFutures', text)
+        self.assertIn('Monto:\n22.16 USDT', text)
+        self.assertIn('Intentos:\n0', text)
+        self.assertIn('Ultimo check:', text)
+        self.assertIn('intento:\nNo disponible', text)
+        self.assertIn('Motivo / bloqueo:', text)
+        self.assertIn('Futures esta ocupado', text)
+        self.assertIn('Bloqueo: active_shorts', text)
 
     def test_transfer_success_first_attempt(self):
         fake = FakeBinance([{'tranId': 1}])
