@@ -5,6 +5,7 @@ import logging
 import os
 from datetime import datetime, timezone
 
+import capital_accounting
 import history
 
 
@@ -13,6 +14,14 @@ DEFAULT_STATS_FILE = os.path.join(history.DEFAULT_HISTORY_DIR, 'stats.json')
 EXIT_REASONS = ('TP', 'SL', 'TRAILING', 'PARTIAL', 'STALE', 'RECOVERY', 'EMERGENCY', 'MANUAL', 'UNKNOWN')
 DIRECTIONS = ('LONG', 'SHORT', 'UNKNOWN')
 REGIMES = ('bull', 'bear', 'sideways', 'neutral', 'unknown')
+
+
+def _safe_accounting(default, func, *args, **kwargs):
+    try:
+        return func(*args, **kwargs)
+    except Exception as exc:
+        logging.warning('analytics_engine capital accounting failed: %s', exc)
+        return default
 
 
 def _empty_bucket():
@@ -645,3 +654,101 @@ def get_time_stats(group=None, stats_file=DEFAULT_STATS_FILE):
     if group is None:
         return data
     return data.get(group, {})
+
+
+def get_external_deposits(ledger_file=capital_accounting.capital_ledger.DEFAULT_LEDGER_FILE, asset=None):
+    """Return user-provided external deposits recorded in the capital ledger."""
+    return _safe_accounting(0.0, capital_accounting.get_external_deposits, ledger_file, asset)
+
+
+def get_external_withdrawals(ledger_file=capital_accounting.capital_ledger.DEFAULT_LEDGER_FILE, asset=None):
+    """Return external withdrawals recorded in the capital ledger."""
+    return _safe_accounting(0.0, capital_accounting.get_external_withdrawals, ledger_file, asset)
+
+
+def get_net_external_flows(ledger_file=capital_accounting.capital_ledger.DEFAULT_LEDGER_FILE, asset=None):
+    """Return deposits minus withdrawals. Positive values are user capital inflows."""
+    return _safe_accounting(0.0, capital_accounting.get_net_external_flows, ledger_file, asset)
+
+
+def get_total_commissions(ledger_file=capital_accounting.capital_ledger.DEFAULT_LEDGER_FILE, asset=None):
+    """Return commissions recorded in the capital ledger."""
+    return _safe_accounting(0.0, capital_accounting.get_total_commissions, ledger_file, asset)
+
+
+def get_total_funding(ledger_file=capital_accounting.capital_ledger.DEFAULT_LEDGER_FILE, asset=None):
+    """Return funding fees recorded in the capital ledger."""
+    return _safe_accounting(0.0, capital_accounting.get_total_funding, ledger_file, asset)
+
+
+def get_realized_trading_pnl(ledger_file=capital_accounting.capital_ledger.DEFAULT_LEDGER_FILE, asset=None):
+    """Return realized trading PnL explicitly recorded in the capital ledger."""
+    return _safe_accounting(0.0, capital_accounting.get_realized_trading_pnl, ledger_file, asset)
+
+
+def get_adjusted_equity(current_equity, ledger_file=capital_accounting.capital_ledger.DEFAULT_LEDGER_FILE, asset=None):
+    """Return current equity excluding external capital flows.
+
+    Formula: current_equity - external_deposits + external_withdrawals.
+    Deposits are removed because they are not trading performance; withdrawals are
+    added back because they reduce current equity without representing a loss.
+    """
+    return _safe_accounting(None, capital_accounting.get_adjusted_equity, current_equity, ledger_file, asset)
+
+
+def get_adjusted_pnl(current_equity, starting_equity=0.0,
+                     ledger_file=capital_accounting.capital_ledger.DEFAULT_LEDGER_FILE, asset=None):
+    """Return PnL adjusted for external capital flows.
+
+    Formula: adjusted_equity - starting_equity.
+    """
+    return _safe_accounting(
+        None,
+        capital_accounting.get_adjusted_pnl,
+        current_equity,
+        starting_equity,
+        ledger_file,
+        asset,
+    )
+
+
+def get_adjusted_roi(current_equity, starting_equity,
+                     ledger_file=capital_accounting.capital_ledger.DEFAULT_LEDGER_FILE, asset=None):
+    """Return adjusted ROI percentage.
+
+    Formula: adjusted_pnl / starting_equity * 100. Returns None when the
+    denominator is missing or zero.
+    """
+    return _safe_accounting(
+        None,
+        capital_accounting.get_adjusted_roi,
+        current_equity,
+        starting_equity,
+        ledger_file,
+        asset,
+    )
+
+
+def get_trading_equity(current_equity, ledger_file=capital_accounting.capital_ledger.DEFAULT_LEDGER_FILE, asset=None):
+    """Return equity attributable to trading after removing external flows."""
+    return get_adjusted_equity(current_equity, ledger_file=ledger_file, asset=asset)
+
+
+def get_capital_accounting_stats(current_equity=None, starting_equity=0.0,
+                                 ledger_file=capital_accounting.capital_ledger.DEFAULT_LEDGER_FILE, asset=None):
+    """Return passive accounting metrics without changing historical analytics."""
+    return _safe_accounting(
+        {
+            'external_deposits': 0.0,
+            'external_withdrawals': 0.0,
+            'net_external_flows': 0.0,
+            'commissions': 0.0,
+            'funding': 0.0,
+            'realized_trading_pnl': 0.0,
+        },
+        capital_accounting.get_accounting_summary,
+        current_equity,
+        starting_equity,
+        ledger_file,
+        asset,
+    )

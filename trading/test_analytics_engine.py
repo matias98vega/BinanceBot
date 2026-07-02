@@ -8,6 +8,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(__file__))
 
 import analytics_engine
+import capital_ledger
 import history
 
 
@@ -19,6 +20,7 @@ class AnalyticsEngineTests(unittest.TestCase):
         self.decisions = os.path.join(base, 'decisions.jsonl')
         self.snapshots = os.path.join(base, 'snapshots.jsonl')
         self.stats = os.path.join(base, 'stats.json')
+        self.ledger = os.path.join(base, 'capital_ledger.jsonl')
         self.store = history.HistoryStore(self.trades, self.decisions, self.snapshots)
 
     def tearDown(self):
@@ -297,6 +299,90 @@ class AnalyticsEngineTests(unittest.TestCase):
         self.assertEqual(direction['win_rate'], 100.0)
         self.assertEqual(reason['closed'], 1)
         self.assertIn('2026-01-01', time_stats)
+
+    def test_capital_accounting_ledger_missing_and_empty(self):
+        missing_ledger = os.path.join(self.tmp.name, 'missing_ledger.jsonl')
+
+        self.assertEqual(analytics_engine.get_external_deposits(missing_ledger), 0.0)
+        self.assertEqual(analytics_engine.get_external_withdrawals(missing_ledger), 0.0)
+        self.assertEqual(analytics_engine.get_net_external_flows(missing_ledger), 0.0)
+        self.assertEqual(analytics_engine.get_adjusted_equity(50, missing_ledger), 50.0)
+        self.assertEqual(analytics_engine.get_adjusted_pnl(50, 10, missing_ledger), 40.0)
+        self.assertEqual(analytics_engine.get_adjusted_roi(50, 10, missing_ledger), 400.0)
+
+        open(self.ledger, 'w', encoding='utf-8').close()
+
+        self.assertEqual(analytics_engine.get_external_deposits(self.ledger), 0.0)
+        self.assertEqual(analytics_engine.get_trading_equity(25, self.ledger), 25.0)
+
+    def test_capital_accounting_external_flows_and_adjusted_metrics(self):
+        capital_ledger.register_external_deposit(100, ledger_file=self.ledger)
+        capital_ledger.register_external_deposit(50, ledger_file=self.ledger)
+        capital_ledger.register_external_withdrawal(20, ledger_file=self.ledger)
+
+        self.assertEqual(analytics_engine.get_external_deposits(self.ledger), 150.0)
+        self.assertEqual(analytics_engine.get_external_withdrawals(self.ledger), 20.0)
+        self.assertEqual(analytics_engine.get_net_external_flows(self.ledger), 130.0)
+        self.assertEqual(analytics_engine.get_adjusted_equity(300, self.ledger), 170.0)
+        self.assertEqual(analytics_engine.get_trading_equity(300, self.ledger), 170.0)
+        self.assertEqual(analytics_engine.get_adjusted_pnl(300, 100, self.ledger), 70.0)
+        self.assertEqual(analytics_engine.get_adjusted_roi(300, 100, self.ledger), 70.0)
+
+    def test_capital_accounting_only_deposits(self):
+        capital_ledger.register_external_deposit(40, ledger_file=self.ledger)
+        capital_ledger.register_external_deposit(10, ledger_file=self.ledger)
+
+        self.assertEqual(analytics_engine.get_external_deposits(self.ledger), 50.0)
+        self.assertEqual(analytics_engine.get_external_withdrawals(self.ledger), 0.0)
+        self.assertEqual(analytics_engine.get_net_external_flows(self.ledger), 50.0)
+        self.assertEqual(analytics_engine.get_adjusted_equity(75, self.ledger), 25.0)
+
+    def test_capital_accounting_only_withdrawals(self):
+        capital_ledger.register_external_withdrawal(15, ledger_file=self.ledger)
+        capital_ledger.register_external_withdrawal(5, ledger_file=self.ledger)
+
+        self.assertEqual(analytics_engine.get_external_deposits(self.ledger), 0.0)
+        self.assertEqual(analytics_engine.get_external_withdrawals(self.ledger), 20.0)
+        self.assertEqual(analytics_engine.get_net_external_flows(self.ledger), -20.0)
+        self.assertEqual(analytics_engine.get_adjusted_equity(75, self.ledger), 95.0)
+
+    def test_capital_accounting_commissions_funding_and_realized_pnl(self):
+        capital_ledger.register_commission(0.25, ledger_file=self.ledger)
+        capital_ledger.register_funding_fee(-0.1, ledger_file=self.ledger)
+        capital_ledger.register_realized_pnl(4.75, ledger_file=self.ledger)
+
+        summary = analytics_engine.get_capital_accounting_stats(50, 40, self.ledger)
+
+        self.assertEqual(summary['commissions'], 0.25)
+        self.assertEqual(summary['funding'], -0.1)
+        self.assertEqual(summary['realized_trading_pnl'], 4.75)
+        self.assertEqual(summary['adjusted_equity'], 50.0)
+        self.assertEqual(summary['adjusted_pnl'], 10.0)
+        self.assertEqual(summary['adjusted_roi'], 25.0)
+
+    def test_capital_accounting_does_not_change_existing_analytics_metrics(self):
+        self._seed_closed_trades()
+        baseline = self._rebuild()
+        baseline_general = dict(baseline['general'])
+
+        capital_ledger.register_external_deposit(1000, ledger_file=self.ledger)
+        capital_ledger.register_external_withdrawal(250, ledger_file=self.ledger)
+        capital_ledger.register_commission(1.5, ledger_file=self.ledger)
+        after = self._rebuild()
+        after_general = after['general']
+
+        for key in (
+            'total_trades',
+            'open_trades',
+            'closed_trades',
+            'win_rate',
+            'profit_factor',
+            'expectancy',
+            'pnl_total',
+            'pnl_average',
+            'max_drawdown_usdt',
+        ):
+            self.assertEqual(after_general[key], baseline_general[key])
 
 
 if __name__ == '__main__':

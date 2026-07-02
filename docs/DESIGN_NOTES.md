@@ -80,13 +80,15 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Alternativas consideradas:** corregir PnL directamente en Analytics, inferir depositos por diferencias de balance, o crear una capa contable separada.
 
-**Solucion actual:** `capital_ledger.py` introduce `data/history/capital_ledger.jsonl` como ledger append-only de movimientos de capital. Registra tipos explicitos como `external_deposit`, `external_withdrawal`, `rebalance`, `realized_pnl`, `commission` y `funding_fee`, con API dedicada para escribir y leer sin acoplar el resto del bot al formato JSONL. `capital_accounting.py` queda por encima del ledger y centraliza la interpretacion contable: depositos/retiros acumulados, flujos externos netos, comisiones, funding, PnL realizado y helpers preliminares de equity/PnL/ROI ajustados.
+**Solucion actual:** `capital_ledger.py` introduce `data/history/capital_ledger.jsonl` como ledger append-only de movimientos de capital. Registra tipos explicitos como `external_deposit`, `external_withdrawal`, `rebalance`, `realized_pnl`, `commission` y `funding_fee`, con API dedicada para escribir y leer sin acoplar el resto del bot al formato JSONL. `capital_accounting.py` queda por encima del ledger y centraliza la interpretacion contable: depositos/retiros acumulados, flujos externos netos, comisiones, funding, PnL realizado y helpers preliminares de equity/PnL/ROI ajustados. `analytics_engine.py` consume esos resultados mediante `CapitalAccounting` y expone metricas adicionales sin modificar las estadisticas historicas existentes.
 
-**Ventajas:** separa hechos contables de calculos derivados. El ledger registra movimientos; accounting interpreta esos movimientos; Analytics deberia consumir resultados contables en futuras iteraciones y no leer directamente el JSONL.
+**Ventajas:** separa hechos contables de calculos derivados. El ledger registra movimientos; accounting interpreta esos movimientos; Analytics consume resultados contables y no lee directamente el JSONL. Las metricas actuales de Analytics se mantienen como PnL historico observado, mientras las metricas ajustadas permiten separar capital aportado por el usuario del rendimiento generado por trading.
 
 **Desventajas:** esta primera etapa no detecta depositos automaticamente; requiere registros explicitos o integraciones futuras.
 
-**Mejoras futuras:** reconciliar balances contra Binance, registrar comisiones/funding desde eventos reales y exponer PnL ajustado en Analytics/Telegram una vez validada la contabilidad.
+**Formulas:** `Adjusted Equity = current_equity - external_deposits + external_withdrawals`. `Adjusted PnL = Adjusted Equity - starting_equity`. `Adjusted ROI = Adjusted PnL / starting_equity * 100`. Los depositos externos se restan porque no son rendimiento; los retiros se suman de vuelta porque reducen equity actual sin representar perdida de trading. Comisiones, funding y realized PnL quedan disponibles como componentes contables separados para reportes futuros.
+
+**Mejoras futuras:** reconciliar balances contra Binance, registrar comisiones/funding desde eventos reales y exponer PnL ajustado en Telegram/Dashboard una vez validada la contabilidad.
 
 ## Scoring
 
