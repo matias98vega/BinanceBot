@@ -475,6 +475,128 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertIn('Dirección:\nSpot → Futures', text)
         self.assertIn('Desbalance pendiente:\n26.94 USDT', text)
 
+    def test_positions_shows_managed_spot_longs(self):
+        state = {
+            'positions': [
+                {
+                    'symbol': 'WLDUSDT',
+                    'direction': 'long',
+                    'entry_price': 10,
+                    'quantity': 2,
+                    'tp': 11,
+                    'sl': 9,
+                    'entry_time': '2026-01-01T00:00:00Z',
+                }
+            ]
+        }
+
+        with patch.object(telegram_commands, '_state', return_value=state), \
+             patch.object(telegram_commands, '_bot_state', return_value={}), \
+             patch.object(telegram_commands, '_public_price', return_value=10.5):
+            text = telegram_commands._render_page('positions')['text']
+
+        self.assertIn('📈 Spot', text)
+        self.assertIn('WLDUSDT LONG', text)
+        self.assertIn('PnL +1.00 USDT (+5.0%)', text)
+        self.assertIn('TP +4.8% (+1.00 USDT) | SL -14.3% (-3.00 USDT)', text)
+
+    def test_positions_shows_observed_futures_shorts(self):
+        bot_snapshot = {
+            'positions': {
+                'short': {
+                    'observed': [
+                        {
+                            'symbol': 'CRCLUSDT',
+                            'side': 'SHORT',
+                            'notional': 12.34,
+                            'entry_price': 0.1234,
+                            'mark_price': 0.1200,
+                            'unrealized_pnl': 0.42,
+                            'leverage': 5,
+                            'margin_type': 'cross',
+                        }
+                    ]
+                }
+            }
+        }
+
+        with patch.object(telegram_commands, '_state', return_value={'positions': []}), \
+             patch.object(telegram_commands, '_bot_state', return_value=bot_snapshot):
+            text = telegram_commands._render_page('positions')['text']
+
+        self.assertIn('📉 Futures', text)
+        self.assertIn('CRCLUSDT SHORT | Lev x5 | Cross', text)
+        self.assertIn('Notional 12.34 USDT | PnL +0.42 USDT', text)
+        self.assertIn('Entry 0.1234 | Mark 0.1200', text)
+
+    def test_positions_deduplicates_futures_by_symbol(self):
+        state = {
+            'positions': [
+                {
+                    'symbol': 'CRCLUSDT',
+                    'direction': 'short',
+                    'entry_price': 0.12,
+                    'quantity': 100,
+                    'leverage': 5,
+                }
+            ]
+        }
+        bot_snapshot = {
+            'positions': {
+                'short': {
+                    'observed': [{'symbol': 'CRCLUSDT', 'side': 'SHORT', 'notional': 12.34}]
+                }
+            }
+        }
+
+        with patch.object(telegram_commands, '_state', return_value=state), \
+             patch.object(telegram_commands, '_bot_state', return_value=bot_snapshot), \
+             patch.object(telegram_commands, '_public_price', return_value=0.11):
+            text = telegram_commands._render_page('positions')['text']
+
+        self.assertEqual(text.count('CRCLUSDT'), 1)
+
+    def test_positions_degrades_when_futures_fields_are_missing(self):
+        bot_snapshot = {
+            'positions': {
+                'short': {
+                    'observed': [{'symbol': 'SUIUSDT', 'side': 'SHORT'}]
+                }
+            }
+        }
+
+        with patch.object(telegram_commands, '_state', return_value={'positions': []}), \
+             patch.object(telegram_commands, '_bot_state', return_value=bot_snapshot):
+            text = telegram_commands._render_page('positions')['text']
+
+        self.assertIn('SUIUSDT SHORT', text)
+        self.assertIn('No disponible', text)
+
+    def test_positions_compact_format_groups_spot_and_futures(self):
+        state = {
+            'positions': [
+                {'symbol': 'WLDUSDT', 'direction': 'long', 'entry_price': 10, 'quantity': 1, 'tp': 11, 'sl': 9}
+            ]
+        }
+        bot_snapshot = {
+            'positions': {
+                'short': {
+                    'observed': [{'symbol': 'BNBUSDT', 'side': 'SHORT', 'notional': 20, 'unrealized_pnl': -0.5}]
+                }
+            }
+        }
+
+        with patch.object(telegram_commands, '_state', return_value=state), \
+             patch.object(telegram_commands, '_bot_state', return_value=bot_snapshot), \
+             patch.object(telegram_commands, '_public_price', return_value=10.5):
+            text = telegram_commands._render_page('positions')['text']
+
+        self.assertIn('📈 Spot', text)
+        self.assertIn('📉 Futures', text)
+        self.assertNotIn('\nPnL:\n', text)
+        self.assertNotIn('🎯 TP', text)
+        self.assertLessEqual(len([line for line in text.splitlines() if line.strip()]), 10)
+
 
 if __name__ == '__main__':
     unittest.main()

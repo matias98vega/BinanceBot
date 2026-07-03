@@ -202,6 +202,42 @@ def _fmt_price(value):
         return 'N/A'
 
 
+def _fmt_price_or_unavailable(value):
+    try:
+        if value is None:
+            return 'No disponible'
+        return f'{float(value):.4f}'
+    except (TypeError, ValueError):
+        return 'No disponible'
+
+
+def _fmt_pnl_or_unavailable(value):
+    try:
+        if value is None:
+            return 'No disponible'
+        return f'{float(value):+.2f} USDT'
+    except (TypeError, ValueError):
+        return 'No disponible'
+
+
+def _fmt_signed_pct_or_unavailable(value):
+    try:
+        if value is None:
+            return 'No disponible'
+        return f'{float(value):+.1f}%'
+    except (TypeError, ValueError):
+        return 'No disponible'
+
+
+def _fmt_distance_or_unavailable(value, sign):
+    try:
+        if value is None:
+            return 'No disponible'
+        return f'{sign}{abs(float(value)):.1f}%'
+    except (TypeError, ValueError):
+        return 'No disponible'
+
+
 def _display_capacity(current, maximum):
     try:
         current_i = int(current)
@@ -227,7 +263,7 @@ def _public_price(symbol, direction):
         return None
 
 
-def _position_view(pos):
+def _spot_position_view(pos):
     direction = str(pos.get('direction', '')).lower()
     side = direction.upper()
     symbol = pos.get('symbol') or 'N/D'
@@ -260,19 +296,108 @@ def _position_view(pos):
             sl_loss = -abs((price - sl) * qty)
 
     return '\n'.join([
-        f'{icon} {symbol} {side}',
-        f'⏱ {duration}',
-        '',
-        'PnL:',
-        f'{_fmt_pnl(pnl)} ({_fmt_pct_plain(pnl_pct)})',
-        '',
-        '🎯 TP',
-        _fmt_pct_plain(tp_dist),
-        f'({_fmt_pnl(tp_gain)})',
-        '',
-        '🛑 SL',
-        _fmt_pct_plain(sl_dist),
-        f'({_fmt_pnl(sl_loss)})',
+        f'{icon} {symbol} {side} | ⏱ {duration}',
+        f'PnL {_fmt_pnl_or_unavailable(pnl)} ({_fmt_signed_pct_or_unavailable(pnl_pct)})',
+        (
+            f'TP {_fmt_distance_or_unavailable(tp_dist, "+")} ({_fmt_pnl_or_unavailable(tp_gain)}) | '
+            f'SL {_fmt_distance_or_unavailable(sl_dist, "-")} ({_fmt_pnl_or_unavailable(sl_loss)})'
+        ),
+    ])
+
+
+def _position_symbol(pos):
+    if not isinstance(pos, dict):
+        return ''
+    return str(pos.get('symbol') or '').upper()
+
+
+def _spot_positions():
+    return [
+        pos for pos in _positions()
+        if isinstance(pos, dict) and str(pos.get('direction', '')).lower() == 'long'
+    ]
+
+
+def _state_futures_positions():
+    return [
+        pos for pos in _positions()
+        if isinstance(pos, dict) and str(pos.get('direction', '')).lower() == 'short'
+    ]
+
+
+def _observed_futures_positions():
+    snapshot = _bot_state()
+    positions_state = snapshot.get('positions') if isinstance(snapshot.get('positions'), dict) else {}
+    short_state = positions_state.get('short') if isinstance(positions_state.get('short'), dict) else {}
+    observed = short_state.get('observed')
+    if isinstance(observed, list):
+        return [pos for pos in observed if isinstance(pos, dict)]
+    symbols = short_state.get('symbols')
+    if isinstance(symbols, list):
+        return [{'symbol': symbol, 'side': 'SHORT'} for symbol in symbols if symbol]
+    return []
+
+
+def _state_short_as_futures(pos):
+    symbol = pos.get('symbol')
+    entry = _to_float(pos.get('entry_price'))
+    qty = _to_float(pos.get('quantity'))
+    leverage = _to_float(pos.get('leverage'))
+    mark = _public_price(symbol, 'short') or _to_float(pos.get('current_price')) or entry
+    notional = abs(entry * qty) if entry is not None and qty is not None else None
+    pnl = (entry - mark) * qty if entry is not None and mark is not None and qty is not None else None
+    return {
+        'symbol': symbol,
+        'side': 'SHORT',
+        'quantity': qty,
+        'notional': notional,
+        'entry_price': entry,
+        'mark_price': mark,
+        'unrealized_pnl': pnl,
+        'leverage': leverage,
+        'margin_type': pos.get('margin_type') or pos.get('marginType'),
+    }
+
+
+def _futures_positions_for_display():
+    by_symbol = {
+        _position_symbol(pos): dict(pos)
+        for pos in _observed_futures_positions()
+        if _position_symbol(pos)
+    }
+    for pos in _state_futures_positions():
+        symbol = _position_symbol(pos)
+        if symbol and symbol not in by_symbol:
+            by_symbol[symbol] = _state_short_as_futures(pos)
+    return list(by_symbol.values())
+
+
+def _fmt_leverage(value):
+    value = _to_float(value)
+    if value is None:
+        return 'No disponible'
+    if value.is_integer():
+        return f'x{int(value)}'
+    return f'x{value:.2f}'
+
+
+def _futures_position_view(pos):
+    side = str(pos.get('side') or pos.get('direction') or 'UNKNOWN').upper()
+    symbol = pos.get('symbol') or 'N/D'
+    icon = '🟢' if side == 'LONG' else '🔴'
+    margin_type = pos.get('margin_type') or pos.get('marginType') or 'No disponible'
+    if isinstance(margin_type, str) and margin_type != 'No disponible':
+        margin_type = margin_type.capitalize()
+    return '\n'.join([
+        f'{icon} {symbol} {side} | Lev {_fmt_leverage(pos.get("leverage"))} | {margin_type}',
+        (
+            f'Notional {_fmt_money_or_unavailable(pos.get("notional"))} | '
+            f'PnL {_fmt_pnl_or_unavailable(pos.get("unrealized_pnl"))}'
+        ),
+        (
+            f'Entry {_fmt_price_or_unavailable(pos.get("entry_price"))} | '
+            f'Mark {_fmt_price_or_unavailable(pos.get("mark_price"))}'
+        ),
     ])
 
 
@@ -1233,13 +1358,30 @@ class PositionsPage(MenuPage):
     page_id = 'positions'
 
     def render(self):
-        positions = _positions()
+        spot_positions = _spot_positions()
+        futures_positions = _futures_positions_for_display()
         lines = ['📂 Posiciones abiertas', '']
-        if not positions:
+        if not spot_positions and not futures_positions:
             lines.append('✅ No existen posiciones abiertas.')
-        for pos in positions[:8]:
-            lines.append(_position_view(pos))
-            lines.extend(['', '─' * 12, ''])
+            return '\n'.join(lines)
+
+        lines.append('📈 Spot')
+        if spot_positions:
+            for pos in spot_positions[:10]:
+                lines.append(_spot_position_view(pos))
+                lines.append('')
+        else:
+            lines.append('- Sin posiciones Spot.')
+            lines.append('')
+
+        lines.append('📉 Futures')
+        if futures_positions:
+            for pos in futures_positions[:12]:
+                lines.append(_futures_position_view(pos))
+                lines.append('')
+        else:
+            lines.append('- Sin posiciones Futures.')
+
         return '\n'.join(lines)
 
 

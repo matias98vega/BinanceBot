@@ -420,7 +420,11 @@ class CycleRunner:
         }
         try:
             futures_account = self.binance.futures_account()
-            futures_observability.update(bot_state.futures_observability_from_account(futures_account))
+            try:
+                position_risk = self.binance.futures_position_risk()
+            except Exception:
+                position_risk = None
+            futures_observability.update(bot_state.futures_observability_from_account(futures_account, position_risk))
         except Exception:
             pass
         # Valor nocional de posiciones short activas

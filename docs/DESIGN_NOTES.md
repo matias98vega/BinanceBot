@@ -214,6 +214,10 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Solucion actual:** `telegram_commands.py` expone menu y paginas de estado, capital, posiciones, health, diagnostico, trades, snapshots, estadisticas, insights y timeline. No abre/cierra ordenes ni modifica `state.json`.
 
+**Posiciones:** la pagina de posiciones separa dos fuentes read-only. Spot muestra posiciones gestionadas por el bot desde `state.json`, porque son las entradas Spot que el bot controla directamente. Futures muestra posiciones observadas desde Binance a traves de `bot_state.positions.short.observed`, alimentado por el mismo read-model que usan Home y Capital. Si una posicion Futures existe en ambas fuentes, se muestra una sola vez y se prioriza el dato observado del exchange.
+
+**Presentacion compacta:** Posiciones se divide en `Spot` y `Futures`. Cada posicion ocupa tres lineas principales: identificacion/lado, PnL o notional, y protecciones o precios. Esto permite ver varias posiciones abiertas en un solo mensaje sin perder los datos operativos importantes. Si Binance no entrega un campo, Telegram muestra `No disponible` en vez de ocultar la posicion.
+
 **Ventajas:** baja friccion operativa y menor riesgo.
 
 **Desventajas:** depende de freshness de `bot_state.json` y archivos JSONL.

@@ -49,18 +49,72 @@ def _nonzero_futures_positions(futures_account):
     return active
 
 
-def futures_observability_from_account(futures_account):
+def _futures_position_side(amount):
+    amount = _float_or_none(amount)
+    if amount is None:
+        return 'UNKNOWN'
+    if amount < 0:
+        return 'SHORT'
+    if amount > 0:
+        return 'LONG'
+    return 'UNKNOWN'
+
+
+def _normalise_futures_position(position):
+    if not isinstance(position, dict):
+        return None
+    amount = _float_or_none(position.get('positionAmt'))
+    if amount is None or abs(amount) <= 0:
+        return None
+    notional = _float_or_none(position.get('notional'))
+    if notional is None:
+        entry = _float_or_none(position.get('entryPrice'))
+        mark = _float_or_none(position.get('markPrice'))
+        price = mark if mark is not None else entry
+        notional = None if price is None else abs(amount * price)
+    return {
+        'symbol': position.get('symbol'),
+        'side': _futures_position_side(amount),
+        'quantity': abs(amount),
+        'notional': None if notional is None else abs(notional),
+        'entry_price': _float_or_none(position.get('entryPrice')),
+        'mark_price': _float_or_none(position.get('markPrice')),
+        'unrealized_pnl': (
+            _float_or_none(position.get('unRealizedProfit'))
+            if position.get('unRealizedProfit') is not None
+            else _float_or_none(position.get('unrealizedProfit'))
+        ),
+        'leverage': _float_or_none(position.get('leverage')),
+        'margin_type': position.get('marginType'),
+        'position_margin': (
+            _float_or_none(position.get('positionInitialMargin'))
+            or _float_or_none(position.get('initialMargin'))
+        ),
+    }
+
+
+def futures_observability_from_account(futures_account, position_risk=None):
     """Return read-only Futures exposure fields from Binance account payload."""
     if not isinstance(futures_account, dict):
         return {}
-    active_positions = _nonzero_futures_positions(futures_account)
+    risk_positions = position_risk if isinstance(position_risk, list) else None
+    if risk_positions is not None:
+        active_positions = [
+            position for position in risk_positions
+            if isinstance(position, dict) and (_float_or_none(position.get('positionAmt')) or 0) != 0
+        ]
+    else:
+        active_positions = _nonzero_futures_positions(futures_account)
+    formatted_positions = [
+        position for position in (_normalise_futures_position(position) for position in active_positions)
+        if position is not None
+    ]
     position_margin = _float_or_none(futures_account.get('totalPositionInitialMargin'))
     if position_margin is None:
         position_margin = sum(
-            _float_or_none(position.get('positionInitialMargin')) or
-            _float_or_none(position.get('initialMargin')) or
+            position.get('position_margin') or
             0.0
-            for position in active_positions
+            for position in formatted_positions
         )
     total_initial_margin = _float_or_none(futures_account.get('totalInitialMargin'))
     return {
@@ -68,12 +122,13 @@ def futures_observability_from_account(futures_account):
         'futures_available_balance': _float_or_none(futures_account.get('availableBalance')),
         'futures_position_margin': position_margin,
         'futures_total_initial_margin': total_initial_margin,
-        'futures_open_positions_count': len(active_positions),
+        'futures_open_positions_count': len(formatted_positions),
         'futures_open_symbols': [
             position.get('symbol')
-            for position in active_positions
+            for position in formatted_positions
             if position.get('symbol')
         ],
+        'futures_positions': formatted_positions,
     }
 
 
@@ -835,6 +890,7 @@ def build_bot_state(
                 'max': max_shorts,
                 'source': 'binance_futures_account' if short_count > len(shorts) else 'state',
                 'symbols': futures_observability.get('futures_open_symbols') or [],
+                'observed': futures_observability.get('futures_positions') or [],
             },
         },
         'pnl': {

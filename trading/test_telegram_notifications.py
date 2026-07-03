@@ -51,6 +51,9 @@ class ObservableCapacityTests(unittest.TestCase):
         self.assertEqual(observability['futures_open_positions_count'], 5)
         self.assertEqual(observability['futures_position_margin'], 20.42)
         self.assertEqual(observability['futures_available_balance'], 0.0)
+        self.assertEqual(len(observability['futures_positions']), 5)
+        self.assertEqual(observability['futures_positions'][0]['symbol'], 'CRCLUSDT')
+        self.assertEqual(observability['futures_positions'][0]['side'], 'SHORT')
 
     @patch.dict(os.environ, {'BOT_TOTAL_CAPITAL_LIMIT_USDT': '54'}, clear=False)
     def test_bot_state_uses_observed_futures_positions_for_read_model(self):
@@ -64,6 +67,7 @@ class ObservableCapacityTests(unittest.TestCase):
                 'futures_position_margin': 20.42,
                 'futures_available_balance': 0.0,
                 'futures_wallet_balance': 22.16,
+                'futures_positions': [{'symbol': 'CRCLUSDT', 'side': 'SHORT'}],
             },
             max_longs=2,
             max_shorts=0,
@@ -72,6 +76,7 @@ class ObservableCapacityTests(unittest.TestCase):
         self.assertEqual(payload['positions']['short']['current'], 5)
         self.assertEqual(payload['capital']['futures_used'], 20.42)
         self.assertEqual(payload['capital']['futures_available_balance'], 0.0)
+        self.assertEqual(payload['positions']['short']['observed'], [{'symbol': 'CRCLUSDT', 'side': 'SHORT'}])
 
 
 if __name__ == '__main__':
