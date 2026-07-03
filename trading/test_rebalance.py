@@ -48,6 +48,26 @@ class FakeBinance:
         return outcome
 
 
+class FakeRebalanceAccount:
+    def get_usdt_spot(self):
+        return 31.85
+
+    def fut_signed(self, method, path, params):
+        return {
+            'totalWalletBalance': '22.16',
+            'totalUnrealizedProfit': '0',
+            'availableBalance': '0.00',
+            'totalPositionInitialMargin': '20.42',
+            'positions': [
+                {'symbol': 'CRCLUSDT', 'positionAmt': '-1'},
+                {'symbol': 'SUIUSDT', 'positionAmt': '-1'},
+                {'symbol': 'NEARUSDT', 'positionAmt': '-1'},
+                {'symbol': 'HYPEUSDT', 'positionAmt': '-1'},
+                {'symbol': 'BNBUSDT', 'positionAmt': '-1'},
+            ],
+        }
+
+
 class RebalanceReserveTests(unittest.TestCase):
     def test_transfer_amount_with_zero_wallet_reserve(self):
         amount = rebalance._transferable_amount(
@@ -219,7 +239,7 @@ class RebalanceDiagnosticsTests(unittest.TestCase):
 
         self.assertIn('Rebalance pendiente', text)
         self.assertIn('Dirección:\nSpot → Futures', text)
-        self.assertIn('Monto:\n26.94 USDT', text)
+        self.assertIn('Desbalance pendiente:\n26.94 USDT', text)
         self.assertIn('Buffer aplicado:\n0.10 USDT', text)
         self.assertIn('Intentos:\n17', text)
         self.assertIn('Ultimo check:', text)
@@ -278,13 +298,99 @@ class RebalanceDiagnosticsTests(unittest.TestCase):
 
         self.assertIn('Rebalance pendiente', text)
         self.assertIn('Dirección:\nFutures', text)
-        self.assertIn('Monto:\n22.16 USDT', text)
+        self.assertIn('Desbalance pendiente:\n22.16 USDT', text)
         self.assertIn('Intentos:\n0', text)
         self.assertIn('Ultimo check:', text)
         self.assertIn('intento:\nNo disponible', text)
         self.assertIn('Motivo / bloqueo:', text)
         self.assertIn('Futures esta ocupado', text)
         self.assertIn('Bloqueo: active_shorts', text)
+
+    def test_pending_amount_is_distinct_from_transferable_amount_when_futures_margin_blocks(self):
+        with patch.object(rebalance.decision_timeline, 'record_rebalance_event') as timeline:
+            status = rebalance._record_rebalance_pending_check(
+                'FUTURES_TO_SPOT',
+                20.21,
+                'Pendiente, pero no transferido porque Futures esta ocupado por shorts activos',
+                blocked_reason='active_shorts',
+                context={
+                    'pending_amount': 20.21,
+                    'transferable_amount': 0.0,
+                    'available_balance': 0.0,
+                    'position_margin': 20.42,
+                    'wallet_balance': 22.16,
+                },
+                status='BLOCKED',
+            )
+
+        saved = self.read_status()
+        self.assertEqual(status['amount'], 20.21)
+        self.assertEqual(saved['amount'], 20.21)
+        self.assertEqual(saved['transferable_amount'], 0.0)
+        self.assertEqual(saved['available_balance'], 0.0)
+        self.assertEqual(saved['position_margin'], 20.42)
+        self.assertEqual(timeline.call_args.args[0], 'rebalance_blocked_margin')
+
+    def test_telegram_pending_margin_block_does_not_show_zero_as_pending_amount(self):
+        metrics = {
+            'total_real': 54.01,
+            'total_limit': 54.01,
+            'total_authorized': 54.01,
+            'spot_real': 31.85,
+            'spot_target': 52.06,
+            'spot_used': 0.0,
+            'spot_reserved': 0,
+            'futures_real': 22.16,
+            'futures_target': 1.95,
+            'futures_used': 20.42,
+            'futures_position_margin': 20.42,
+            'futures_available_balance': 0.0,
+            'futures_reserved': 0,
+            'rebalance': {
+                'status': 'PENDING',
+                'direction': 'FUTURES_TO_SPOT',
+                'amount_pending': 20.21,
+                'transferable_amount': 0.0,
+                'available_balance': 0.0,
+                'position_margin': 20.42,
+                'wallet_balance': 22.16,
+                'attempts': 0,
+                'pending_reason': 'Pendiente, pero no transferido porque Futures esta ocupado por shorts activos',
+                'blocked_reason': 'active_shorts',
+            },
+            'max_exposure_percent': 80.0,
+            'max_position_percent': None,
+            'warning': None,
+        }
+
+        with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics):
+            text = telegram_commands._render_page('capital')['text']
+
+        self.assertIn('Desbalance pendiente:\n20.21 USDT', text)
+        self.assertIn('Disponible para transferir:\n0.00 USDT', text)
+        self.assertIn('Capital Futures comprometido:\n20.42 USDT', text)
+        self.assertNotIn('Monto:\n0.00 USDT', text)
+
+    def test_available_balance_zero_blocks_transfer_without_losing_pending_amount(self):
+        state = {
+            'last_rebalance_trend': 'bearish',
+            'positions': [{'direction': 'short', 'symbol': 'CRCLUSDT', 'entry_price': 1, 'quantity': 1}],
+        }
+        with patch.object(rebalance, 'BINANCE', FakeRebalanceAccount()), \
+             patch.object(rebalance.config, 'DIRECTIONAL_MODE', True), \
+             patch.object(rebalance.capital_manager, 'cap_transfer_amount', return_value=0.0), \
+             patch.object(rebalance.decision_timeline, 'record_rebalance_event') as timeline:
+            ok, message = rebalance.rebalance(state, btc_ctx={'trend': 'bullish'})
+
+        saved = self.read_status()
+        self.assertFalse(ok)
+        self.assertIn('futures', message.lower())
+        self.assertTrue(saved['pending'])
+        self.assertGreater(saved['amount'], 20.0)
+        self.assertEqual(saved['transferable_amount'], 0.0)
+        self.assertEqual(saved['available_balance'], 0.0)
+        self.assertEqual(saved['position_margin'], 20.42)
+        self.assertTrue(any(call.args[0] == 'rebalance_blocked_margin' for call in timeline.call_args_list))
 
     def test_transfer_success_first_attempt(self):
         fake = FakeBinance([{'tranId': 1}])

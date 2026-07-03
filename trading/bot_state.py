@@ -33,6 +33,50 @@ def _round_or_none(value, digits=4):
     return None if value is None else round(value, digits)
 
 
+def _nonzero_futures_positions(futures_account):
+    if not isinstance(futures_account, dict):
+        return []
+    positions = futures_account.get('positions')
+    if not isinstance(positions, list):
+        return []
+    active = []
+    for position in positions:
+        if not isinstance(position, dict):
+            continue
+        amount = _float_or_none(position.get('positionAmt'))
+        if amount is not None and abs(amount) > 0:
+            active.append(position)
+    return active
+
+
+def futures_observability_from_account(futures_account):
+    """Return read-only Futures exposure fields from Binance account payload."""
+    if not isinstance(futures_account, dict):
+        return {}
+    active_positions = _nonzero_futures_positions(futures_account)
+    position_margin = _float_or_none(futures_account.get('totalPositionInitialMargin'))
+    if position_margin is None:
+        position_margin = sum(
+            _float_or_none(position.get('positionInitialMargin')) or
+            _float_or_none(position.get('initialMargin')) or
+            0.0
+            for position in active_positions
+        )
+    total_initial_margin = _float_or_none(futures_account.get('totalInitialMargin'))
+    return {
+        'futures_wallet_balance': _float_or_none(futures_account.get('totalWalletBalance')),
+        'futures_available_balance': _float_or_none(futures_account.get('availableBalance')),
+        'futures_position_margin': position_margin,
+        'futures_total_initial_margin': total_initial_margin,
+        'futures_open_positions_count': len(active_positions),
+        'futures_open_symbols': [
+            position.get('symbol')
+            for position in active_positions
+            if position.get('symbol')
+        ],
+    }
+
+
 def _env_float(name):
     load_dotenv()
     raw = os.environ.get(name)
@@ -317,6 +361,11 @@ def _build_rebalance_diagnostics(spot_real, futures_real, spot_target, futures_t
             'buffer_applied': status.get('buffer_applied'),
             'requested_amount': status.get('requested_amount'),
             'retried_amount': status.get('retried_amount'),
+            'transferable_amount': status.get('transferable_amount'),
+            'available_balance': status.get('available_balance'),
+            'position_margin': status.get('position_margin'),
+            'wallet_balance': status.get('wallet_balance'),
+            'pending_amount': status.get('pending_amount'),
         })
         return enriched
 
@@ -655,6 +704,7 @@ def build_bot_state(
     btc_ctx=None,
     spot_real=None,
     futures_real=None,
+    futures_observability=None,
     spot_target=None,
     futures_target=None,
     max_longs=None,
@@ -670,6 +720,17 @@ def build_bot_state(
 
     state = state if isinstance(state, dict) else {}
     longs, shorts, spot_used, futures_used = _position_capital(state)
+    futures_observability = futures_observability if isinstance(futures_observability, dict) else {}
+    observed_futures_used = _float_or_none(futures_observability.get('futures_position_margin'))
+    if observed_futures_used is None:
+        observed_futures_used = _float_or_none(futures_observability.get('futures_total_initial_margin'))
+    if observed_futures_used is not None:
+        futures_used = observed_futures_used
+    observed_short_count = futures_observability.get('futures_open_positions_count')
+    try:
+        short_count = max(len(shorts), int(observed_short_count))
+    except (TypeError, ValueError):
+        short_count = len(shorts)
     spot_real = _float_or_none(spot_real)
     futures_real = _float_or_none(futures_real)
     total_real = None if spot_real is None or futures_real is None else spot_real + futures_real
@@ -757,6 +818,9 @@ def build_bot_state(
             'futures_target': _round_or_none(futures_target, 4),
             'spot_used': _round_or_none(spot_used, 4),
             'futures_used': _round_or_none(futures_used, 4),
+            'futures_available_balance': _round_or_none(futures_observability.get('futures_available_balance'), 4),
+            'futures_position_margin': _round_or_none(futures_observability.get('futures_position_margin'), 4),
+            'futures_wallet_balance': _round_or_none(futures_observability.get('futures_wallet_balance'), 4),
             'spot_reserved': _round_or_none(spot_reserved, 4),
             'futures_reserved': _round_or_none(futures_reserved, 4),
             'spot_available_for_bot': _round_or_none(None if spot_target is None else max(0.0, spot_target - spot_used), 4),
@@ -766,7 +830,12 @@ def build_bot_state(
         },
         'positions': {
             'long': {'current': len(longs), 'max': max_longs},
-            'short': {'current': len(shorts), 'max': max_shorts},
+            'short': {
+                'current': short_count,
+                'max': max_shorts,
+                'source': 'binance_futures_account' if short_count > len(shorts) else 'state',
+                'symbols': futures_observability.get('futures_open_symbols') or [],
+            },
         },
         'pnl': {
             'today': _round_or_none(state.get('daily_pnl_usdt', 0), 4),

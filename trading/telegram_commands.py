@@ -380,6 +380,9 @@ def _exposure_metrics():
             'futures_real': capital.get('futures_real'),
             'futures_target': futures_target,
             'futures_used': capital.get('futures_used'),
+            'futures_available_balance': capital.get('futures_available_balance'),
+            'futures_position_margin': capital.get('futures_position_margin'),
+            'futures_wallet_balance': capital.get('futures_wallet_balance'),
             'futures_reserved': capital.get('futures_reserved'),
             'futures_total': futures_target,
             'warning': capital.get('warning'),
@@ -423,6 +426,9 @@ def _exposure_metrics():
         'futures_real': None,
         'futures_target': futures_total,
         'futures_used': futures_used,
+        'futures_available_balance': None,
+        'futures_position_margin': None,
+        'futures_wallet_balance': None,
         'futures_reserved': None,
         'futures_total': futures_total,
         'warning': None,
@@ -691,14 +697,26 @@ def _rebalance_reason_lines(rebalance):
 
 
 def _rebalance_pending_lines(rebalance, direction_label, amount):
+    available = rebalance.get('available_balance')
+    if available is None:
+        available = rebalance.get('fut_free') if str(rebalance.get('direction') or '').upper() == 'FUTURES_TO_SPOT' else rebalance.get('spot_free')
+    position_margin = rebalance.get('position_margin')
+    if position_margin is None:
+        position_margin = rebalance.get('futures_position_margin')
     lines = [
         '\u23f3 Rebalance pendiente',
         '',
         'Dirección:',
         direction_label,
         '',
-        'Monto:',
+        'Desbalance pendiente:',
         _fmt_money(amount),
+        '',
+        'Disponible para transferir:',
+        _fmt_money(available),
+        '',
+        'Capital Futures comprometido:',
+        _fmt_money(position_margin),
         '',
         'Buffer aplicado:',
         _fmt_money(rebalance.get('buffer_applied')),
@@ -1172,6 +1190,10 @@ class CapitalPage(MenuPage):
             f'Objetivo: {_fmt_money(metrics["futures_target"])}',
             f'Usado: {_fmt_money(metrics["futures_used"])}',
         ])
+        if metrics.get('futures_position_margin') is not None:
+            lines.append(f'Comprometido: {_fmt_money(metrics.get("futures_position_margin"))}')
+        if metrics.get('futures_available_balance') is not None:
+            lines.append(f'Disponible: {_fmt_money(metrics.get("futures_available_balance"))}')
         if metrics.get('futures_reserved'):
             lines.append(f'Reserva: {_fmt_money(metrics.get("futures_reserved"))}')
         if rebalance:

@@ -473,7 +473,7 @@ class TelegramStatsTests(unittest.TestCase):
 
         self.assertIn('Rebalance pendiente', text)
         self.assertIn('Dirección:\nSpot → Futures', text)
-        self.assertIn('Monto:\n26.94 USDT', text)
+        self.assertIn('Desbalance pendiente:\n26.94 USDT', text)
 
 
 if __name__ == '__main__':

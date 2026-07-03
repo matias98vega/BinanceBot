@@ -60,6 +60,8 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Recuperacion:** cuando una transferencia posterior se ejecuta correctamente, `rebalance_status.json` se limpia automaticamente (`pending=false`). Si el fallo persiste, el contador de intentos acumulados y el ultimo motivo Binance se mantienen visibles. Si no hay intento porque el capital esta bloqueado por posiciones activas, reserva o capital manager, el ultimo check y el bloqueo se mantienen visibles. Si una transferencia manual o externa deja Spot/Futures dentro de la tolerancia, el estado se marca con `resolved_reason=capital_already_aligned` y se registra un evento de Timeline.
 
+**Observabilidad Futures:** `Futures Wallet` es el capital real de la wallet Futures (`totalWalletBalance` mas uPnL cuando aplica para equity). `Position Margin` es el capital comprometido en posiciones abiertas (`totalPositionInitialMargin`) y se muestra como Futures usado. `Available Balance` es el saldo libre transferible/operable y sigue siendo la base para decidir si una transferencia puede ejecutarse. `Pending Amount` es el desbalance real contra el target teorico. `Transferable Amount` es la parte de ese desbalance que puede moverse ahora despues de considerar saldo libre, reserva y buffer. Telegram muestra estos conceptos separados para no confundir un bloqueo por margen con un rebalance alineado.
+
 ## Capital Manager
 
 **Problema:** sizing y validacion de capital pueden divergir si cada modulo calcula maximos por su cuenta.

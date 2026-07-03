@@ -49,6 +49,7 @@ REBALANCE_MIN_USDT         = 2.0    # no transferir menos de $2
 REBALANCE_MIN_WALLET       = _env_float('REBALANCE_MIN_WALLET_USDT', 0.0)  # reserva minima opcional por wallet
 REBALANCE_TRANSFER_BUFFER_USDT = _env_float('REBALANCE_TRANSFER_BUFFER_USDT', 0.10)  # colchon para evitar -5013 por saldo libre exacto
 REBALANCE_ALIGNMENT_TOLERANCE_USDT = _env_float('REBALANCE_ALIGNMENT_TOLERANCE_USDT', 0.20)  # tolerancia para reconciliar estado pendiente
+_LAST_FUTURES_CAPITAL_DETAILS = {}
 
 
 def _rebalance_log(message):
@@ -85,6 +86,40 @@ def _safe_float(value):
         return round(float(value), 8)
     except (TypeError, ValueError):
         return None
+
+
+def _futures_position_margin(account):
+    if not isinstance(account, dict):
+        return 0.0
+    value = _safe_float(account.get('totalPositionInitialMargin'))
+    if value is not None:
+        return value
+    positions = account.get('positions') if isinstance(account.get('positions'), list) else []
+    total = 0.0
+    for position in positions:
+        if not isinstance(position, dict):
+            continue
+        amount = _safe_float(position.get('positionAmt'))
+        if amount is None or abs(amount) <= 0:
+            continue
+        total += (
+            _safe_float(position.get('positionInitialMargin')) or
+            _safe_float(position.get('initialMargin')) or
+            0.0
+        )
+    return round(total, 8)
+
+
+def _active_futures_positions_count(account):
+    positions = account.get('positions') if isinstance(account, dict) and isinstance(account.get('positions'), list) else []
+    count = 0
+    for position in positions:
+        if not isinstance(position, dict):
+            continue
+        amount = _safe_float(position.get('positionAmt'))
+        if amount is not None and abs(amount) > 0:
+            count += 1
+    return count
 
 
 def _direction_arrow(direction):
@@ -201,7 +236,10 @@ def _record_rebalance_pending_check(direction, amount, pending_reason, blocked_r
         'REBALANCE PENDING CHECK status=%s direction=%s amount=%s attempts=%s pending_reason=%s blocked_reason=%s context=%s',
         status, _direction_arrow(effective_direction), effective_amount, attempts, pending_reason, blocked_reason, context or {},
     )
+    position_margin = _safe_float((context or {}).get('position_margin') or (context or {}).get('futures_position_margin'))
     event_name = 'rebalance_blocked' if blocked_reason else 'rebalance_pending_created'
+    if blocked_reason and position_margin and position_margin > 0 and str(blocked_reason).startswith(('active_shorts', 'insufficient_futures_free')):
+        event_name = 'rebalance_blocked_margin'
     if previous.get('pending') and not blocked_reason:
         event_name = 'rebalance_pending_check'
     try:
@@ -584,6 +622,7 @@ def _transfer_with_recovery(direction, calculated_amount, context=None):
 def _capital_total(state):
     """Capital total = libre + comprometido en posiciones (ambas wallets)."""
     import urllib.error, time, logging
+    global _LAST_FUTURES_CAPITAL_DETAILS
     
     spot_free   = BINANCE.get_usdt_spot()
     
@@ -613,6 +652,14 @@ def _capital_total(state):
     )
     # Para rebalanceo, fut_free = disponible para nuevas posiciones
     fut_free    = float(account.get('availableBalance', 0))
+    position_margin = _futures_position_margin(account)
+    _LAST_FUTURES_CAPITAL_DETAILS = {
+        'wallet_balance': _safe_float(fut_wallet),
+        'available_balance': _safe_float(fut_free),
+        'position_margin': _safe_float(position_margin),
+        'total_initial_margin': _safe_float(account.get('totalInitialMargin')),
+        'open_positions': _active_futures_positions_count(account),
+    }
     return spot_free, fut_free, spot_in_pos, fut_total
 
 
@@ -747,6 +794,9 @@ def rebalance(state, btc_ctx=None):
     # spot_actual y fut_actual ya calculados arriba desde _capital_total
     diff_fut = target_fut - fut_actual   # positivo = futures tiene menos de lo que debería
     diff_spot = target_spot - spot_actual
+    pending_to_futures = max(0.0, diff_fut)
+    pending_to_spot = max(0.0, -diff_fut)
+    futures_details = dict(_LAST_FUTURES_CAPITAL_DETAILS)
     _rebalance_log(
         f'CHECK: regime={trend} total={total_capital:.2f} spot_free={spot_free:.2f} '
         f'spot_actual={spot_actual:.2f} fut_actual={fut_actual:.2f} fut_free={fut_free:.2f} '
@@ -923,10 +973,20 @@ def rebalance(state, btc_ctx=None):
                 # Cambio a bullish pero hay shorts viejos: esperar que cierren
                 _record_rebalance_pending_check(
                     'FUTURES_TO_SPOT',
-                    amount,
+                    pending_to_spot,
                     'Pendiente, pero no transferido porque hay shorts activos reteniendo Futures',
                     blocked_reason='active_shorts',
-                    context={'trend': trend, 'active_shorts': len(shorts_open), 'fut_free': fut_free, 'calculated_amount': calculated_amount},
+                    context={
+                        'trend': trend,
+                        'active_shorts': len(shorts_open),
+                        'fut_free': fut_free,
+                        'pending_amount': pending_to_spot,
+                        'transferable_amount': amount,
+                        'calculated_amount': calculated_amount,
+                        'available_balance': futures_details.get('available_balance', fut_free),
+                        'position_margin': futures_details.get('position_margin'),
+                        'wallet_balance': futures_details.get('wallet_balance'),
+                    },
                     status='BLOCKED',
                 )
                 _rebalance_log(
@@ -939,10 +999,20 @@ def rebalance(state, btc_ctx=None):
                 )
             _record_rebalance_pending_check(
                 'FUTURES_TO_SPOT',
-                amount,
+                pending_to_spot,
                 'Pendiente, pero no transferido por USDT libre insuficiente en Futures',
                 blocked_reason='insufficient_futures_free',
-                context={'trend': trend, 'fut_free': fut_free, 'calculated_amount': calculated_amount, 'threshold': REBALANCE_MIN_USDT},
+                context={
+                    'trend': trend,
+                    'fut_free': fut_free,
+                    'pending_amount': pending_to_spot,
+                    'transferable_amount': amount,
+                    'calculated_amount': calculated_amount,
+                    'threshold': REBALANCE_MIN_USDT,
+                    'available_balance': futures_details.get('available_balance', fut_free),
+                    'position_margin': futures_details.get('position_margin'),
+                    'wallet_balance': futures_details.get('wallet_balance'),
+                },
                 status='BLOCKED',
             )
             _rebalance_log(f'SKIP: reason=insufficient futures free fut_free={fut_free:.2f} amount={amount:.2f}')
@@ -951,10 +1021,20 @@ def rebalance(state, btc_ctx=None):
         if shorts_open and fut_free - amount < REBALANCE_MIN_WALLET:
             _record_rebalance_pending_check(
                 'FUTURES_TO_SPOT',
-                amount,
+                pending_to_spot,
                 'Pendiente, pero no transferido porque Futures esta ocupado por shorts activos',
                 blocked_reason='active_shorts_wallet_reserve',
-                context={'trend': trend, 'active_shorts': len(shorts_open), 'fut_free': fut_free, 'wallet_min': REBALANCE_MIN_WALLET},
+                context={
+                    'trend': trend,
+                    'active_shorts': len(shorts_open),
+                    'fut_free': fut_free,
+                    'pending_amount': pending_to_spot,
+                    'transferable_amount': amount,
+                    'wallet_min': REBALANCE_MIN_WALLET,
+                    'available_balance': futures_details.get('available_balance', fut_free),
+                    'position_margin': futures_details.get('position_margin'),
+                    'wallet_balance': futures_details.get('wallet_balance'),
+                },
                 status='BLOCKED',
             )
             _rebalance_log(f'SKIP: reason=active shorts count={len(shorts_open)} fut_free={fut_free:.2f} amount={amount:.2f}')

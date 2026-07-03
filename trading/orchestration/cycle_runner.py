@@ -414,11 +414,27 @@ class CycleRunner:
         spot_total = round(spot_bal + spot_in_positions, 2)
         spot_used  = round(spot_in_positions, 2)
         fut_total, fut_avail, fut_margin = self.binance.get_futures_summary()
+        futures_observability = {
+            'futures_available_balance': fut_avail,
+            'futures_position_margin': fut_margin,
+        }
+        try:
+            futures_account = self.binance.futures_account()
+            futures_observability.update(bot_state.futures_observability_from_account(futures_account))
+        except Exception:
+            pass
         # Valor nocional de posiciones short activas
         short_notional = sum(
             p['entry_price'] * p['quantity'] / p.get('leverage', config.FUTURES_LEVERAGE)
             for p in state['positions'] if p['direction'] == 'short'
         )
+        try:
+            short_count_observed = max(short_count_final, int(futures_observability.get('futures_open_positions_count')))
+        except (TypeError, ValueError):
+            short_count_observed = short_count_final
+        futures_used_observed = futures_observability.get('futures_position_margin')
+        if futures_used_observed is None:
+            futures_used_observed = short_notional
         try:
             cap = capital_manager.snapshot(spot_total, fut_total)
             max_position_label = (
@@ -448,6 +464,7 @@ class CycleRunner:
                 btc_ctx=btc_ctx,
                 spot_real=spot_total,
                 futures_real=fut_total,
+                futures_observability=futures_observability,
                 max_longs=max_longs,
                 max_shorts=max_shorts,
                 system_health='OK',
@@ -468,13 +485,15 @@ class CycleRunner:
                 message=f'Cycle summary: longs {long_count_final}/{max_longs_console}, shorts {short_count_final}/{max_shorts_console}',
                 details={
                     'longs': long_count_final,
-                    'shorts': short_count_final,
+                    'shorts': short_count_observed,
                     'max_longs': max_longs_console,
                     'max_shorts': max_shorts_console,
                     'spot_used': spot_used,
                     'spot_total': spot_total,
-                    'futures_used': short_notional,
+                    'futures_used': futures_used_observed,
                     'futures_total': fut_total,
+                    'futures_available_balance': fut_avail,
+                    'futures_position_margin': futures_observability.get('futures_position_margin'),
                     'pnl_total': state.get('total_pnl_usdt'),
                     'pnl_today': state.get('daily_pnl_usdt'),
                 },
