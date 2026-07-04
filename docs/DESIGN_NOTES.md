@@ -170,7 +170,7 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Alternativas:** seguir reintentando OCO cada ciclo, vender automaticamente el residual, ignorarlo, o clasificarlo como estado conocido.
 
-**Solucion actual:** antes de recrear OCO para un huerfano Spot, `audit_pipeline.py` calcula cantidad redondeada, precio redondeado y notional efectivo. Si no alcanza el minimo, no envia la orden a Binance y registra el residual como `unprotectable_residual` en `data/history/residuals_status.json`. El estado guarda simbolo, asset, cantidad, valor estimado, minimo requerido, motivo, timestamps, contador de alertas y accion sugerida. Tambien se registra un evento `spot_residual_unprotectable` en Timeline.
+**Solucion actual:** antes de recrear OCO para un huerfano Spot o una LONG en recovery sin OCO, `residuals.py` calcula cantidad redondeada, precio redondeado y notional efectivo. `audit_pipeline.py`, `longs._recolocar_oco()` y `position_lifecycle.recolocar_oco_long()` usan ese helper antes de cualquier POST OCO de recuperacion. Si no alcanza el minimo, no envia la orden a Binance y registra el residual como `unprotectable_residual` en `data/history/residuals_status.json`. El estado guarda simbolo, asset, cantidad, valor estimado, minimo requerido, motivo, timestamps, contador de alertas y accion sugerida. Tambien se registra un evento `spot_residual_unprotectable` en Timeline.
 
 **Ventajas:** evita HTTP 400 repetitivos, reduce ruido operativo y muestra una accion manual clara sin tocar estrategia ni flujo normal de ordenes.
 

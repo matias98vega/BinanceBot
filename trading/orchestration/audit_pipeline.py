@@ -4,7 +4,6 @@
 import time
 
 import config
-import decision_timeline
 import residuals
 import utils
 
@@ -79,7 +78,6 @@ def audit_orphans(state, binance, out_fn, safe_log_open_fn):
                 filters = binance.get_spot_filters(sym)
                 tick = filters.get('tick_size', 0.0001)
                 step = filters.get('step_size', 0.1)
-                min_notional = float(filters.get('min_notional') or 5.0)
                 qty = utils.round_step(free, step)
 
                 sl = utils.round_tick(cur - config.SL_ATR_MULT * atr, tick)
@@ -87,59 +85,8 @@ def audit_orphans(state, binance, out_fn, safe_log_open_fn):
                 sl = max(sl, cur * (1 - config.SL_MIN_DIST_PCT / 100 * 1.05))
                 sl = utils.round_tick(sl, tick)
                 sl_limit = utils.round_tick(sl * 0.9985, tick)
-                rounded_price = utils.round_tick(cur, tick)
-                notional_after_rounding = qty * rounded_price
 
-                if notional_after_rounding < min_notional:
-                    entry, should_alert = residuals.classify_unprotectable_residual(
-                        sym,
-                        asset,
-                        total,
-                        total * price,
-                        min_notional,
-                        reason='below_min_notional',
-                        rounded_qty=qty,
-                        rounded_price=rounded_price,
-                        notional_after_rounding=notional_after_rounding,
-                    )
-                    import logging
-                    logging.warning(
-                        'RESIDUAL UNPROTECTABLE symbol=%s asset=%s quantity=%s estimated_value=%.8f '
-                        'min_notional=%.8f reason=%s rounded_qty=%s rounded_price=%s '
-                        'notional_after_rounding=%.8f',
-                        sym,
-                        asset,
-                        total,
-                        total * price,
-                        min_notional,
-                        entry.get('reason'),
-                        qty,
-                        rounded_price,
-                        notional_after_rounding,
-                    )
-                    try:
-                        decision_timeline.record_event(
-                            event='spot_residual_unprotectable',
-                            message=f'{sym} residual sin OCO: valor bajo mínimo Binance',
-                            level='WARNING',
-                            category='RISK',
-                            symbol=sym,
-                            direction='LONG',
-                            details={
-                                'quantity': total,
-                                'estimated_value': total * price,
-                                'min_notional': min_notional,
-                                'reason': entry.get('reason'),
-                            },
-                        )
-                    except Exception:
-                        pass
-                    out_fn(
-                        f'⚠️ {asset} residual sin OCO: valor {notional_after_rounding:.2f} USDT '
-                        f'< mínimo {min_notional:.2f} USDT'
-                    )
-                    if should_alert:
-                        utils.send_alert(residuals.residual_alert_message(entry))
+                if residuals.handle_unprotectable_spot_residual(sym, asset, free, cur, filters, out_fn=out_fn):
                     continue
 
                 if tp <= cur or sl >= cur or qty <= 0:

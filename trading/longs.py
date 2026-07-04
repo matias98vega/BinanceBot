@@ -5,7 +5,7 @@ Abre, monitorea, toma parcial, trailing stop, cierra.
 """
 import sys, os, time, math
 sys.path.insert(0, os.path.dirname(__file__))
-import utils, config, capital_manager, decision_timeline, binance_client
+import utils, config, capital_manager, decision_timeline, binance_client, residuals
 
 BINANCE = binance_client.get_default_client()
 
@@ -513,6 +513,16 @@ def _recolocar_oco(pos, state):
         tick = filters.get('tick_size', 0.0001)
         qty, real_asset_balance = _adjust_spot_qty(sym, qty, price_now, filters)
         if qty <= 0:
+            if residuals.handle_unprotectable_spot_residual(
+                sym,
+                _asset_from_symbol(sym),
+                real_asset_balance,
+                price_now,
+                filters,
+            ):
+                pos['quantity'] = real_asset_balance
+                pos['recovery_pending'] = True
+                return 'hold', price_now, 0
             pos['quantity'] = 0.0
             pos['recovery_pending'] = False
             pos['already_closed'] = True
@@ -520,6 +530,16 @@ def _recolocar_oco(pos, state):
         sl_r = utils.round_tick(sl, tick)
         tp_r = utils.round_tick(tp, tick)
         sl_limit_r = utils.round_tick(sl_r * 0.999, tick)
+        if residuals.handle_unprotectable_spot_residual(
+            sym,
+            _asset_from_symbol(sym),
+            qty,
+            price_now,
+            filters,
+        ):
+            pos['quantity'] = qty
+            pos['recovery_pending'] = True
+            return 'hold', price_now, 0
         oco_params = {
             'symbol':               sym,
             'side':                 'SELL',

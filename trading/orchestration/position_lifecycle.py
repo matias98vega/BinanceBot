@@ -6,6 +6,7 @@ import time
 import config
 import decision_timeline
 import rebalance
+import residuals
 import shorts
 import utils
 
@@ -13,11 +14,21 @@ import utils
 def recolocar_oco_long(pos, sym, qty_total, step, price, tp, entry, binance, out_fn):
     import urllib.error as _ue
     try:
-        tick = binance.get_spot_filters(sym).get('tick_size', 0.0001)
+        filters = binance.get_spot_filters(sym)
+        tick = filters.get('tick_size', 0.0001)
         qty = utils.round_step(qty_total, step)
         new_sl = utils.round_tick(entry * (1 - config.SL_MIN_DIST_PCT / 100), tick)
         new_sl_l = utils.round_tick(new_sl * 0.999, tick)
         new_tp = utils.round_tick(tp, tick)
+        if residuals.handle_unprotectable_spot_residual(
+            sym,
+            str(sym).replace('USDT', ''),
+            qty_total,
+            price,
+            filters,
+            out_fn=out_fn,
+        ):
+            return
         if qty * price < 5.0:
             utils.send_alert(f'🚨 {sym}: no pude recolocar OCO (qty insuficiente). Revisión manual requerida.')
             return

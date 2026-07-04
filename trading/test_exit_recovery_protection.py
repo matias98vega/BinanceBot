@@ -20,6 +20,7 @@ import residuals
 import shorts
 import sl_guardian
 import utils
+from orchestration import position_lifecycle
 
 
 def _http_error(body, code=400):
@@ -358,6 +359,63 @@ class ExitRecoveryProtectionTests(unittest.TestCase):
         self.assertFalse(second_alert)
         self.assertEqual(second['alert_count'], first['alert_count'])
         self.assertEqual(second['first_seen'], first['first_seen'])
+
+    def test_long_recovery_without_oco_records_residual_before_post(self):
+        client = Mock()
+        client.get_spot_price.return_value = 100.0
+        client.get_spot_filters.return_value = {'tick_size': 0.01, 'step_size': 0.000001, 'min_notional': 10.0}
+        client.get_asset_spot.return_value = 0.061864
+        pos = {
+            'id': 'long_SOLUSDT_1',
+            'symbol': 'SOLUSDT',
+            'entry_price': 100.0,
+            'quantity': 0.061864,
+            'sl': 90.0,
+            'tp': 120.0,
+            'recovery_pending': True,
+        }
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(longs, 'BINANCE', client), \
+             patch.object(residuals, 'DEFAULT_STATUS_FILE', os.path.join(tmp, 'residuals_status.json')), \
+             patch('utils.send_alert') as send_alert, \
+             patch('decision_timeline.record_event'):
+            action, price, pnl = longs._recolocar_oco(pos, {'positions': [pos]})
+            status = residuals.load_status(os.path.join(tmp, 'residuals_status.json'))
+
+        self.assertEqual(action, 'hold')
+        self.assertEqual(price, 100.0)
+        self.assertEqual(pnl, 0)
+        client.spot_signed.assert_not_called()
+        self.assertEqual(status['residuals']['SOLUSDT']['status'], 'unprotectable_residual')
+        self.assertTrue(pos['recovery_pending'])
+        self.assertIn('SOL residual sin OCO', send_alert.call_args.args[0])
+
+    def test_position_lifecycle_recolocar_oco_detects_residual_before_post(self):
+        client = Mock()
+        client.get_spot_filters.return_value = {'tick_size': 0.01, 'step_size': 0.000001, 'min_notional': 10.0}
+        pos = {'symbol': 'SOLUSDT'}
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(residuals, 'DEFAULT_STATUS_FILE', os.path.join(tmp, 'residuals_status.json')), \
+             patch('utils.send_alert') as send_alert, \
+             patch('decision_timeline.record_event'):
+            position_lifecycle.recolocar_oco_long(
+                pos,
+                'SOLUSDT',
+                0.061864,
+                0.000001,
+                100.0,
+                120.0,
+                100.0,
+                client,
+                Mock(),
+            )
+            status = residuals.load_status(os.path.join(tmp, 'residuals_status.json'))
+
+        client.spot_signed.assert_not_called()
+        self.assertEqual(status['residuals']['SOLUSDT']['status'], 'unprotectable_residual')
+        self.assertIn('SOL residual sin OCO', send_alert.call_args.args[0])
 
     def test_residual_alert_is_classified_as_warning(self):
         msg = residuals.residual_alert_message({
