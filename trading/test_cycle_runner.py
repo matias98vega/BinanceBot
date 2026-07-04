@@ -14,6 +14,24 @@ from orchestration import cycle_runner
 
 
 class CycleRunnerTests(unittest.TestCase):
+    def test_cycle_summary_uses_observed_futures_values(self):
+        line = cycle_runner.format_cycle_summary(
+            long_count=2,
+            max_longs=2,
+            short_count=5,
+            max_shorts=5,
+            spot_used=18.0,
+            spot_total=31.0,
+            futures_used=20.43,
+            futures_total=22.16,
+        )
+
+        self.assertIn('Longs: 2/2', line)
+        self.assertIn('Shorts: 5/5', line)
+        self.assertIn('Futures: $20.43/$22.16', line)
+        self.assertNotIn('Shorts: 0/0', line)
+        self.assertNotIn('Futures: $0.00/$22.16', line)
+
     def test_paused_cycle_runs_audit_and_persists_warning(self):
         state = {
             'status': 'paused',

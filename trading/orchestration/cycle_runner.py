@@ -14,6 +14,14 @@ import shorts
 import utils
 
 
+def format_cycle_summary(long_count, max_longs, short_count, max_shorts,
+                         spot_used, spot_total, futures_used, futures_total):
+    return (
+        f'\n💼 Longs: {long_count}/{max_longs} | Shorts: {short_count}/{max_shorts} | '
+        f'Spot: ${spot_used:.2f}/${spot_total:.2f} | Futures: ${futures_used:.2f}/${futures_total:.2f}'
+    )
+
+
 class CycleRunner:
     def __init__(
         self,
@@ -95,7 +103,7 @@ class CycleRunner:
             state['status'] = 'paused'
             state['pause_until'] = int(time.time()) + 86400  # 24h
             self.out('â›” Circuit breaker: 4 SLs consecutivos â†’ bot pausado por 24h')
-            utils.send_alert('â›” Bot pausado por circuit breaker: 4 SLs consecutivos')
+            utils.send_alert('⛔ Bot pausado por circuit breaker: 4 SLs consecutivos')
             try:
                 self.analytics.log_event(
                     'CIRCUIT_BREAKER',
@@ -348,7 +356,7 @@ class CycleRunner:
                     utils.send_alert(utils.format_trade_open_alert(pos, best_long, btc_ctx.get('trend')))
                 else:
                     self.out(f'âš ï¸ LONG no abierto: {msg}')
-                    utils.send_alert(f'âš ï¸ FALLÃ“ apertura LONG {best_long["symbol"]}: {msg}')
+                    utils.send_alert(f'⚠️ FALLÓ apertura LONG {best_long["symbol"]}: {msg}')
                     # Log detallado para debugging
                     import logging
                     logging.error(f'LONG fallido {best_long["symbol"]}: {msg}')
@@ -385,7 +393,7 @@ class CycleRunner:
                     utils.send_alert(utils.format_trade_open_alert(pos, best_short, btc_ctx.get('trend')))
                 else:
                     self.out(f'âš ï¸ SHORT no abierto: {msg}')
-                    utils.send_alert(f'âš ï¸ FALLÃ“ apertura SHORT {best_short["symbol"]}: {msg}')
+                    utils.send_alert(f'⚠️ FALLÓ apertura SHORT {best_short["symbol"]}: {msg}')
                     # Log detallado para debugging
                     import logging
                     logging.error(f'SHORT fallido {best_short["symbol"]}: {msg}')
@@ -481,12 +489,21 @@ class CycleRunner:
             max_shorts_console = short_state.get('max', max_shorts)
         except Exception as e:
             self.out(f'BotState build warning: {e}')
-        self.out(f'\nðŸ’¼ Longs: {long_count_final}/{max_longs_console} | Shorts: {short_count_final}/{max_shorts_console} | Spot: ${spot_used:.2f}/${spot_total:.2f} | Futures: ${short_notional:.2f}/${fut_total:.2f}')
-        self.out(f'ðŸ“Š PnL total: {state["total_pnl_usdt"]:+.4f} USDT | Hoy: {state["daily_pnl_usdt"]:+.4f} USDT')
+        self.out(format_cycle_summary(
+            long_count_final,
+            max_longs_console,
+            short_count_observed,
+            max_shorts_console,
+            spot_used,
+            spot_total,
+            futures_used_observed,
+            fut_total,
+        ))
+        self.out(f'📊 PnL total: {state["total_pnl_usdt"]:+.4f} USDT | Hoy: {state["daily_pnl_usdt"]:+.4f} USDT')
         try:
             decision_timeline.record_cycle_end(
                 cycle_id=cycle_id,
-                message=f'Cycle summary: longs {long_count_final}/{max_longs_console}, shorts {short_count_final}/{max_shorts_console}',
+                message=f'Cycle summary: longs {long_count_final}/{max_longs_console}, shorts {short_count_observed}/{max_shorts_console}',
                 details={
                     'longs': long_count_final,
                     'shorts': short_count_observed,

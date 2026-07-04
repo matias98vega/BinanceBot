@@ -105,6 +105,21 @@ def log_binance_http_error(operation, symbol=None, side=None, order_type=None, p
     return details
 
 
+def format_binance_error_details(details, include_raw_body=False):
+    if not isinstance(details, dict):
+        return ''
+    parts = []
+    if details.get('status') is not None:
+        parts.append(f'HTTP {details.get("status")}')
+    if details.get('code') is not None:
+        parts.append(f'code={details.get("code")}')
+    if details.get('msg'):
+        parts.append(f'msg={details.get("msg")}')
+    if include_raw_body and details.get('raw_body'):
+        parts.append(f'raw_body={details.get("raw_body")}')
+    return ' '.join(parts)
+
+
 def count_positions(state, direction):
     return sum(
         1 for p in state.get('positions', [])

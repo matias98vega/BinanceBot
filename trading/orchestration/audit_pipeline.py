@@ -45,13 +45,13 @@ def audit_orphans(state, binance, out_fn, safe_log_open_fn):
                 cd_info = state.get('cooldown_symbols', {})
                 expiry = cd_info.get(sym, 0) if isinstance(cd_info, dict) else 0
                 rem_h = max(0, (expiry - int(time.time())) / 3600) if expiry else 0
-                out_fn(f'â„¹ï¸ {asset} en cooldown ({rem_h:.1f}h restantes), no se coloca OCO automÃ¡tico')
+                out_fn(f'ℹ️ {asset} en cooldown ({rem_h:.1f}h restantes), no se coloca OCO automático')
                 continue
 
             if dust_in_progress and total * price < 15.0:
                 continue
 
-            msg = f'âš ï¸ Activo huÃ©rfano detectado: {asset} ({total:.4f} = ${total*price:.2f})'
+            msg = f'⚠️ Activo huérfano detectado: {asset} ({total:.4f} = ${total*price:.2f})'
             out_fn(msg)
             utils.send_alert(msg)
 
@@ -87,9 +87,9 @@ def audit_orphans(state, binance, out_fn, safe_log_open_fn):
                 sl_limit = utils.round_tick(sl * 0.9985, tick)
 
                 if tp <= cur or sl >= cur or qty <= 0:
-                    raise ValueError(f'precios invÃ¡lidos: sl={sl} cur={cur} tp={tp} qty={qty}')
+                    raise ValueError(f'precios inválidos: sl={sl} cur={cur} tp={tp} qty={qty}')
 
-                oco = binance.spot_signed('POST', '/api/v3/order/oco', {
+                oco_params = {
                     'symbol': sym,
                     'side': 'SELL',
                     'quantity': str(qty),
@@ -97,7 +97,8 @@ def audit_orphans(state, binance, out_fn, safe_log_open_fn):
                     'stopPrice': str(sl),
                     'stopLimitPrice': str(sl_limit),
                     'stopLimitTimeInForce': 'GTC',
-                })
+                }
+                oco = binance.spot_signed('POST', '/api/v3/order/oco', oco_params)
                 oco_id = str(oco.get('orderListId', ''))
 
                 state['positions'].append({
@@ -116,16 +117,27 @@ def audit_orphans(state, binance, out_fn, safe_log_open_fn):
                 })
                 safe_log_open_fn(state['positions'][-1], None, None, None)
                 utils.save_state(state)
-                ok_msg = f'âœ… {asset} recuperado: OCO colocado (SL=${sl:.4f} TP=${tp:.4f})'
+                ok_msg = f'✅ {asset} recuperado: OCO colocado (SL=${sl:.4f} TP=${tp:.4f})'
                 out_fn(ok_msg)
                 utils.send_alert(ok_msg)
 
             except Exception as e:
-                out_fn(f'âŒ No se pudo proteger {asset}: {e}')
-                utils.send_alert(f'ðŸš¨ {asset} huÃ©rfano sin OCO: {e}. Requiere intervenciÃ³n manual.')
+                details = {}
+                if hasattr(e, 'code') or hasattr(e, 'status'):
+                    details = utils.log_binance_http_error(
+                        'orphan spot OCO recovery',
+                        sym,
+                        'SELL',
+                        'OCO',
+                        locals().get('oco_params', {}),
+                        e,
+                    )
+                reason = utils.format_binance_error_details(details, include_raw_body=True) or str(e)
+                out_fn(f'❌ No se pudo proteger {asset}: {reason}')
+                utils.send_alert(f'🚨 {asset} huérfano sin OCO: {reason}. Requiere intervención manual.')
 
     except Exception as e:
-        out_fn(f'âš ï¸ AuditorÃ­a fallÃ³: {e}')
+        out_fn(f'⚠️ Auditoría falló: {e}')
 
 
 def maybe_clean_dust(state, binance, out_fn):
@@ -146,8 +158,8 @@ def maybe_clean_dust(state, binance, out_fn):
 
     assets, msg = binance.clean_dust(dry_run=config.DRY_RUN)
     if assets:
-        out_fn(f'ðŸ§¹ Polvo: {msg}')
-        utils.send_alert(f'ðŸ§¹ {msg}')
+        out_fn(f'🧹 Polvo: {msg}')
+        utils.send_alert(f'🧹 {msg}')
         state['last_dust_conversion'] = now
         state['dust_in_progress'] = True
     elif 'Rate limit' in msg:
@@ -156,6 +168,6 @@ def maybe_clean_dust(state, binance, out_fn):
         state['last_dust_clean'] = now
         state['dust_in_progress'] = False
         if nueva_semana:
-            out_fn(f'ðŸ§¹ Limpieza de polvo completada')
+            out_fn(f'🧹 Limpieza de polvo completada')
     else:
         state['last_dust_conversion'] = now

@@ -284,6 +284,74 @@ class ExitRecoveryProtectionTests(unittest.TestCase):
         messages = [call.args[0] for call in send_alert.call_args_list]
         self.assertTrue(any('sin OCO' in msg for msg in messages))
 
+    def test_orphan_oco_http_error_alert_includes_binance_details(self):
+        raw_body = '{"code":-2010,"msg":"Account has insufficient balance for requested action."}'
+        err = _http_error(raw_body)
+        err.binance_endpoint = '/api/v3/order/oco'
+        err.binance_method = 'POST'
+        client = Mock()
+        client.spot_ticker_prices.return_value = [{'symbol': 'SOLUSDT', 'price': '10'}]
+        client.get_spot_account.return_value = {
+            'balances': [{'asset': 'SOL', 'free': '1.0', 'locked': '0'}]
+        }
+        client.spot_signed.side_effect = [
+            [{'isBuyer': True, 'price': '10.5'}],
+            err,
+        ]
+        client.get_klines.side_effect = RuntimeError('klines unavailable')
+        client.get_spot_filters.return_value = {'tick_size': 0.01, 'step_size': 0.1}
+        state = {'positions': []}
+
+        with patch.object(bot, 'BINANCE', client), \
+             patch('utils.get_active_cooldowns', return_value=set()), \
+             patch('utils.send_alert') as send_alert, \
+             patch('utils.save_state'), \
+             patch.object(bot, 'out'), \
+             self.assertLogs(level='ERROR') as logs:
+            bot._audit_orphans(state)
+
+        alert = send_alert.call_args_list[-1].args[0]
+        self.assertIn('🚨', alert)
+        self.assertIn('huérfano sin OCO', alert)
+        self.assertIn('Requiere intervención manual', alert)
+        self.assertIn('code=-2010', alert)
+        self.assertIn('Account has insufficient balance', alert)
+        self.assertIn(raw_body, alert)
+        log_text = '\n'.join(logs.output)
+        self.assertIn('operation=orphan spot OCO recovery', log_text)
+        self.assertIn('endpoint=/api/v3/order/oco', log_text)
+        self.assertIn('status=400', log_text)
+        self.assertIn('code=-2010', log_text)
+        self.assertIn(raw_body, log_text)
+
+    def test_orphan_oco_http_error_alert_handles_missing_json_body(self):
+        err = _http_error('', code=400)
+        client = Mock()
+        client.spot_ticker_prices.return_value = [{'symbol': 'SOLUSDT', 'price': '10'}]
+        client.get_spot_account.return_value = {
+            'balances': [{'asset': 'SOL', 'free': '1.0', 'locked': '0'}]
+        }
+        client.spot_signed.side_effect = [
+            [{'isBuyer': True, 'price': '10.5'}],
+            err,
+        ]
+        client.get_klines.side_effect = RuntimeError('klines unavailable')
+        client.get_spot_filters.return_value = {'tick_size': 0.01, 'step_size': 0.1}
+        state = {'positions': []}
+
+        with patch.object(bot, 'BINANCE', client), \
+             patch('utils.get_active_cooldowns', return_value=set()), \
+             patch('utils.send_alert') as send_alert, \
+             patch('utils.save_state'), \
+             patch.object(bot, 'out'):
+            bot._audit_orphans(state)
+
+        alert = send_alert.call_args_list[-1].args[0]
+        self.assertIn('SOL huérfano sin OCO', alert)
+        self.assertIn('HTTP 400', alert)
+        self.assertNotIn('ðŸ', alert)
+        self.assertNotIn('huÃ', alert)
+
     def test_http_400_preserves_code_msg_and_raw_body(self):
         raw_body = '{"code":-1013,"msg":"Filter failure: LOT_SIZE"}'
         err = _http_error(raw_body)

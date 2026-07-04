@@ -19,7 +19,7 @@ def recolocar_oco_long(pos, sym, qty_total, step, price, tp, entry, binance, out
         new_sl_l = utils.round_tick(new_sl * 0.999, tick)
         new_tp = utils.round_tick(tp, tick)
         if qty * price < 5.0:
-            utils.send_alert(f'ðŸš¨ {sym}: no pude recolocar OCO (qty insuficiente). RevisiÃ³n manual requerida.')
+            utils.send_alert(f'🚨 {sym}: no pude recolocar OCO (qty insuficiente). Revisión manual requerida.')
             return
         oco = binance.spot_signed('POST', '/api/v3/order/oco', {
             'symbol': sym, 'side': 'SELL', 'quantity': str(qty),
@@ -29,12 +29,12 @@ def recolocar_oco_long(pos, sym, qty_total, step, price, tp, entry, binance, out
         pos['oco_order_list_id'] = str(oco.get('orderListId', ''))
         pos['oco_order_ids'] = [str(o['orderId']) for o in oco.get('orders', [])]
         pos['quantity'] = qty
-        out_fn(f'âœ… OCO recolocado para {sym} tras fallo de parcial')
+        out_fn(f'✅ OCO recolocado para {sym} tras fallo de parcial')
     except _ue.HTTPError as e:
         err = utils._binance_error_msg(e)
-        utils.send_alert(f'ðŸš¨ {sym}: no pude recolocar OCO ({err}). RevisiÃ³n manual requerida.')
+        utils.send_alert(f'🚨 {sym}: no pude recolocar OCO ({err}). Revisión manual requerida.')
     except Exception as e:
-        utils.send_alert(f'ðŸš¨ {sym}: no pude recolocar OCO ({e}). RevisiÃ³n manual requerida.')
+        utils.send_alert(f'🚨 {sym}: no pude recolocar OCO ({e}). Revisión manual requerida.')
 
 
 def handle_close(state, pos, action, price_close, pnl, btc_ctx, binance, out_fn, safe_log_close_fn):
@@ -51,8 +51,8 @@ def handle_close(state, pos, action, price_close, pnl, btc_ctx, binance, out_fn,
     )
     capital_now = spot_free_now + spot_in_pos_now + binance.get_total_futures()
 
-    label = {'closed_tp': 'TP âœ…', 'closed_sl': 'SL ðŸ”´', 'closed_manual': 'STALE â±ï¸ (sin movimiento)'}[action]
-    dir_emoji = 'ðŸ“ˆ' if direction == 'long' else 'ðŸ“‰'
+    label = {'closed_tp': 'TP ✅', 'closed_sl': 'SL 🔴', 'closed_manual': 'STALE ⏱️ (sin movimiento)'}[action]
+    dir_emoji = '📈' if direction == 'long' else '📉'
     if action == 'closed_sl' and not pos.get('partial_taken'):
         msg = (
             f'{dir_emoji} {direction.upper()} {sym} cerrado: {label}\n'
@@ -62,7 +62,7 @@ def handle_close(state, pos, action, price_close, pnl, btc_ctx, binance, out_fn,
         ppnl = pos.get('partial_pnl')
         ppnl_str = f'+${ppnl:.4f}' if ppnl else 'ver log'
         msg = (
-            f'{dir_emoji} {direction.upper()} {sym} cerrado: {label} (breakeven â€” parcial TP cobrado: {ppnl_str})\n'
+            f'{dir_emoji} {direction.upper()} {sym} cerrado: {label} (breakeven - parcial TP cobrado: {ppnl_str})\n'
             f'PnL esta mitad: {pnl:+.4f} USDT | Acumulado: {state["total_pnl_usdt"]:+.4f} USDT'
         )
     else:
@@ -99,8 +99,8 @@ def handle_close(state, pos, action, price_close, pnl, btc_ctx, binance, out_fn,
             if len(sl_history[sym]) >= 3:
                 if sym not in config.BLACKLIST_SYMBOLS:
                     config.BLACKLIST_SYMBOLS.add(sym)
-                    out_fn(f'â›” {sym} auto-blacklisted: 3 SLs reales en 5 dÃ­as')
-                    utils.send_alert(f'â›” {sym} agregado a BLACKLIST automÃ¡tica: 3 SLs reales en 5 dÃ­as')
+                    out_fn(f'⛔ {sym} auto-blacklisted: 3 SLs reales en 5 días')
+                    utils.send_alert(f'⛔ {sym} agregado a BLACKLIST automática: 3 SLs reales en 5 días')
     else:
         state['consec_sl'] = 0
         utils.remove_cooldown(state, sym)
@@ -110,8 +110,8 @@ def handle_close(state, pos, action, price_close, pnl, btc_ctx, binance, out_fn,
         daily_loss_pct = (state['daily_pnl_usdt'] / daily_start) * 100
         if daily_loss_pct <= -config.DAILY_LOSS_LIMIT_PCT:
             state['status'] = 'paused'
-            out_fn(f'â›” LÃ­mite diario alcanzado ({daily_loss_pct:.2f}%). Bot pausado hasta maÃ±ana.')
-            utils.send_alert(f'â›” Bot pausado por lÃ­mite diario: {daily_loss_pct:.2f}%')
+            out_fn(f'⛔ Límite diario alcanzado ({daily_loss_pct:.2f}%). Bot pausado hasta mañana.')
+            utils.send_alert(f'⛔ Bot pausado por límite diario: {daily_loss_pct:.2f}%')
 
     try:
         rb_ok, rb_msg = rebalance.rebalance(state, btc_ctx)
@@ -159,10 +159,10 @@ def check_partial_long(pos, state, binance, out_fn, analytics, recolocar_oco_lon
                 err = utils._binance_error_msg(e)
                 if '-2011' in err or '-1013' in err:
                     pos['partial_taken'] = True
-                    out_fn(f'âš ï¸ Parcial LONG {sym}: OCO ya ejecutado ({err}), marcando partial_taken')
+                    out_fn(f'⚠️ Parcial LONG {sym}: OCO ya ejecutado ({err}), marcando partial_taken')
                     return
                 else:
-                    out_fn(f'âš ï¸ Parcial LONG {sym}: error al cancelar OCO ({err}), abortando parcial')
+                    out_fn(f'⚠️ Parcial LONG {sym}: error al cancelar OCO ({err}), abortando parcial')
                     return
 
         try:
@@ -173,12 +173,12 @@ def check_partial_long(pos, state, binance, out_fn, analytics, recolocar_oco_lon
             qty_half_real = utils.round_step(min(qty_half, free_base * 0.5), step)
             qty_rest_real = utils.round_step(free_base - qty_half_real, step)
             if qty_half_real * price < 5.0 or qty_rest_real * price < 5.0:
-                out_fn(f'âš ï¸ Parcial LONG {sym}: qty insuficiente (free={free_base:.4f}), abortando')
+                out_fn(f'⚠️ Parcial LONG {sym}: qty insuficiente (free={free_base:.4f}), abortando')
                 if oco_cancelled:
                     recolocar_oco_long_fn(pos, sym, free_base, step, price, tp, entry)
                 return
         except Exception as e:
-            out_fn(f'âš ï¸ Parcial LONG {sym}: no pude verificar balance ({e}), abortando')
+            out_fn(f'⚠️ Parcial LONG {sym}: no pude verificar balance ({e}), abortando')
             return
 
         try:
@@ -187,7 +187,7 @@ def check_partial_long(pos, state, binance, out_fn, analytics, recolocar_oco_lon
             })
         except _ue.HTTPError as e:
             err = utils._binance_error_msg(e)
-            out_fn(f'âš ï¸ Parcial LONG {sym}: venta fallida ({err})')
+            out_fn(f'⚠️ Parcial LONG {sym}: venta fallida ({err})')
             if oco_cancelled:
                 recolocar_oco_long_fn(pos, sym, qty_half_real + qty_rest_real, step, price, tp, entry)
             return
@@ -211,8 +211,8 @@ def check_partial_long(pos, state, binance, out_fn, analytics, recolocar_oco_lon
             })
         except _ue.HTTPError as e:
             err = utils._binance_error_msg(e)
-            utils.send_alert(f'ðŸš¨ Parcial LONG {sym}: vendido pero OCO fallido ({err}). IntervenciÃ³n requerida.')
-            out_fn(f'ðŸš¨ Parcial LONG {sym}: vendido 50% pero no pude colocar nuevo OCO ({err})')
+            utils.send_alert(f'🚨 Parcial LONG {sym}: vendido pero OCO fallido ({err}). Intervención requerida.')
+            out_fn(f'🚨 Parcial LONG {sym}: vendido 50% pero no pude colocar nuevo OCO ({err})')
             pos['partial_taken'] = True
             return
 
@@ -224,7 +224,7 @@ def check_partial_long(pos, state, binance, out_fn, analytics, recolocar_oco_lon
         pos['partial_pnl'] = round(pnl_partial, 4)
 
         msg = (
-            f'ðŸ’° PARCIAL LONG {sym}: vendÃ­ 50% @ ${price:.4f}\n'
+            f'💰 PARCIAL LONG {sym}: vendí 50% @ ${price:.4f}\n'
             f'PnL parcial: +${pnl_partial:.4f} | SL movido a breakeven ${new_sl:.4f}'
         )
         out_fn(msg)
@@ -246,7 +246,7 @@ def check_partial_long(pos, state, binance, out_fn, analytics, recolocar_oco_lon
             pass
 
     except Exception as e:
-        out_fn(f'âš ï¸ Parcial LONG {sym} error inesperado: {e}')
+        out_fn(f'⚠️ Parcial LONG {sym} error inesperado: {e}')
 
 
 def check_partial_short(pos, state, binance, out_fn, analytics):
@@ -333,7 +333,7 @@ def check_partial_short(pos, state, binance, out_fn, analytics):
                 import logging
                 error_msg = str(e)
                 logging.error(f'SL breakeven {sym}: stopPrice={new_sl}, qty={qty_rest}, price={price_now}, error={error_msg}')
-                utils.send_alert(f'âš ï¸ SL nativo breakeven {sym} no se pudo colocar: {error_msg}. Guardian software activo.')
+                utils.send_alert(f'⚠️ SL nativo breakeven {sym} no se pudo colocar: {error_msg}. Guardian software activo.')
 
         pos['quantity'] = qty_rest
         pos['sl'] = new_sl
@@ -343,7 +343,7 @@ def check_partial_short(pos, state, binance, out_fn, analytics):
         pos['partial_pnl'] = round(pnl_partial, 4)
 
         msg = (
-            f'ðŸ’° PARCIAL SHORT {sym}: cerrÃ© 50% @ ${fill:.4f}\n'
+            f'💰 PARCIAL SHORT {sym}: cerré 50% @ ${fill:.4f}\n'
             f'PnL parcial: +${pnl_partial:.4f} | SL movido a breakeven ${new_sl:.4f}'
         )
         out_fn(msg)
@@ -366,7 +366,7 @@ def check_partial_short(pos, state, binance, out_fn, analytics):
             )
         except Exception:
             pass
-        utils.log_trade(state['trade_count'], sym, 'short', 'PARCIAL TP ðŸ’° (50%)', pnl_partial, capital_now)
+        utils.log_trade(state['trade_count'], sym, 'short', 'PARCIAL TP 💰 (50%)', pnl_partial, capital_now)
 
     except Exception as e:
-        out_fn(f'âš ï¸ Parcial SHORT {sym} fallÃ³: {e}')
+        out_fn(f'⚠️ Parcial SHORT {sym} falló: {e}')
