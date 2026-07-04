@@ -2,6 +2,7 @@
 import io
 import os
 import sys
+import tempfile
 import time
 import unittest
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import bot
 import longs
+import residuals
 import shorts
 import sl_guardian
 import utils
@@ -283,6 +285,95 @@ class ExitRecoveryProtectionTests(unittest.TestCase):
         save_state.assert_not_called()
         messages = [call.args[0] for call in send_alert.call_args_list]
         self.assertTrue(any('sin OCO' in msg for msg in messages))
+
+    def test_orphan_residual_below_min_notional_does_not_create_oco(self):
+        client = Mock()
+        client.spot_ticker_prices.return_value = [{'symbol': 'SOLUSDT', 'price': '100'}]
+        client.get_spot_account.return_value = {
+            'balances': [{'asset': 'SOL', 'free': '0.06186400', 'locked': '0'}]
+        }
+        client.spot_signed.return_value = [{'isBuyer': True, 'price': '100'}]
+        client.get_klines.side_effect = RuntimeError('klines unavailable')
+        client.get_spot_filters.return_value = {'tick_size': 0.01, 'step_size': 0.000001, 'min_notional': 10.0}
+        state = {'positions': []}
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(bot, 'BINANCE', client), \
+             patch.object(residuals, 'DEFAULT_STATUS_FILE', os.path.join(tmp, 'residuals_status.json')), \
+             patch('utils.get_active_cooldowns', return_value=set()), \
+             patch('utils.send_alert') as send_alert, \
+             patch('decision_timeline.record_event') as record_event, \
+             patch.object(bot, 'out'), \
+             self.assertLogs(level='WARNING') as logs:
+            bot._audit_orphans(state)
+            status = residuals.load_status(os.path.join(tmp, 'residuals_status.json'))
+
+        self.assertEqual(client.spot_signed.call_count, 1)
+        self.assertEqual(client.spot_signed.call_args.args[0], 'GET')
+        alert = send_alert.call_args.args[0]
+        self.assertIn('SOL residual sin OCO', alert)
+        self.assertIn('valor queda por debajo del mínimo permitido', alert)
+        self.assertIn('Cantidad: 0.06186400', alert)
+        self.assertIn('Mínimo requerido: 10.00 USDT', alert)
+        self.assertIn('vender manualmente o acumular más saldo', alert)
+        self.assertTrue(record_event.called)
+        self.assertIn('RESIDUAL UNPROTECTABLE', '\n'.join(logs.output))
+        saved = status['residuals']['SOLUSDT']
+        self.assertEqual(saved['status'], 'unprotectable_residual')
+        self.assertEqual(saved['min_notional'], 10.0)
+
+    def test_unprotectable_residual_status_is_persisted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'residuals_status.json')
+            entry, should_alert = residuals.classify_unprotectable_residual(
+                'SOLUSDT',
+                'SOL',
+                0.061864,
+                6.18,
+                10.0,
+                rounded_qty=0.061864,
+                rounded_price=100.0,
+                notional_after_rounding=6.1864,
+                path=path,
+            )
+            data = residuals.load_status(path)
+
+        saved = data['residuals']['SOLUSDT']
+        self.assertTrue(should_alert)
+        self.assertEqual(entry['status'], 'unprotectable_residual')
+        self.assertEqual(saved['reason'], 'below_min_notional')
+        self.assertEqual(saved['suggested_action'], 'vender manualmente o acumular mas saldo antes de proteger')
+
+    def test_unprotectable_residual_alert_is_throttled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'residuals_status.json')
+            first, first_alert = residuals.classify_unprotectable_residual(
+                'SOLUSDT', 'SOL', 0.061864, 6.18, 10.0, path=path
+            )
+            second, second_alert = residuals.classify_unprotectable_residual(
+                'SOLUSDT', 'SOL', 0.061864, 6.18, 10.0, path=path
+            )
+
+        self.assertTrue(first_alert)
+        self.assertFalse(second_alert)
+        self.assertEqual(second['alert_count'], first['alert_count'])
+        self.assertEqual(second['first_seen'], first['first_seen'])
+
+    def test_residual_alert_is_classified_as_warning(self):
+        msg = residuals.residual_alert_message({
+            'asset': 'SOL',
+            'symbol': 'SOLUSDT',
+            'quantity': 0.061864,
+            'estimated_value': 6.18,
+            'min_notional': 10.0,
+        })
+
+        with patch('telegram_alerts.send_telegram_alert') as telegram_alert, \
+             patch('subprocess.run'):
+            utils.send_alert(msg)
+
+        self.assertEqual(telegram_alert.call_args.args[0], 'WARNING')
+        self.assertEqual(telegram_alert.call_args.kwargs.get('notification_type'), 'WARNING')
 
     def test_orphan_oco_http_error_alert_includes_binance_details(self):
         raw_body = '{"code":-2010,"msg":"Account has insufficient balance for requested action."}'

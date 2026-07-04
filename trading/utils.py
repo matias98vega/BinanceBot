@@ -335,7 +335,7 @@ def get_spot_filters(symbol):
         if f['filterType'] == 'LOT_SIZE':
             result['step_size'] = float(f['stepSize'])
             result['min_qty']   = float(f['minQty'])
-        if f['filterType'] == 'MIN_NOTIONAL':
+        if f['filterType'] in ('MIN_NOTIONAL', 'NOTIONAL'):
             result['min_notional'] = float(f.get('minNotional', f.get('notional', 5)))
         if f['filterType'] == 'PRICE_FILTER':
             result['tick_size'] = float(f['tickSize'])
@@ -621,6 +621,9 @@ def send_alert(msg):
         if any(token in lower for token in ('intervencion urgente', 'sin stops', 'critical', 'critico', 'urgente')):
             level = 'CRITICAL'
             kind = 'CRITICAL'
+        elif any(token in lower for token in ('residual sin oco', 'no se puede proteger')):
+            level = 'WARNING'
+            kind = 'WARNING'
         elif any(token in lower for token in ('error', 'fallo', 'no pude recolocar', 'requiere intervenci', 'api error', 'binance api')):
             level = 'ERROR'
             kind = 'ERROR'

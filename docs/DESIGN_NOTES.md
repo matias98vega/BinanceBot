@@ -164,6 +164,22 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Mejoras futuras:** polling corto de balance post-fill y mas detalle de recovery en timeline.
 
+## Residuales Spot No Protegibles
+
+**Problema:** una posicion Spot huerfana puede quedar libre en balance, sin OCO y sin orden abierta, pero con valor efectivo inferior al minimo que Binance permite para una OCO despues de aplicar `stepSize`, `tickSize` y `MIN_NOTIONAL`/`NOTIONAL`. En ese caso Binance rechaza con `Filter failure: NOTIONAL` o restricciones equivalentes.
+
+**Alternativas:** seguir reintentando OCO cada ciclo, vender automaticamente el residual, ignorarlo, o clasificarlo como estado conocido.
+
+**Solucion actual:** antes de recrear OCO para un huerfano Spot, `audit_pipeline.py` calcula cantidad redondeada, precio redondeado y notional efectivo. Si no alcanza el minimo, no envia la orden a Binance y registra el residual como `unprotectable_residual` en `data/history/residuals_status.json`. El estado guarda simbolo, asset, cantidad, valor estimado, minimo requerido, motivo, timestamps, contador de alertas y accion sugerida. Tambien se registra un evento `spot_residual_unprotectable` en Timeline.
+
+**Ventajas:** evita HTTP 400 repetitivos, reduce ruido operativo y muestra una accion manual clara sin tocar estrategia ni flujo normal de ordenes.
+
+**Desventajas:** el residual queda sin proteccion automatica hasta que el usuario lo venda manualmente o acumule saldo suficiente para cumplir el minimo de Binance.
+
+**Por que no se vende automaticamente:** este cambio es observabilidad/hardening pasivo. Vender residuos automaticamente implicaria nueva logica operativa de salida y debe evaluarse por separado.
+
+**Mejoras futuras:** comando read-only en Telegram para listar residuales, opcion manual explicita para limpiar polvo/residuales y reconciliacion contra conversion de dust de Binance.
+
 ## Snapshots de Decision
 
 **Problema:** entender por que el bot entro o rechazo candidatos sin leer logs crudos.
