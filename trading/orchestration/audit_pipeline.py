@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Audit and reconciliation helpers for passive state-vs-wallet checks."""
 
-import logging
 import time
 
 import config
@@ -87,18 +86,7 @@ def audit_orphans(state, binance, out_fn, safe_log_open_fn):
                 sl = utils.round_tick(sl, tick)
                 sl_limit = utils.round_tick(sl * 0.9985, tick)
 
-                logging.warning(
-                    'RESIDUAL CHECK source=audit_pipeline symbol=%s qty=%s price=%s filters=%s',
-                    sym, free, cur, filters,
-                )
-                residual_handled = residuals.handle_unprotectable_spot_residual(
-                    sym, asset, free, cur, filters, out_fn=out_fn
-                )
-                logging.warning(
-                    'RESIDUAL RESULT source=audit_pipeline symbol=%s handled=%s',
-                    sym, residual_handled,
-                )
-                if residual_handled:
+                if residuals.handle_unprotectable_spot_residual(sym, asset, free, cur, filters, out_fn=out_fn):
                     continue
 
                 if tp <= cur or sl >= cur or qty <= 0:
@@ -114,10 +102,6 @@ def audit_orphans(state, binance, out_fn, safe_log_open_fn):
                     'stopLimitPrice': str(sl_limit),
                     'stopLimitTimeInForce': 'GTC',
                 }
-                logging.warning(
-                    'OCO POST ABOUT TO SEND source=audit_pipeline symbol=%s qty=%s price=%s stopPrice=%s',
-                    sym, oco_params.get('quantity'), oco_params.get('price'), oco_params.get('stopPrice'),
-                )
                 oco = binance.spot_signed('POST', '/api/v3/order/oco', oco_params)
                 oco_id = str(oco.get('orderListId', ''))
 

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Position close, partial take-profit and recovery helpers extracted from bot.py."""
 
-import logging
 import time
 
 import config
@@ -21,23 +20,14 @@ def recolocar_oco_long(pos, sym, qty_total, step, price, tp, entry, binance, out
         new_sl = utils.round_tick(entry * (1 - config.SL_MIN_DIST_PCT / 100), tick)
         new_sl_l = utils.round_tick(new_sl * 0.999, tick)
         new_tp = utils.round_tick(tp, tick)
-        logging.warning(
-            'RESIDUAL CHECK source=position_lifecycle symbol=%s qty=%s price=%s filters=%s',
-            sym, qty_total, price, filters,
-        )
-        residual_handled = residuals.handle_unprotectable_spot_residual(
+        if residuals.handle_unprotectable_spot_residual(
             sym,
             str(sym).replace('USDT', ''),
             qty_total,
             price,
             filters,
             out_fn=out_fn,
-        )
-        logging.warning(
-            'RESIDUAL RESULT source=position_lifecycle symbol=%s handled=%s',
-            sym, residual_handled,
-        )
-        if residual_handled:
+        ):
             return
         if qty * price < 5.0:
             utils.send_alert(f'🚨 {sym}: no pude recolocar OCO (qty insuficiente). Revisión manual requerida.')
@@ -47,10 +37,6 @@ def recolocar_oco_long(pos, sym, qty_total, step, price, tp, entry, binance, out
             'price': str(new_tp), 'stopPrice': str(new_sl),
             'stopLimitPrice': str(new_sl_l), 'stopLimitTimeInForce': 'GTC',
         }
-        logging.warning(
-            'OCO POST ABOUT TO SEND source=position_lifecycle symbol=%s qty=%s price=%s stopPrice=%s',
-            sym, oco_params.get('quantity'), oco_params.get('price'), oco_params.get('stopPrice'),
-        )
         oco = binance.spot_signed('POST', '/api/v3/order/oco', oco_params)
         pos['oco_order_list_id'] = str(oco.get('orderListId', ''))
         pos['oco_order_ids'] = [str(o['orderId']) for o in oco.get('orders', [])]

@@ -282,6 +282,24 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Mejoras futuras:** retention policy uniforme y export automatico.
 
+## Dust / Saldos Minimos
+
+**Problema:** despues de compras Spot, fees, redondeos o cierres parciales pueden quedar saldos pequenos. Algunos son residuales protegibles, otros son residuales no protegibles por filtros de Binance y otros son simplemente dust.
+
+**Definiciones:**
+
+- Residual protegible: saldo Spot libre, sin OCO, con cantidad y notional suficientes despues de aplicar `stepSize`, `tickSize`, `minQty` y `minNotional`; puede recibir OCO de recuperacion.
+- Residual no protegible: saldo Spot libre, sin OCO, que parece una posicion huerfana pero queda por debajo de `NOTIONAL`, `MIN_NOTIONAL` o `LOT_SIZE` despues de redondeos. Se registra como `unprotectable_residual` y no se envia OCO.
+- Dust: saldo muy pequeno sin posicion activa ni orden abierta. Un saldo como `0.00131 SOL` no requiere OCO porque su valor efectivo esta por debajo del minimo operativo de Binance y no representa una posicion protegible.
+
+**Solucion actual:** `residuals.py` clasifica residuales no protegibles, persiste `data/history/residuals_status.json`, emite alertas humanas con throttling y conserva logs de produccion como `RESIDUAL UNPROTECTABLE` y `RESIDUAL STATUS WRITE`. La instrumentacion temporal de diagnostico del flujo OCO fue retirada para evitar ruido.
+
+**Dust cleaner existente:** el repositorio conserva un flujo de limpieza de dust conectado al ciclo actual. `utils.clean_dust(dry_run=False)` detecta saldos no protegidos por `DUST_PROTECTED`, exige un valor total minimo (`DUST_MIN_VALUE_USD`) y usa el endpoint Binance `/sapi/v1/asset/dust`, que convierte activos pequenos a BNB. `BinanceClient.clean_dust()` delega en ese helper y `audit_pipeline.maybe_clean_dust()` lo invoca desde `CycleRunner` con frecuencia semanal controlada por `DUST_CLEAN_DAY` y estado local.
+
+**Riesgos:** aunque el helper existe y es reutilizable, puede ejecutar conversiones reales cuando `DRY_RUN=False`, depende de permisos de dust conversion en Binance y cambia balances Spot. Por eso no se debe tratar como limpieza automatica segura sin una configuracion explicita y una auditoria operativa adicional.
+
+**Mejora futura:** crear un `Dust Manager` pasivo por defecto con `AUTO_CLEAN_DUST=false`. Sus responsabilidades serian detectar dust sin posicion activa ni orden abierta, verificar valor estimado y elegibilidad de conversion/venta, persistir estado, alertar, y ejecutar limpieza solo si una configuracion explicita lo habilita.
+
 ## Auditoria Local de Datos
 
 **Problema:** los historicos JSON/JSONL pueden degradarse con campos faltantes, lineas corruptas, timestamps invalidos o relaciones incompletas entre trades, features, timeline, rebalance y ledger.
