@@ -17,6 +17,7 @@ import bot_state as bot_state_module
 import analytics_engine
 import decision_timeline
 import futures_reconciliation
+import futures_recovery
 import insights_engine
 import trade_inspector
 
@@ -1923,8 +1924,10 @@ def command_help():
         '/timeline',
         '/insights',
         '/stats',
+        '/futures_recovery_preview',
+        '/futures_recovery_close SYMBOL CONFIRM',
         '',
-        'Todos los comandos son solo lectura.',
+        'Los comandos de recovery requieren confirmacion explicita.',
     ])
 
 
@@ -1954,6 +1957,12 @@ def _dispatch_text(text):
             'text': _trade_inspector_text(trade_id=parts[1]),
             'reply_markup': {'inline_keyboard': MENU_PAGES['inspect'].keyboard()},
         }
+    if command == '/futures_recovery_preview':
+        return {'text': futures_recovery.format_preview_text(futures_recovery.preview_recovery())}
+    if command == '/futures_recovery_close':
+        symbol = parts[1].upper() if len(parts) > 1 else ''
+        confirm = parts[2] if len(parts) > 2 else None
+        return {'text': futures_recovery.format_close_result(futures_recovery.close_position(symbol, confirm=confirm))}
     page_id = COMMAND_ALIASES.get(command)
     if page_id:
         return _render_page(page_id)

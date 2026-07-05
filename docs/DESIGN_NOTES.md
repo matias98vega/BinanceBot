@@ -320,7 +320,15 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Riesgo:** una posicion Futures sin TP/SL/reduce-only abierta puede seguir acumulando PnL no realizado y bloquear transferencias. El bot no debe cerrarla automaticamente sin un flujo explicito de recovery porque podria cerrar una posicion que requiere revision humana o conciliacion de historial.
 
-**Mejora futura:** implementar un recovery explicito y auditable que consulte Binance, calcule cantidad real, confirme protecciones ausentes, pida habilitacion/configuracion dedicada y recien entonces permita cierre reduce-only seguro.
+**Recovery manual:** `futures_recovery.py` implementa un flujo read-confirm-execute para posiciones Futures huerfanas/no gestionadas/desincronizadas. `/futures_recovery_preview` lista candidatas y la orden propuesta sin enviar nada. `/futures_recovery_close SYMBOL CONFIRM` cierra solo ese simbolo si supera pre-checks.
+
+**Pre-checks:** el simbolo debe existir en `futures_reconciliation_status.json`, no debe estar gestionado activamente, debe tener clasificacion de recovery (`unmanaged`, `orphan`, `unprotected` o `desynced`), debe incluir confirmacion literal `CONFIRM`, se reconsulta `futures_position_risk(symbol)` antes de cerrar y se valida cantidad contra `stepSize/minQty`.
+
+**Orden de recovery:** SHORT (`positionAmt < 0`) se cierra con `BUY MARKET reduceOnly=true`; LONG (`positionAmt > 0`) con `SELL MARKET reduceOnly=true`. `reduceOnly` es obligatorio para impedir abrir una posicion nueva por error.
+
+**Riesgos restantes:** si Binance rechaza por precision, minimo, margen o estado de posicion, el recovery no reintenta ni fuerza cierre. Registra timeline con `code/msg/raw_body` y deja el caso para revision manual.
+
+**Mejora futura:** agregar una segunda capa opcional de recovery con aprobacion persistente, reporte post-cierre y reconciliacion automatica del estado una vez confirmado `positionAmt=0`.
 
 ## Auditoria Local de Datos
 

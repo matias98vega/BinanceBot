@@ -219,7 +219,7 @@ def classify_positions(observed_positions, state=None, open_orders_by_symbol=Non
     return positions
 
 
-def _summary(positions, allowed_count=None):
+def _summary(positions, allowed_count=None, position_margin_total=None):
     values = list((positions or {}).values())
     orphan_count = sum(1 for p in values if 'orphan_futures_position' in (p.get('classification') or []))
     unmanaged_count = sum(1 for p in values if 'unmanaged_futures_position' in (p.get('classification') or []))
@@ -249,6 +249,9 @@ def _summary(positions, allowed_count=None):
         if not reasons:
             reasons.append('NO ALINEADO')
         status = ' / '.join(reasons)
+    position_margin = round(sum(_safe_float(p.get('position_margin'), 0.0) or 0.0 for p in values), 8)
+    if position_margin <= 0 and position_margin_total is not None:
+        position_margin = _safe_float(position_margin_total, 0.0) or 0.0
     return {
         'observed_count': len(values),
         'managed_count': sum(1 for p in values if p.get('managed_in_state')),
@@ -259,7 +262,7 @@ def _summary(positions, allowed_count=None):
         'allowed_count': allowed_value,
         'aligned': aligned,
         'status': status,
-        'position_margin': round(sum(_safe_float(p.get('position_margin'), 0.0) or 0.0 for p in values), 8),
+        'position_margin': round(position_margin, 8),
         'notional': round(sum(abs(_safe_float(p.get('notional'), 0.0) or 0.0) for p in values), 8),
     }
 
@@ -287,7 +290,8 @@ def _human_status(entry):
     return 'observada en Binance'
 
 
-def persist_reconciliation(positions, status_file=DEFAULT_STATUS_FILE, alert_fn=None, allowed_count=None):
+def persist_reconciliation(positions, status_file=DEFAULT_STATUS_FILE, alert_fn=None, allowed_count=None,
+                           position_margin_total=None):
     previous = load_status(status_file)
     previous_positions = previous.get('positions') if isinstance(previous.get('positions'), dict) else {}
     now = _now_iso()
@@ -307,7 +311,7 @@ def persist_reconciliation(positions, status_file=DEFAULT_STATUS_FILE, alert_fn=
                 pass
     payload = {
         'updated_at': now,
-        'summary': _summary(positions, allowed_count=allowed_count),
+        'summary': _summary(positions, allowed_count=allowed_count, position_margin_total=position_margin_total),
         'positions': positions,
     }
     summary = payload['summary']
@@ -329,9 +333,15 @@ def persist_reconciliation(positions, status_file=DEFAULT_STATUS_FILE, alert_fn=
 
 def reconcile_observed_positions(observed_positions, state=None, open_orders_by_symbol=None,
                                  trades_file=DEFAULT_TRADES_FILE, status_file=DEFAULT_STATUS_FILE,
-                                 alert_fn=None, allowed_count=None):
+                                 alert_fn=None, allowed_count=None, position_margin_total=None):
     positions = classify_positions(observed_positions, state=state, open_orders_by_symbol=open_orders_by_symbol, trades_file=trades_file)
-    return persist_reconciliation(positions, status_file=status_file, alert_fn=alert_fn, allowed_count=allowed_count)
+    return persist_reconciliation(
+        positions,
+        status_file=status_file,
+        alert_fn=alert_fn,
+        allowed_count=allowed_count,
+        position_margin_total=position_margin_total,
+    )
 
 
 def collect_open_orders(binance, observed_positions):

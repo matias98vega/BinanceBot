@@ -442,6 +442,28 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertNotIn('import capital_ledger', source)
         self.assertNotIn('import capital_accounting', source)
 
+    def test_futures_recovery_preview_command_is_read_only(self):
+        preview = {'candidates': []}
+        with patch.object(telegram_commands.futures_recovery, 'preview_recovery', return_value=preview) as preview_fn, \
+             patch.object(telegram_commands.futures_recovery, 'format_preview_text', return_value='preview') as format_fn, \
+             patch.object(telegram_commands.futures_recovery, 'close_position') as close_position:
+            response = telegram_commands._dispatch_text('/futures_recovery_preview')
+
+        self.assertEqual(response['text'], 'preview')
+        preview_fn.assert_called_once_with()
+        format_fn.assert_called_once_with(preview)
+        close_position.assert_not_called()
+
+    def test_futures_recovery_close_command_passes_confirm_literal(self):
+        result = {'ok': False, 'reason': 'missing_confirm', 'symbol': 'NEARUSDT'}
+        with patch.object(telegram_commands.futures_recovery, 'close_position', return_value=result) as close_position, \
+             patch.object(telegram_commands.futures_recovery, 'format_close_result', return_value='result') as format_result:
+            response = telegram_commands._dispatch_text('/futures_recovery_close NEARUSDT CONFIRM')
+
+        self.assertEqual(response['text'], 'result')
+        close_position.assert_called_once_with('NEARUSDT', confirm='CONFIRM')
+        format_result.assert_called_once_with(result)
+
     def test_insights_low_sample_suppresses_misleading_comparisons(self):
         stats = sample_stats()
         stats['general']['closed_trades'] = 1

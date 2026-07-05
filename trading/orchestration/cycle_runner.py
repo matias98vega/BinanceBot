@@ -455,6 +455,7 @@ class CycleRunner:
                     open_orders_by_symbol=open_orders_by_symbol,
                     alert_fn=utils.send_alert,
                     allowed_count=max_shorts,
+                    position_margin_total=futures_observability.get('futures_position_margin'),
                 )
                 futures_observability['futures_reconciliation'] = reconciliation
                 futures_observability['futures_reconciliation_summary'] = reconciliation.get('summary') or {}
