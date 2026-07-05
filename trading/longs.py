@@ -3,7 +3,7 @@
 Módulo LONG — gestión de posiciones long en Spot.
 Abre, monitorea, toma parcial, trailing stop, cierra.
 """
-import sys, os, time, math
+import sys, os, time, math, logging
 sys.path.insert(0, os.path.dirname(__file__))
 import utils, config, capital_manager, decision_timeline, binance_client, residuals
 
@@ -513,13 +513,22 @@ def _recolocar_oco(pos, state):
         tick = filters.get('tick_size', 0.0001)
         qty, real_asset_balance = _adjust_spot_qty(sym, qty, price_now, filters)
         if qty <= 0:
-            if residuals.handle_unprotectable_spot_residual(
+            logging.warning(
+                'RESIDUAL CHECK source=longs_recovery_zero_qty symbol=%s qty=%s price=%s filters=%s',
+                sym, real_asset_balance, price_now, filters,
+            )
+            residual_handled = residuals.handle_unprotectable_spot_residual(
                 sym,
                 _asset_from_symbol(sym),
                 real_asset_balance,
                 price_now,
                 filters,
-            ):
+            )
+            logging.warning(
+                'RESIDUAL RESULT source=longs_recovery_zero_qty symbol=%s handled=%s',
+                sym, residual_handled,
+            )
+            if residual_handled:
                 pos['quantity'] = real_asset_balance
                 pos['recovery_pending'] = True
                 return 'hold', price_now, 0
@@ -530,13 +539,22 @@ def _recolocar_oco(pos, state):
         sl_r = utils.round_tick(sl, tick)
         tp_r = utils.round_tick(tp, tick)
         sl_limit_r = utils.round_tick(sl_r * 0.999, tick)
-        if residuals.handle_unprotectable_spot_residual(
+        logging.warning(
+            'RESIDUAL CHECK source=longs_recovery symbol=%s qty=%s price=%s filters=%s',
+            sym, qty, price_now, filters,
+        )
+        residual_handled = residuals.handle_unprotectable_spot_residual(
             sym,
             _asset_from_symbol(sym),
             qty,
             price_now,
             filters,
-        ):
+        )
+        logging.warning(
+            'RESIDUAL RESULT source=longs_recovery symbol=%s handled=%s',
+            sym, residual_handled,
+        )
+        if residual_handled:
             pos['quantity'] = qty
             pos['recovery_pending'] = True
             return 'hold', price_now, 0
@@ -549,6 +567,10 @@ def _recolocar_oco(pos, state):
             'stopLimitPrice':       str(sl_limit_r),
             'stopLimitTimeInForce': 'GTC',
         }
+        logging.warning(
+            'OCO POST ABOUT TO SEND source=longs_recovery symbol=%s qty=%s price=%s stopPrice=%s',
+            sym, oco_params.get('quantity'), oco_params.get('price'), oco_params.get('stopPrice'),
+        )
         oco = BINANCE.spot_signed('POST', '/api/v3/order/oco', oco_params)
         pos['oco_order_list_id'] = str(oco.get('orderListId', ''))
         pos['oco_order_ids']     = [str(o['orderId']) for o in oco.get('orders', [])]

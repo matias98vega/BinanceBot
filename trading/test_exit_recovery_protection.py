@@ -318,7 +318,15 @@ class ExitRecoveryProtectionTests(unittest.TestCase):
         self.assertIn('Mínimo requerido: 10.00 USDT', alert)
         self.assertIn('vender manualmente o acumular más saldo', alert)
         self.assertTrue(record_event.called)
-        self.assertIn('RESIDUAL UNPROTECTABLE', '\n'.join(logs.output))
+        log_text = '\n'.join(logs.output)
+        self.assertIn('RESIDUAL CHECK source=audit_pipeline symbol=SOLUSDT', log_text)
+        self.assertIn('RESIDUAL HANDLE ENTER symbol=SOLUSDT', log_text)
+        self.assertIn('notional_after_rounding=6.1864', log_text)
+        self.assertIn('RESIDUAL HANDLE DECISION symbol=SOLUSDT handled=True', log_text)
+        self.assertIn('RESIDUAL STATUS WRITE path=', log_text)
+        self.assertIn('RESIDUAL RESULT source=audit_pipeline symbol=SOLUSDT handled=True', log_text)
+        self.assertIn('RESIDUAL UNPROTECTABLE', log_text)
+        self.assertNotIn('OCO POST ABOUT TO SEND source=audit_pipeline', log_text)
         saved = status['residuals']['SOLUSDT']
         self.assertEqual(saved['status'], 'unprotectable_residual')
         self.assertEqual(saved['min_notional'], 10.0)
@@ -379,7 +387,8 @@ class ExitRecoveryProtectionTests(unittest.TestCase):
              patch.object(longs, 'BINANCE', client), \
              patch.object(residuals, 'DEFAULT_STATUS_FILE', os.path.join(tmp, 'residuals_status.json')), \
              patch('utils.send_alert') as send_alert, \
-             patch('decision_timeline.record_event'):
+             patch('decision_timeline.record_event'), \
+             self.assertLogs(level='WARNING') as logs:
             action, price, pnl = longs._recolocar_oco(pos, {'positions': [pos]})
             status = residuals.load_status(os.path.join(tmp, 'residuals_status.json'))
 
@@ -390,6 +399,10 @@ class ExitRecoveryProtectionTests(unittest.TestCase):
         self.assertEqual(status['residuals']['SOLUSDT']['status'], 'unprotectable_residual')
         self.assertTrue(pos['recovery_pending'])
         self.assertIn('SOL residual sin OCO', send_alert.call_args.args[0])
+        log_text = '\n'.join(logs.output)
+        self.assertIn('RESIDUAL CHECK source=longs_recovery_zero_qty symbol=SOLUSDT', log_text)
+        self.assertIn('RESIDUAL RESULT source=longs_recovery_zero_qty symbol=SOLUSDT handled=True', log_text)
+        self.assertNotIn('OCO POST ABOUT TO SEND source=longs_recovery', log_text)
 
     def test_position_lifecycle_recolocar_oco_detects_residual_before_post(self):
         client = Mock()
@@ -399,7 +412,8 @@ class ExitRecoveryProtectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, \
              patch.object(residuals, 'DEFAULT_STATUS_FILE', os.path.join(tmp, 'residuals_status.json')), \
              patch('utils.send_alert') as send_alert, \
-             patch('decision_timeline.record_event'):
+             patch('decision_timeline.record_event'), \
+             self.assertLogs(level='WARNING') as logs:
             position_lifecycle.recolocar_oco_long(
                 pos,
                 'SOLUSDT',
@@ -416,6 +430,10 @@ class ExitRecoveryProtectionTests(unittest.TestCase):
         client.spot_signed.assert_not_called()
         self.assertEqual(status['residuals']['SOLUSDT']['status'], 'unprotectable_residual')
         self.assertIn('SOL residual sin OCO', send_alert.call_args.args[0])
+        log_text = '\n'.join(logs.output)
+        self.assertIn('RESIDUAL CHECK source=position_lifecycle symbol=SOLUSDT', log_text)
+        self.assertIn('RESIDUAL RESULT source=position_lifecycle symbol=SOLUSDT handled=True', log_text)
+        self.assertNotIn('OCO POST ABOUT TO SEND source=position_lifecycle', log_text)
 
     def test_residual_alert_is_classified_as_warning(self):
         msg = residuals.residual_alert_message({

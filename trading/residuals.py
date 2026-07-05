@@ -65,6 +65,11 @@ def classify_unprotectable_residual(symbol, asset, quantity, estimated_value, mi
                                     rounded_price=None, notional_after_rounding=None,
                                     path=None):
     """Persist an unprotectable residual and return the updated entry plus alert decision."""
+    resolved_path = _status_path(path)
+    logging.warning(
+        'RESIDUAL STATUS WRITE path=%s symbol=%s reason=%s quantity=%s estimated_value=%s',
+        resolved_path, symbol, reason, quantity, estimated_value,
+    )
     data = _load(path)
     residuals = data.get('residuals') if isinstance(data.get('residuals'), dict) else {}
     previous = residuals.get(symbol) if isinstance(residuals.get(symbol), dict) else {}
@@ -95,7 +100,7 @@ def classify_unprotectable_residual(symbol, asset, quantity, estimated_value, mi
     residuals[symbol] = entry
     data['residuals'] = residuals
     data['updated_at'] = now
-    _save(data, path)
+    _save(data, resolved_path)
     return entry, should_alert
 
 
@@ -128,7 +133,12 @@ def handle_unprotectable_spot_residual(symbol, asset, quantity, price, filters,
     import decision_timeline
     import utils
 
+    resolved_path = _status_path(path)
     filters = filters if isinstance(filters, dict) else {}
+    logging.warning(
+        'RESIDUAL HANDLE ENTER symbol=%s asset=%s quantity=%s price=%s filters=%s path=%s',
+        symbol, asset, quantity, price, filters, resolved_path,
+    )
     step = _safe_float(filters.get('step_size'), 0.0) or 0.0
     tick = _safe_float(filters.get('tick_size'), 0.0) or 0.0
     min_qty = _safe_float(filters.get('min_qty'), 0.0) or 0.0
@@ -138,12 +148,36 @@ def handle_unprotectable_spot_residual(symbol, asset, quantity, price, filters,
     rounded_qty = utils.round_step(qty, step) if step else qty
     rounded_price = utils.round_tick(px, tick) if tick else px
     notional_after_rounding = rounded_qty * rounded_price
+    logging.warning(
+        'RESIDUAL HANDLE VALUES symbol=%s quantity=%s price=%s step_size=%s tick_size=%s '
+        'min_qty=%s min_notional=%s rounded_qty=%s rounded_price=%s '
+        'notional_after_rounding=%s path=%s',
+        symbol,
+        qty,
+        px,
+        step,
+        tick,
+        min_qty,
+        min_notional,
+        rounded_qty,
+        rounded_price,
+        notional_after_rounding,
+        resolved_path,
+    )
     if rounded_qty > 0 and (min_qty <= 0 or rounded_qty >= min_qty) and notional_after_rounding >= min_notional:
+        logging.warning(
+            'RESIDUAL HANDLE DECISION symbol=%s handled=False reason=meets_filters path=%s',
+            symbol, resolved_path,
+        )
         return False
 
     detected_reason = reason
     if rounded_qty <= 0 or (min_qty > 0 and rounded_qty < min_qty):
         detected_reason = 'below_min_qty'
+    logging.warning(
+        'RESIDUAL HANDLE DECISION symbol=%s handled=True reason=%s path=%s',
+        symbol, detected_reason, resolved_path,
+    )
     entry, should_alert = classify_unprotectable_residual(
         symbol,
         asset,
@@ -154,7 +188,7 @@ def handle_unprotectable_spot_residual(symbol, asset, quantity, price, filters,
         rounded_qty=rounded_qty,
         rounded_price=rounded_price,
         notional_after_rounding=notional_after_rounding,
-        path=path,
+        path=resolved_path,
     )
     logging.warning(
         'RESIDUAL UNPROTECTABLE symbol=%s asset=%s quantity=%s estimated_value=%.8f '
