@@ -125,21 +125,30 @@ def _has_lifecycle_metadata(pos):
 
 def _normalise_position(raw):
     raw = raw if isinstance(raw, dict) else {}
-    amount = _safe_float(raw.get('position_amt'), _safe_float(raw.get('positionAmt'), 0.0)) or 0.0
+    amount = _safe_float(raw.get('positionAmt'), _safe_float(raw.get('position_amt')))
+    if amount is None:
+        quantity = _safe_float(raw.get('quantity'))
+        side_hint = str(raw.get('side') or raw.get('direction') or '').upper()
+        if quantity is not None:
+            amount = -abs(quantity) if side_hint == 'SHORT' else abs(quantity)
+    amount = amount or 0.0
     side = str(raw.get('side') or '').upper()
     if not side:
         side = 'SHORT' if amount < 0 else 'LONG' if amount > 0 else 'UNKNOWN'
+    notional = _safe_float(raw.get('notional'))
     return {
         'symbol': str(raw.get('symbol') or '').upper(),
         'side': side,
         'position_amt': amount,
-        'notional': _safe_float(raw.get('notional')),
+        'notional': None if notional is None else abs(notional),
         'entry_price': _safe_float(raw.get('entry_price'), _safe_float(raw.get('entryPrice'))),
         'mark_price': _safe_float(raw.get('mark_price'), _safe_float(raw.get('markPrice'))),
         'unrealized_pnl': _safe_float(raw.get('unrealized_pnl'), _safe_float(raw.get('unRealizedProfit'), _safe_float(raw.get('unrealizedProfit')))),
         'leverage': _safe_float(raw.get('leverage')),
         'margin_type': raw.get('margin_type') or raw.get('marginType'),
         'position_margin': _safe_float(raw.get('position_margin'), _safe_float(raw.get('positionInitialMargin'), _safe_float(raw.get('initialMargin')))),
+        'isolated_margin': _safe_float(raw.get('isolatedMargin'), _safe_float(raw.get('isolated_margin'))),
+        'liquidation_price': _safe_float(raw.get('liquidationPrice'), _safe_float(raw.get('liquidation_price'))),
     }
 
 
@@ -194,6 +203,8 @@ def classify_positions(observed_positions, state=None, open_orders_by_symbol=Non
             'leverage': pos.get('leverage'),
             'margin_type': pos.get('margin_type'),
             'position_margin': pos.get('position_margin'),
+            'isolated_margin': pos.get('isolated_margin'),
+            'liquidation_price': pos.get('liquidation_price'),
             'has_open_orders': has_open_orders,
             'open_orders_count': len(orders) if isinstance(orders, list) else (1 if orders else 0),
             'managed_in_state': managed,
@@ -208,14 +219,46 @@ def classify_positions(observed_positions, state=None, open_orders_by_symbol=Non
     return positions
 
 
-def _summary(positions):
+def _summary(positions, allowed_count=None):
     values = list((positions or {}).values())
+    orphan_count = sum(1 for p in values if 'orphan_futures_position' in (p.get('classification') or []))
+    unmanaged_count = sum(1 for p in values if 'unmanaged_futures_position' in (p.get('classification') or []))
+    unprotected_count = sum(1 for p in values if 'unprotected_futures_position' in (p.get('classification') or []))
+    desynced_count = sum(1 for p in values if 'desynced_closed_but_open_on_exchange' in (p.get('classification') or []))
+    observed_count = len(values)
+    allowed_value = None
+    try:
+        allowed_value = int(allowed_count) if allowed_count is not None else None
+    except (TypeError, ValueError):
+        allowed_value = None
+    aligned = (
+        (allowed_value is None or observed_count <= allowed_value)
+        and unmanaged_count == 0
+        and orphan_count == 0
+        and unprotected_count == 0
+        and desynced_count == 0
+    )
+    if aligned:
+        status = 'ALINEADO'
+    else:
+        reasons = []
+        if allowed_value is not None and observed_count > allowed_value:
+            reasons.append('EXCESO FUTURES')
+        if unmanaged_count:
+            reasons.append('RIESGO NO GESTIONADAS')
+        if not reasons:
+            reasons.append('NO ALINEADO')
+        status = ' / '.join(reasons)
     return {
         'observed_count': len(values),
         'managed_count': sum(1 for p in values if p.get('managed_in_state')),
-        'unmanaged_count': sum(1 for p in values if 'unmanaged_futures_position' in (p.get('classification') or [])),
-        'unprotected_count': sum(1 for p in values if 'unprotected_futures_position' in (p.get('classification') or [])),
-        'desynced_count': sum(1 for p in values if 'desynced_closed_but_open_on_exchange' in (p.get('classification') or [])),
+        'unmanaged_count': unmanaged_count,
+        'orphan_count': orphan_count,
+        'unprotected_count': unprotected_count,
+        'desynced_count': desynced_count,
+        'allowed_count': allowed_value,
+        'aligned': aligned,
+        'status': status,
         'position_margin': round(sum(_safe_float(p.get('position_margin'), 0.0) or 0.0 for p in values), 8),
         'notional': round(sum(abs(_safe_float(p.get('notional'), 0.0) or 0.0) for p in values), 8),
     }
@@ -244,7 +287,7 @@ def _human_status(entry):
     return 'observada en Binance'
 
 
-def persist_reconciliation(positions, status_file=DEFAULT_STATUS_FILE, alert_fn=None):
+def persist_reconciliation(positions, status_file=DEFAULT_STATUS_FILE, alert_fn=None, allowed_count=None):
     previous = load_status(status_file)
     previous_positions = previous.get('positions') if isinstance(previous.get('positions'), dict) else {}
     now = _now_iso()
@@ -264,18 +307,31 @@ def persist_reconciliation(positions, status_file=DEFAULT_STATUS_FILE, alert_fn=
                 pass
     payload = {
         'updated_at': now,
-        'summary': _summary(positions),
+        'summary': _summary(positions, allowed_count=allowed_count),
         'positions': positions,
     }
+    summary = payload['summary']
+    logging.warning(
+        'FUTURES RECONCILIATION summary observed=%s managed=%s unmanaged=%s orphan=%s '
+        'unprotected=%s desynced=%s allowed=%s status=%s',
+        summary.get('observed_count'),
+        summary.get('managed_count'),
+        summary.get('unmanaged_count'),
+        summary.get('orphan_count'),
+        summary.get('unprotected_count'),
+        summary.get('desynced_count'),
+        summary.get('allowed_count'),
+        summary.get('status'),
+    )
     _write_json(status_file, payload)
     return payload
 
 
 def reconcile_observed_positions(observed_positions, state=None, open_orders_by_symbol=None,
                                  trades_file=DEFAULT_TRADES_FILE, status_file=DEFAULT_STATUS_FILE,
-                                 alert_fn=None):
+                                 alert_fn=None, allowed_count=None):
     positions = classify_positions(observed_positions, state=state, open_orders_by_symbol=open_orders_by_symbol, trades_file=trades_file)
-    return persist_reconciliation(positions, status_file=status_file, alert_fn=alert_fn)
+    return persist_reconciliation(positions, status_file=status_file, alert_fn=alert_fn, allowed_count=allowed_count)
 
 
 def collect_open_orders(binance, observed_positions):

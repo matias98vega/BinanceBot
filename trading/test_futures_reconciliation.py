@@ -31,6 +31,53 @@ class FuturesReconciliationTests(unittest.TestCase):
             'position_margin': 5.8,
         }
 
+    def _raw_binance_short(self, symbol='CRCLUSDT'):
+        return {
+            'symbol': symbol,
+            'positionAmt': '-0.17',
+            'notional': '-11.67',
+            'entryPrice': '63.53',
+            'markPrice': '68.63',
+            'unRealizedProfit': '-0.87',
+            'leverage': '2',
+            'marginType': 'cross',
+            'isolatedMargin': '0',
+            'liquidationPrice': '120.50',
+        }
+
+    def test_raw_binance_position_amt_detects_open_short(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            trades = os.path.join(tmp, 'trades.jsonl')
+            self._write_trades(trades, [])
+
+            positions = futures_reconciliation.classify_positions(
+                [self._raw_binance_short()],
+                state={'positions': []},
+                open_orders_by_symbol={'CRCLUSDT': []},
+                trades_file=trades,
+            )
+
+        self.assertIn('CRCLUSDT', positions)
+        self.assertEqual(positions['CRCLUSDT']['position_amt'], -0.17)
+        self.assertEqual(positions['CRCLUSDT']['notional'], 11.67)
+        self.assertEqual(positions['CRCLUSDT']['liquidation_price'], 120.50)
+
+    def test_normalized_snapshot_quantity_detects_open_short(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            trades = os.path.join(tmp, 'trades.jsonl')
+            self._write_trades(trades, [])
+
+            positions = futures_reconciliation.classify_positions(
+                [{'symbol': 'SUIUSDT', 'side': 'SHORT', 'quantity': 0.1, 'notional': 0.075}],
+                state={'positions': []},
+                open_orders_by_symbol={'SUIUSDT': []},
+                trades_file=trades,
+            )
+
+        self.assertIn('SUIUSDT', positions)
+        self.assertEqual(positions['SUIUSDT']['position_amt'], -0.1)
+        self.assertEqual(positions['SUIUSDT']['notional'], 0.075)
+
     def test_observed_short_without_open_orders_is_unprotected(self):
         with tempfile.TemporaryDirectory() as tmp:
             trades = os.path.join(tmp, 'trades.jsonl')
@@ -47,6 +94,29 @@ class FuturesReconciliationTests(unittest.TestCase):
         self.assertIn('observed_futures_position', classes)
         self.assertIn('managed_futures_position', classes)
         self.assertIn('unprotected_futures_position', classes)
+
+    def test_persist_status_not_empty_when_observed_positions_exist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            trades = os.path.join(tmp, 'trades.jsonl')
+            status = os.path.join(tmp, 'futures_reconciliation_status.json')
+            self._write_trades(trades, [])
+
+            payload = futures_reconciliation.reconcile_observed_positions(
+                [self._raw_binance_short('CRCLUSDT'), self._raw_binance_short('BNBUSDT')],
+                state={'positions': []},
+                open_orders_by_symbol={'CRCLUSDT': [], 'BNBUSDT': []},
+                trades_file=trades,
+                status_file=status,
+                allowed_count=0,
+            )
+
+            saved = futures_reconciliation.load_status(status)
+
+        self.assertEqual(payload['summary']['observed_count'], 2)
+        self.assertEqual(saved['summary']['observed_count'], 2)
+        self.assertEqual(saved['summary']['unprotected_count'], 2)
+        self.assertEqual(saved['summary']['status'], 'EXCESO FUTURES / RIESGO NO GESTIONADAS')
+        self.assertIn('CRCLUSDT', saved['positions'])
 
     def test_observed_short_missing_from_state_is_unmanaged_orphan(self):
         with tempfile.TemporaryDirectory() as tmp:

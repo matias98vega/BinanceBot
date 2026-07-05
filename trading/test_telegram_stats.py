@@ -371,6 +371,8 @@ class TelegramStatsTests(unittest.TestCase):
             'managed_count': 1,
             'unprotected_count': 5,
             'desynced_count': 1,
+            'allowed_count': 0,
+            'status': 'EXCESO FUTURES',
         }
 
         with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics), \
@@ -386,7 +388,7 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertIn('- Gestionadas: 1', home)
         self.assertIn('- Permitidas ahora: 0', home)
         self.assertIn('- Sin proteccion: 5', home)
-        self.assertIn('- Estado: NO ALINEADO', home)
+        self.assertIn('- Estado: EXCESO FUTURES', home)
         self.assertNotIn('Shorts: 5/5', home)
 
     def test_live_open_positions_do_not_change_historical_stats(self):
@@ -508,8 +510,11 @@ class TelegramStatsTests(unittest.TestCase):
             'futures_position_margin': 20.42,
             'futures_reconciliation': {
                 'observed_count': 5,
+                'managed_count': 0,
                 'unprotected_count': 5,
                 'position_margin': 20.42,
+                'allowed_count': 0,
+                'status': 'EXCESO FUTURES',
             },
         })
 
@@ -520,8 +525,30 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertIn('Comprometido: 20.42 USDT', text)
         self.assertIn('Disponible: 0.00 USDT', text)
         self.assertIn('Shorts observadas: 5', text)
+        self.assertIn('Gestionadas: 0', text)
+        self.assertIn('Permitidas ahora: 0', text)
         self.assertIn('Sin proteccion: 5', text)
+        self.assertIn('Estado: EXCESO FUTURES', text)
         self.assertIn('Rebalance bloqueado porque hay posiciones Futures abiertas.', text)
+
+    def test_capital_falls_back_to_live_short_count_when_summary_is_empty(self):
+        metrics = self._metrics(short_count=5)
+        metrics.update({
+            'futures_available_balance': 0.0,
+            'futures_position_margin': 20.42,
+            'futures_reconciliation': {
+                'observed_count': 0,
+                'managed_count': 0,
+                'unprotected_count': 0,
+                'status': 'NO ALINEADO',
+            },
+        })
+
+        with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics), \
+             patch.object(telegram_commands, '_bot_state', return_value={}):
+            text = telegram_commands._render_page('capital')['text']
+
+        self.assertIn('Shorts observadas: 5', text)
 
     def test_positions_shows_managed_spot_longs(self):
         state = {

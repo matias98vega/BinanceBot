@@ -435,16 +435,32 @@ class CycleRunner:
                 position_risk = None
             futures_observability.update(bot_state.futures_observability_from_account(futures_account, position_risk))
             try:
-                observed_positions = futures_observability.get('futures_positions') or []
+                if isinstance(position_risk, list):
+                    observed_positions = []
+                    for position in position_risk:
+                        if not isinstance(position, dict):
+                            continue
+                        try:
+                            amount = float(position.get('positionAmt') or 0)
+                        except (TypeError, ValueError):
+                            amount = 0.0
+                        if abs(amount) > 0:
+                            observed_positions.append(position)
+                else:
+                    observed_positions = futures_observability.get('futures_positions') or []
                 open_orders_by_symbol = futures_reconciliation.collect_open_orders(self.binance, observed_positions)
                 reconciliation = futures_reconciliation.reconcile_observed_positions(
                     observed_positions,
                     state=state,
                     open_orders_by_symbol=open_orders_by_symbol,
                     alert_fn=utils.send_alert,
+                    allowed_count=max_shorts,
                 )
                 futures_observability['futures_reconciliation'] = reconciliation
                 futures_observability['futures_reconciliation_summary'] = reconciliation.get('summary') or {}
+                if futures_observability.get('futures_open_positions_count') and not reconciliation.get('summary', {}).get('observed_count'):
+                    import logging
+                    logging.warning('FUTURES RECONCILIATION MISMATCH observed_positions_missing')
             except Exception as e:
                 self.out(f'Futures reconciliation warning: {e}')
         except Exception:

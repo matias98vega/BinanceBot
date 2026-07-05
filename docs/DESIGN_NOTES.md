@@ -306,9 +306,15 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Problema:** Binance puede mantener posiciones Futures abiertas aunque el historial interno tenga un cierre total o aunque `state.json` ya no conserve una posicion gestionada. Esto consume margen, bloquea rebalance y deja riesgo operativo si no hay ordenes abiertas de proteccion.
 
-**Decision actual:** `futures_reconciliation.py` clasifica posiciones Futures observadas desde Binance de forma pasiva. No cierra posiciones, no modifica payloads y no cambia la logica normal de entradas/salidas. Persiste `data/history/futures_reconciliation_status.json` con posicion, margen, estado de gestion interna, presencia de open orders, clasificaciones y severidad.
+**Decision actual:** `futures_reconciliation.py` clasifica posiciones Futures observadas desde Binance de forma pasiva. No cierra posiciones, no modifica payloads y no cambia la logica normal de entradas/salidas. Persiste `data/history/futures_reconciliation_status.json` con posicion, margen, estado de gestion interna, presencia de open orders, clasificaciones y severidad. Ese archivo es la fuente reconciliada para Home, Capital y Posiciones.
+
+**Fuente de datos:** la reconciliacion usa posiciones observadas desde Binance, preferentemente el payload crudo de `futures_position_risk()` con `positionAmt != 0`. Si solo existe el snapshot normalizado usado por Telegram, tambien acepta `quantity` + `side`. Nunca depende solo de `state.json`.
 
 **Clasificaciones:** `observed_futures_position` significa que Binance reporta `positionAmt != 0`. `managed_futures_position` existe tambien en `state.json` con metadata suficiente de lifecycle. `unmanaged_futures_position` y `orphan_futures_position` indican que Binance ve la posicion pero el bot no tiene lifecycle confiable. `unprotected_futures_position` indica que no hay open orders. `desynced_closed_but_open_on_exchange` indica que el historial tiene cierre total pero Binance sigue abierto. `stale_observed_futures_position` marca posiciones observadas con antiguedad estimada mayor a 24h.
+
+**Parsing Binance:** shorts con `notional` negativo siguen siendo posiciones abiertas si `abs(positionAmt) > 0`. Para totales y resumen se usa `abs(notional)`, preservando `position_amt` firmado para entender el lado real.
+
+**Estado reconciliado:** `ALINEADO` solo aplica si `observed_count <= allowed_count` cuando hay limite disponible, y ademas `unmanaged_count`, `orphan_count`, `unprotected_count` y `desynced_count` son cero. Si hay exceso contra capacidad o posiciones no gestionadas, el estado explicita ambos motivos.
 
 **Hallazgo stale/24h:** la regla stale opera sobre posiciones activas en `state.json`. Si una posicion residual queda fuera de `state.json` o fue registrada como cerrada antes de confirmar `positionAmt=0`, el lifecycle normal ya no la recorre y la regla stale no puede cerrarla. Por eso esta iteracion solo alerta y clasifica.
 
