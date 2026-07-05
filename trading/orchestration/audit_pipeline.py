@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Audit and reconciliation helpers for passive state-vs-wallet checks."""
 
+import logging
 import time
 
 import config
@@ -160,10 +161,24 @@ def maybe_clean_dust(state, binance, out_fn):
     if now - last_conv < 3660:
         return
 
-    assets, msg = binance.clean_dust(dry_run=config.DRY_RUN)
+    if not getattr(config, 'AUTO_CLEAN_DUST', False):
+        logging.warning('DUST CLEAN SKIP: disabled by config')
+        if nueva_semana:
+            out_fn('Limpieza de polvo omitida: AUTO_CLEAN_DUST=False')
+        return
+
+    dust_dry_run = getattr(config, 'DUST_CLEAN_DRY_RUN', True)
+    if dust_dry_run:
+        logging.warning('DUST CLEAN DRY RUN')
+    else:
+        logging.warning('DUST CLEAN EXECUTE')
+
+    assets, msg = binance.clean_dust(dry_run=dust_dry_run)
     if assets:
+        logging.warning('DUST CLEAN RESULT assets=%s dry_run=%s message=%s', assets, dust_dry_run, msg)
         out_fn(f'🧹 Polvo: {msg}')
-        utils.send_alert(f'🧹 {msg}')
+        if not dust_dry_run:
+            utils.send_alert(f'Polvo convertido: {msg}')
         state['last_dust_conversion'] = now
         state['dust_in_progress'] = True
     elif 'Rate limit' in msg:

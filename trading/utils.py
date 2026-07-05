@@ -875,7 +875,7 @@ def get_max_long_positions(usdt_free):
     return 1
 
 
-def clean_dust(dry_run=False):
+def clean_dust(dry_run=True):
     """
     Convierte activos residuales (polvo) a BNB via /sapi/v1/asset/dust.
     Solo convierte si el valor total supera DUST_MIN_VALUE_USD.

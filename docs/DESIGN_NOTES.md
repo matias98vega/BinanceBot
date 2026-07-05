@@ -294,11 +294,13 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Solucion actual:** `residuals.py` clasifica residuales no protegibles, persiste `data/history/residuals_status.json`, emite alertas humanas con throttling y conserva logs de produccion como `RESIDUAL UNPROTECTABLE` y `RESIDUAL STATUS WRITE`. La instrumentacion temporal de diagnostico del flujo OCO fue retirada para evitar ruido.
 
-**Dust cleaner existente:** el repositorio conserva un flujo de limpieza de dust conectado al ciclo actual. `utils.clean_dust(dry_run=False)` detecta saldos no protegidos por `DUST_PROTECTED`, exige un valor total minimo (`DUST_MIN_VALUE_USD`) y usa el endpoint Binance `/sapi/v1/asset/dust`, que convierte activos pequenos a BNB. `BinanceClient.clean_dust()` delega en ese helper y `audit_pipeline.maybe_clean_dust()` lo invoca desde `CycleRunner` con frecuencia semanal controlada por `DUST_CLEAN_DAY` y estado local.
+**Dust cleaner existente:** el repositorio conserva un flujo de limpieza de dust conectado al ciclo actual. `utils.clean_dust(dry_run=True)` detecta saldos no protegidos por `DUST_PROTECTED`, exige un valor total minimo (`DUST_MIN_VALUE_USD`) y usa el endpoint Binance `/sapi/v1/asset/dust`, que convierte activos pequenos a BNB. `BinanceClient.clean_dust()` delega en ese helper y `audit_pipeline.maybe_clean_dust()` lo invoca desde `CycleRunner` con frecuencia semanal controlada por `DUST_CLEAN_DAY` y estado local.
 
-**Riesgos:** aunque el helper existe y es reutilizable, puede ejecutar conversiones reales cuando `DRY_RUN=False`, depende de permisos de dust conversion en Binance y cambia balances Spot. Por eso no se debe tratar como limpieza automatica segura sin una configuracion explicita y una auditoria operativa adicional.
+**Compuerta explicita:** `DRY_RUN` controla el trading, no la limpieza de dust. La conversion real de dust requiere `AUTO_CLEAN_DUST=True` y `DUST_CLEAN_DRY_RUN=False`. Por defecto `AUTO_CLEAN_DUST=False` y `DUST_CLEAN_DRY_RUN=True`, por lo que el ciclo puede omitir o simular la limpieza, pero no convertir automaticamente.
 
-**Mejora futura:** crear un `Dust Manager` pasivo por defecto con `AUTO_CLEAN_DUST=false`. Sus responsabilidades serian detectar dust sin posicion activa ni orden abierta, verificar valor estimado y elegibilidad de conversion/venta, persistir estado, alertar, y ejecutar limpieza solo si una configuracion explicita lo habilita.
+**Riesgos:** aunque el helper existe y es reutilizable, una conversion real depende de permisos de dust conversion en Binance, cambia balances Spot y puede afectar auditoria contable. Por eso queda desactivada por defecto y separada del modo real/simulado de trading.
+
+**Mejora futura:** crear un `Dust Manager` pasivo por defecto. Sus responsabilidades serian detectar dust sin posicion activa ni orden abierta, verificar valor estimado y elegibilidad de conversion/venta, persistir estado, alertar, y ejecutar limpieza solo si una configuracion explicita lo habilita.
 
 ## Auditoria Local de Datos
 

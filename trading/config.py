@@ -29,6 +29,12 @@ ALERT_TARGET = _runtime_config.alert_target
 # ── Modo dry-run (sin órdenes reales) ────────────────────────────────────────
 DRY_RUN              = False  # True = simular sin ejecutar órdenes
 
+def _env_bool(name, default=False):
+    value = os.environ.get(name)
+    if value is None or value == '':
+        return default
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
+
 # ── Capital ──────────────────────────────────────────────────────────────────
 SPOT_RISK_PCT        = 0.93   # % del capital spot a usar por trade long
 FUTURES_RISK_PCT     = 0.50   # % del capital futures a usar por trade short (por posición)
@@ -43,6 +49,8 @@ DIVERSIFY_RISK_2      = 0.45  # % por posición cuando hay 2 simultáneas
 DIVERSIFY_RISK_3      = 0.30  # % por posición cuando hay 3 simultáneas
 
 # ── Limpieza de polvo (dust) ────────────────────────────────────────────────────
+AUTO_CLEAN_DUST      = _env_bool('AUTO_CLEAN_DUST', False)  # conversion real desactivada salvo habilitacion explicita
+DUST_CLEAN_DRY_RUN   = _env_bool('DUST_CLEAN_DRY_RUN', True)   # simular limpieza aunque AUTO_CLEAN_DUST este habilitado
 DUST_CLEAN_DAY        = 0     # día de la semana para limpiar polvo (0=lunes)
 DUST_MIN_VALUE_USD    = 0.10  # no convertir si el total de polvo es menor a este valor
 DUST_PROTECTED        = {'USDT', 'USDC', 'BNB'}  # nunca convertir estos activos
