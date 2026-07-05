@@ -302,6 +302,20 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Mejora futura:** crear un `Dust Manager` pasivo por defecto. Sus responsabilidades serian detectar dust sin posicion activa ni orden abierta, verificar valor estimado y elegibilidad de conversion/venta, persistir estado, alertar, y ejecutar limpieza solo si una configuracion explicita lo habilita.
 
+## Reconciliacion Futures Observada
+
+**Problema:** Binance puede mantener posiciones Futures abiertas aunque el historial interno tenga un cierre total o aunque `state.json` ya no conserve una posicion gestionada. Esto consume margen, bloquea rebalance y deja riesgo operativo si no hay ordenes abiertas de proteccion.
+
+**Decision actual:** `futures_reconciliation.py` clasifica posiciones Futures observadas desde Binance de forma pasiva. No cierra posiciones, no modifica payloads y no cambia la logica normal de entradas/salidas. Persiste `data/history/futures_reconciliation_status.json` con posicion, margen, estado de gestion interna, presencia de open orders, clasificaciones y severidad.
+
+**Clasificaciones:** `observed_futures_position` significa que Binance reporta `positionAmt != 0`. `managed_futures_position` existe tambien en `state.json` con metadata suficiente de lifecycle. `unmanaged_futures_position` y `orphan_futures_position` indican que Binance ve la posicion pero el bot no tiene lifecycle confiable. `unprotected_futures_position` indica que no hay open orders. `desynced_closed_but_open_on_exchange` indica que el historial tiene cierre total pero Binance sigue abierto. `stale_observed_futures_position` marca posiciones observadas con antiguedad estimada mayor a 24h.
+
+**Hallazgo stale/24h:** la regla stale opera sobre posiciones activas en `state.json`. Si una posicion residual queda fuera de `state.json` o fue registrada como cerrada antes de confirmar `positionAmt=0`, el lifecycle normal ya no la recorre y la regla stale no puede cerrarla. Por eso esta iteracion solo alerta y clasifica.
+
+**Riesgo:** una posicion Futures sin TP/SL/reduce-only abierta puede seguir acumulando PnL no realizado y bloquear transferencias. El bot no debe cerrarla automaticamente sin un flujo explicito de recovery porque podria cerrar una posicion que requiere revision humana o conciliacion de historial.
+
+**Mejora futura:** implementar un recovery explicito y auditable que consulte Binance, calcule cantidad real, confirme protecciones ausentes, pida habilitacion/configuracion dedicada y recien entonces permita cierre reduce-only seguro.
+
 ## Auditoria Local de Datos
 
 **Problema:** los historicos JSON/JSONL pueden degradarse con campos faltantes, lineas corruptas, timestamps invalidos o relaciones incompletas entre trades, features, timeline, rebalance y ledger.

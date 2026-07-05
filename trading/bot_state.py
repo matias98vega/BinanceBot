@@ -776,6 +776,11 @@ def build_bot_state(
     state = state if isinstance(state, dict) else {}
     longs, shorts, spot_used, futures_used = _position_capital(state)
     futures_observability = futures_observability if isinstance(futures_observability, dict) else {}
+    futures_reconciliation_summary = (
+        futures_observability.get('futures_reconciliation_summary')
+        if isinstance(futures_observability.get('futures_reconciliation_summary'), dict)
+        else {}
+    )
     observed_futures_used = _float_or_none(futures_observability.get('futures_position_margin'))
     if observed_futures_used is None:
         observed_futures_used = _float_or_none(futures_observability.get('futures_total_initial_margin'))
@@ -891,6 +896,7 @@ def build_bot_state(
                 'source': 'binance_futures_account' if short_count > len(shorts) else 'state',
                 'symbols': futures_observability.get('futures_open_symbols') or [],
                 'observed': futures_observability.get('futures_positions') or [],
+                'reconciliation': futures_reconciliation_summary,
             },
         },
         'pnl': {

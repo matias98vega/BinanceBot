@@ -16,6 +16,7 @@ import capital_manager
 import bot_state as bot_state_module
 import analytics_engine
 import decision_timeline
+import futures_reconciliation
 import insights_engine
 import trade_inspector
 
@@ -26,6 +27,21 @@ CONFIG = load_config(require_api=False)
 OFFSET_FILE = os.path.join(BASE_DIR, 'telegram_offset.json')
 BOT_STATE_FILE = os.path.join(BASE_DIR, 'bot_state.json')
 UY_TZ = timezone(timedelta(hours=-3), 'UY')
+
+
+def _futures_reconciliation_status():
+    data = _read_json(futures_reconciliation.DEFAULT_STATUS_FILE, {}) or {}
+    return data if isinstance(data, dict) else {}
+
+
+def _futures_reconciliation_positions():
+    data = _futures_reconciliation_status()
+    positions = data.get('positions') if isinstance(data.get('positions'), dict) else {}
+    return positions
+
+
+def _futures_reconciliation_entry(symbol):
+    return _futures_reconciliation_positions().get(str(symbol or '').upper()) or {}
 
 
 def _env():
@@ -388,6 +404,20 @@ def _futures_position_view(pos):
     margin_type = pos.get('margin_type') or pos.get('marginType') or 'No disponible'
     if isinstance(margin_type, str) and margin_type != 'No disponible':
         margin_type = margin_type.capitalize()
+    reconciliation = _futures_reconciliation_entry(symbol)
+    classes = reconciliation.get('classification') or []
+    tags = []
+    if 'managed_futures_position' in classes:
+        tags.append('Gestionada por bot')
+    elif reconciliation:
+        tags.append('Observada en Binance')
+    if 'unmanaged_futures_position' in classes or 'orphan_futures_position' in classes:
+        tags.append('No gestionada / huerfana')
+    if 'unprotected_futures_position' in classes:
+        tags.append('Sin proteccion')
+    if 'desynced_closed_but_open_on_exchange' in classes:
+        tags.append('Cerrada en historial, abierta en exchange')
+    status_line = f'Estado: {" | ".join(tags)}' if tags else None
     return '\n'.join([
         f'{icon} {symbol} {side} | Lev {_fmt_leverage(pos.get("leverage"))} | {margin_type}',
         (
@@ -398,6 +428,7 @@ def _futures_position_view(pos):
             f'Entry {_fmt_price_or_unavailable(pos.get("entry_price"))} | '
             f'Mark {_fmt_price_or_unavailable(pos.get("mark_price"))}'
         ),
+        *([status_line] if status_line else []),
     ])
 
 
@@ -513,6 +544,7 @@ def _exposure_metrics():
             'warning': capital.get('warning'),
             'note': capital.get('note'),
             'rebalance': snapshot.get('rebalance') if isinstance(snapshot.get('rebalance'), dict) else {},
+            'futures_reconciliation': short_state.get('reconciliation') if isinstance(short_state.get('reconciliation'), dict) else futures_reconciliation.reconciliation_summary_from_status(),
             'max_exposure_percent': capital.get('max_exposure_percent'),
             'max_position_percent': None,
         }
@@ -559,6 +591,7 @@ def _exposure_metrics():
         'warning': None,
         'note': None,
         'rebalance': {},
+        'futures_reconciliation': futures_reconciliation.reconciliation_summary_from_status(),
         'max_exposure_percent': _env_number('BOT_MAX_EXPOSURE_PERCENT'),
         'max_position_percent': None,
     }
@@ -1246,6 +1279,24 @@ class HomePage(MenuPage):
         metrics = _exposure_metrics()
         max_longs = _display_capacity(metrics["long_count"], metrics["max_longs"])
         max_shorts = _display_capacity(metrics["short_count"], metrics["max_shorts"])
+        reconciliation = metrics.get('futures_reconciliation') or {}
+        unprotected_shorts = int(reconciliation.get('unprotected_count') or 0)
+        managed_shorts = int(reconciliation.get('managed_count') or 0)
+        observed_shorts = int(reconciliation.get('observed_count') or metrics["short_count"] or 0)
+        permitted_shorts = metrics.get('max_shorts')
+        futures_aligned = unprotected_shorts == 0 and int(reconciliation.get('desynced_count') or 0) == 0
+        short_lines = (
+            [
+                'Shorts:',
+                f'- Observadas: {observed_shorts}',
+                f'- Gestionadas: {managed_shorts}',
+                f'- Permitidas ahora: {permitted_shorts}',
+                f'- Sin proteccion: {unprotected_shorts}',
+                f'- Estado: {"ALINEADO" if futures_aligned else "NO ALINEADO"}',
+            ]
+            if reconciliation
+            else [f'Shorts: {metrics["short_count"]}/{max_shorts}']
+        )
         lines = [
             f'{_status_icon(bot)} Bot: {bot}',
             f'{_status_icon(guardian)} Guardian: {guardian}',
@@ -1260,7 +1311,7 @@ class HomePage(MenuPage):
             f'Longs: {metrics["long_count"]}/{max_longs}',
             f'Spot: {_fmt_money(metrics["spot_used"])} / {_fmt_money(metrics["spot_real"])}',
             '',
-            f'Shorts: {metrics["short_count"]}/{max_shorts}',
+            *short_lines,
             f'Futures: {_fmt_money(metrics["futures_used"])} / {_fmt_money(metrics["futures_real"])}',
             '',
             '\U0001F552 Ultimo ciclo',
@@ -1319,6 +1370,17 @@ class CapitalPage(MenuPage):
             lines.append(f'Comprometido: {_fmt_money(metrics.get("futures_position_margin"))}')
         if metrics.get('futures_available_balance') is not None:
             lines.append(f'Disponible: {_fmt_money(metrics.get("futures_available_balance"))}')
+        reconciliation = metrics.get('futures_reconciliation') or {}
+        if reconciliation:
+            lines.extend([
+                f'Shorts observadas: {int(reconciliation.get("observed_count") or 0)}',
+                f'Sin proteccion: {int(reconciliation.get("unprotected_count") or 0)}',
+            ])
+            if (reconciliation.get('observed_count') or 0) and (metrics.get('futures_available_balance') == 0 or metrics.get('futures_position_margin')):
+                lines.extend([
+                    'Bloqueo:',
+                    'Rebalance bloqueado porque hay posiciones Futures abiertas.',
+                ])
         if metrics.get('futures_reserved'):
             lines.append(f'Reserva: {_fmt_money(metrics.get("futures_reserved"))}')
         if rebalance:

@@ -363,6 +363,32 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertIn('Shorts: 2/2', home)
         self.assertIn('Abiertos: 2', stats_text)
 
+    def test_home_shows_futures_reconciliation_instead_of_normal_capacity(self):
+        metrics = self._metrics(short_count=5)
+        metrics['max_shorts'] = 0
+        metrics['futures_reconciliation'] = {
+            'observed_count': 5,
+            'managed_count': 1,
+            'unprotected_count': 5,
+            'desynced_count': 1,
+        }
+
+        with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics), \
+             patch.object(telegram_commands, '_bot_state', return_value={'system': {'health': 'OK'}}), \
+             patch.object(telegram_commands, '_state', return_value={}), \
+             patch.object(telegram_commands, '_health_summary', return_value=('OK', [], [])), \
+             patch.object(telegram_commands, '_bot_status', return_value='ONLINE'), \
+             patch.object(telegram_commands, '_guardian_status', return_value='ONLINE'):
+            home = telegram_commands._render_page('home')['text']
+
+        self.assertIn('Shorts:', home)
+        self.assertIn('- Observadas: 5', home)
+        self.assertIn('- Gestionadas: 1', home)
+        self.assertIn('- Permitidas ahora: 0', home)
+        self.assertIn('- Sin proteccion: 5', home)
+        self.assertIn('- Estado: NO ALINEADO', home)
+        self.assertNotIn('Shorts: 5/5', home)
+
     def test_live_open_positions_do_not_change_historical_stats(self):
         stats = sample_stats()
         stats['general']['closed_trades'] = 17
@@ -475,6 +501,28 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertIn('Dirección:\nSpot → Futures', text)
         self.assertIn('Desbalance pendiente:\n26.94 USDT', text)
 
+    def test_capital_explains_futures_rebalance_blocked_by_open_positions(self):
+        metrics = self._metrics(short_count=5)
+        metrics.update({
+            'futures_available_balance': 0.0,
+            'futures_position_margin': 20.42,
+            'futures_reconciliation': {
+                'observed_count': 5,
+                'unprotected_count': 5,
+                'position_margin': 20.42,
+            },
+        })
+
+        with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics), \
+             patch.object(telegram_commands, '_bot_state', return_value={}):
+            text = telegram_commands._render_page('capital')['text']
+
+        self.assertIn('Comprometido: 20.42 USDT', text)
+        self.assertIn('Disponible: 0.00 USDT', text)
+        self.assertIn('Shorts observadas: 5', text)
+        self.assertIn('Sin proteccion: 5', text)
+        self.assertIn('Rebalance bloqueado porque hay posiciones Futures abiertas.', text)
+
     def test_positions_shows_managed_spot_longs(self):
         state = {
             'positions': [
@@ -521,13 +569,42 @@ class TelegramStatsTests(unittest.TestCase):
         }
 
         with patch.object(telegram_commands, '_state', return_value={'positions': []}), \
-             patch.object(telegram_commands, '_bot_state', return_value=bot_snapshot):
+             patch.object(telegram_commands, '_bot_state', return_value=bot_snapshot), \
+             patch.object(telegram_commands, '_futures_reconciliation_entry', return_value={}):
             text = telegram_commands._render_page('positions')['text']
 
         self.assertIn('📉 Futures', text)
         self.assertIn('CRCLUSDT SHORT | Lev x5 | Cross', text)
         self.assertIn('Notional 12.34 USDT | PnL +0.42 USDT', text)
         self.assertIn('Entry 0.1234 | Mark 0.1200', text)
+
+    def test_positions_marks_unprotected_desynced_futures(self):
+        bot_snapshot = {
+            'positions': {
+                'short': {
+                    'observed': [{'symbol': 'CRCLUSDT', 'side': 'SHORT', 'notional': 11.67}]
+                }
+            }
+        }
+        entry = {
+            'classification': [
+                'observed_futures_position',
+                'unmanaged_futures_position',
+                'orphan_futures_position',
+                'unprotected_futures_position',
+                'desynced_closed_but_open_on_exchange',
+            ]
+        }
+
+        with patch.object(telegram_commands, '_state', return_value={'positions': []}), \
+             patch.object(telegram_commands, '_bot_state', return_value=bot_snapshot), \
+             patch.object(telegram_commands, '_futures_reconciliation_entry', return_value=entry):
+            text = telegram_commands._render_page('positions')['text']
+
+        self.assertIn('Observada en Binance', text)
+        self.assertIn('No gestionada / huerfana', text)
+        self.assertIn('Sin proteccion', text)
+        self.assertIn('Cerrada en historial, abierta en exchange', text)
 
     def test_positions_deduplicates_futures_by_symbol(self):
         state = {
@@ -551,6 +628,7 @@ class TelegramStatsTests(unittest.TestCase):
 
         with patch.object(telegram_commands, '_state', return_value=state), \
              patch.object(telegram_commands, '_bot_state', return_value=bot_snapshot), \
+             patch.object(telegram_commands, '_futures_reconciliation_entry', return_value={}), \
              patch.object(telegram_commands, '_public_price', return_value=0.11):
             text = telegram_commands._render_page('positions')['text']
 
@@ -566,7 +644,8 @@ class TelegramStatsTests(unittest.TestCase):
         }
 
         with patch.object(telegram_commands, '_state', return_value={'positions': []}), \
-             patch.object(telegram_commands, '_bot_state', return_value=bot_snapshot):
+             patch.object(telegram_commands, '_bot_state', return_value=bot_snapshot), \
+             patch.object(telegram_commands, '_futures_reconciliation_entry', return_value={}):
             text = telegram_commands._render_page('positions')['text']
 
         self.assertIn('SUIUSDT SHORT', text)
@@ -588,6 +667,7 @@ class TelegramStatsTests(unittest.TestCase):
 
         with patch.object(telegram_commands, '_state', return_value=state), \
              patch.object(telegram_commands, '_bot_state', return_value=bot_snapshot), \
+             patch.object(telegram_commands, '_futures_reconciliation_entry', return_value={}), \
              patch.object(telegram_commands, '_public_price', return_value=10.5):
             text = telegram_commands._render_page('positions')['text']
 

@@ -7,6 +7,7 @@ import bot_state
 import capital_manager
 import config
 import decision_timeline
+import futures_reconciliation
 import longs
 import market
 import rebalance
@@ -433,6 +434,19 @@ class CycleRunner:
             except Exception:
                 position_risk = None
             futures_observability.update(bot_state.futures_observability_from_account(futures_account, position_risk))
+            try:
+                observed_positions = futures_observability.get('futures_positions') or []
+                open_orders_by_symbol = futures_reconciliation.collect_open_orders(self.binance, observed_positions)
+                reconciliation = futures_reconciliation.reconcile_observed_positions(
+                    observed_positions,
+                    state=state,
+                    open_orders_by_symbol=open_orders_by_symbol,
+                    alert_fn=utils.send_alert,
+                )
+                futures_observability['futures_reconciliation'] = reconciliation
+                futures_observability['futures_reconciliation_summary'] = reconciliation.get('summary') or {}
+            except Exception as e:
+                self.out(f'Futures reconciliation warning: {e}')
         except Exception:
             pass
         # Valor nocional de posiciones short activas
