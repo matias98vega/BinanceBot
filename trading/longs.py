@@ -536,6 +536,9 @@ def _recolocar_oco(pos, state):
             qty,
             price_now,
             filters,
+            limit_price=tp_r,
+            stop_price=sl_r,
+            stop_limit_price=sl_limit_r,
         ):
             pos['quantity'] = qty
             pos['recovery_pending'] = True

@@ -63,6 +63,10 @@ def load_status(path=None):
 def classify_unprotectable_residual(symbol, asset, quantity, estimated_value, min_notional,
                                     reason='below_min_notional', rounded_qty=None,
                                     rounded_price=None, notional_after_rounding=None,
+                                    limit_price=None, stop_price=None,
+                                    stop_limit_price=None, limit_notional=None,
+                                    stop_notional=None, min_leg_notional=None,
+                                    limiting_leg=None,
                                     path=None):
     """Persist an unprotectable residual and return the updated entry plus alert decision."""
     resolved_path = _status_path(path)
@@ -96,6 +100,13 @@ def classify_unprotectable_residual(symbol, asset, quantity, estimated_value, mi
         'rounded_qty': _safe_float(rounded_qty),
         'rounded_price': _safe_float(rounded_price),
         'notional_after_rounding': _safe_float(notional_after_rounding),
+        'limit_price': _safe_float(limit_price),
+        'stop_price': _safe_float(stop_price),
+        'stop_limit_price': _safe_float(stop_limit_price),
+        'limit_notional': _safe_float(limit_notional),
+        'stop_notional': _safe_float(stop_notional),
+        'min_leg_notional': _safe_float(min_leg_notional),
+        'limiting_leg': limiting_leg,
     }
     residuals[symbol] = entry
     data['residuals'] = residuals
@@ -115,6 +126,18 @@ def _parse_ts(value):
 
 
 def residual_alert_message(entry):
+    if entry.get('reason') == 'oco_leg_below_min_notional':
+        return (
+            f'⚠️ {entry.get("asset") or entry.get("symbol")} residual sin OCO.\n'
+            'No se puede proteger porque una pata de la OCO queda bajo el mínimo de Binance.\n'
+            f'Cantidad: {entry.get("quantity", 0):.8f}\n'
+            f'Valor estimado: {entry.get("estimated_value", 0):.2f} USDT\n'
+            f'Mínimo requerido: {entry.get("min_notional", 0):.2f} USDT\n'
+            f'Notional TP: {_safe_float(entry.get("limit_notional"), 0.0):.2f} USDT\n'
+            f'Notional SL: {_safe_float(entry.get("stop_notional"), 0.0):.2f} USDT\n'
+            f'Pata limitante: {entry.get("limiting_leg") or "No disponible"}\n'
+            'Acción sugerida: vender manualmente o acumular más saldo antes de proteger.'
+        )
     return (
         f'⚠️ {entry.get("asset") or entry.get("symbol")} residual sin OCO.\n'
         'No se puede proteger porque el valor queda por debajo del mínimo permitido por Binance.\n'
@@ -127,6 +150,8 @@ def residual_alert_message(entry):
 
 def handle_unprotectable_spot_residual(symbol, asset, quantity, price, filters,
                                        reason='below_min_notional', out_fn=None,
+                                       limit_price=None, stop_price=None,
+                                       stop_limit_price=None,
                                        path=None):
     """Return True when the Spot balance is too small to protect and was recorded."""
     import logging
@@ -143,12 +168,37 @@ def handle_unprotectable_spot_residual(symbol, asset, quantity, price, filters,
     rounded_qty = utils.round_step(qty, step) if step else qty
     rounded_price = utils.round_tick(px, tick) if tick else px
     notional_after_rounding = rounded_qty * rounded_price
-    if rounded_qty > 0 and (min_qty <= 0 or rounded_qty >= min_qty) and notional_after_rounding >= min_notional:
+    limit_px = _safe_float(limit_price)
+    stop_px = _safe_float(stop_price)
+    stop_limit_px = _safe_float(stop_limit_price)
+    rounded_limit_price = utils.round_tick(limit_px, tick) if tick and limit_px is not None else limit_px
+    rounded_stop_price = utils.round_tick(stop_px, tick) if tick and stop_px is not None else stop_px
+    rounded_stop_limit_price = utils.round_tick(stop_limit_px, tick) if tick and stop_limit_px is not None else stop_limit_px
+    limit_notional = rounded_qty * rounded_limit_price if rounded_limit_price is not None else None
+    stop_notional = rounded_qty * rounded_stop_limit_price if rounded_stop_limit_price is not None else None
+    min_leg_notional = None
+    limiting_leg = None
+    if limit_notional is not None and stop_notional is not None:
+        if limit_notional <= stop_notional:
+            min_leg_notional = limit_notional
+            limiting_leg = 'TP'
+        else:
+            min_leg_notional = stop_notional
+            limiting_leg = 'SL / stopLimitPrice'
+    oco_leg_valid = min_leg_notional is None or min_leg_notional >= min_notional
+    if (
+        rounded_qty > 0
+        and (min_qty <= 0 or rounded_qty >= min_qty)
+        and notional_after_rounding >= min_notional
+        and oco_leg_valid
+    ):
         return False
 
     detected_reason = reason
     if rounded_qty <= 0 or (min_qty > 0 and rounded_qty < min_qty):
         detected_reason = 'below_min_qty'
+    elif min_leg_notional is not None and min_leg_notional < min_notional:
+        detected_reason = 'oco_leg_below_min_notional'
     entry, should_alert = classify_unprotectable_residual(
         symbol,
         asset,
@@ -159,12 +209,21 @@ def handle_unprotectable_spot_residual(symbol, asset, quantity, price, filters,
         rounded_qty=rounded_qty,
         rounded_price=rounded_price,
         notional_after_rounding=notional_after_rounding,
+        limit_price=rounded_limit_price,
+        stop_price=rounded_stop_price,
+        stop_limit_price=rounded_stop_limit_price,
+        limit_notional=limit_notional,
+        stop_notional=stop_notional,
+        min_leg_notional=min_leg_notional,
+        limiting_leg=limiting_leg,
         path=path,
     )
     logging.warning(
         'RESIDUAL UNPROTECTABLE symbol=%s asset=%s quantity=%s estimated_value=%.8f '
         'min_notional=%.8f reason=%s rounded_qty=%s rounded_price=%s '
-        'notional_after_rounding=%.8f',
+        'notional_after_rounding=%.8f limit_price=%s stop_price=%s '
+        'stop_limit_price=%s limit_notional=%s stop_notional=%s '
+        'min_leg_notional=%s limiting_leg=%s',
         symbol,
         asset,
         qty,
@@ -174,6 +233,13 @@ def handle_unprotectable_spot_residual(symbol, asset, quantity, price, filters,
         rounded_qty,
         rounded_price,
         notional_after_rounding,
+        rounded_limit_price,
+        rounded_stop_price,
+        rounded_stop_limit_price,
+        limit_notional,
+        stop_notional,
+        min_leg_notional,
+        limiting_leg,
     )
     try:
         decision_timeline.record_event(
@@ -187,6 +253,13 @@ def handle_unprotectable_spot_residual(symbol, asset, quantity, price, filters,
                 'quantity': qty,
                 'estimated_value': qty * px,
                 'min_notional': min_notional,
+                'limit_price': rounded_limit_price,
+                'stop_price': rounded_stop_price,
+                'stop_limit_price': rounded_stop_limit_price,
+                'limit_notional': limit_notional,
+                'stop_notional': stop_notional,
+                'min_leg_notional': min_leg_notional,
+                'limiting_leg': limiting_leg,
                 'reason': entry.get('reason'),
             },
         )

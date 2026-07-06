@@ -87,7 +87,17 @@ def audit_orphans(state, binance, out_fn, safe_log_open_fn):
                 sl = utils.round_tick(sl, tick)
                 sl_limit = utils.round_tick(sl * 0.9985, tick)
 
-                if residuals.handle_unprotectable_spot_residual(sym, asset, free, cur, filters, out_fn=out_fn):
+                if residuals.handle_unprotectable_spot_residual(
+                    sym,
+                    asset,
+                    free,
+                    cur,
+                    filters,
+                    out_fn=out_fn,
+                    limit_price=tp,
+                    stop_price=sl,
+                    stop_limit_price=sl_limit,
+                ):
                     continue
 
                 if tp <= cur or sl >= cur or qty <= 0:

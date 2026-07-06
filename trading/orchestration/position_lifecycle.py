@@ -27,6 +27,9 @@ def recolocar_oco_long(pos, sym, qty_total, step, price, tp, entry, binance, out
             price,
             filters,
             out_fn=out_fn,
+            limit_price=new_tp,
+            stop_price=new_sl,
+            stop_limit_price=new_sl_l,
         ):
             return
         if qty * price < 5.0:

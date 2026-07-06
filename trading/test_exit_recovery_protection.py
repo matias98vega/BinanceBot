@@ -347,6 +347,70 @@ class ExitRecoveryProtectionTests(unittest.TestCase):
         self.assertEqual(saved['reason'], 'below_min_notional')
         self.assertEqual(saved['suggested_action'], 'vender manualmente o acumular mas saldo antes de proteger')
 
+    def test_oco_leg_below_min_notional_is_unprotectable_even_if_estimated_value_is_valid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'residuals_status.json')
+            handled = residuals.handle_unprotectable_spot_residual(
+                'NEARUSDT',
+                'NEAR',
+                2.595,
+                2.0,
+                {'tick_size': 0.001, 'step_size': 0.001, 'min_qty': 0.001, 'min_notional': 5.0},
+                limit_price=2.3,
+                stop_price=1.93,
+                stop_limit_price=1.925,
+                path=path,
+            )
+            data = residuals.load_status(path)
+
+        saved = data['residuals']['NEARUSDT']
+        self.assertTrue(handled)
+        self.assertEqual(saved['reason'], 'oco_leg_below_min_notional')
+        self.assertGreater(saved['estimated_value'], saved['min_notional'])
+        self.assertGreaterEqual(saved['limit_notional'], saved['min_notional'])
+        self.assertLess(saved['stop_notional'], saved['min_notional'])
+        self.assertEqual(saved['min_leg_notional'], saved['stop_notional'])
+        self.assertEqual(saved['limiting_leg'], 'SL / stopLimitPrice')
+
+    def test_oco_leg_notional_allows_current_flow_when_both_legs_are_valid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'residuals_status.json')
+            handled = residuals.handle_unprotectable_spot_residual(
+                'NEARUSDT',
+                'NEAR',
+                2.595,
+                2.0,
+                {'tick_size': 0.001, 'step_size': 0.001, 'min_qty': 0.001, 'min_notional': 5.0},
+                limit_price=2.3,
+                stop_price=1.94,
+                stop_limit_price=1.93,
+                path=path,
+            )
+            data = residuals.load_status(path)
+
+        self.assertFalse(handled)
+        self.assertEqual(data, {})
+
+    def test_oco_leg_warning_message_is_not_contradictory(self):
+        msg = residuals.residual_alert_message({
+            'asset': 'NEAR',
+            'symbol': 'NEARUSDT',
+            'quantity': 2.595,
+            'estimated_value': 5.19,
+            'min_notional': 5.0,
+            'limit_notional': 5.96,
+            'stop_notional': 4.99,
+            'limiting_leg': 'SL / stopLimitPrice',
+            'reason': 'oco_leg_below_min_notional',
+        })
+
+        self.assertIn('una pata de la OCO queda bajo el mínimo', msg)
+        self.assertIn('Valor estimado: 5.19 USDT', msg)
+        self.assertIn('Notional TP: 5.96 USDT', msg)
+        self.assertIn('Notional SL: 4.99 USDT', msg)
+        self.assertIn('Pata limitante: SL / stopLimitPrice', msg)
+        self.assertNotIn('valor queda por debajo', msg)
+
     def test_unprotectable_residual_alert_is_throttled(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, 'residuals_status.json')
@@ -392,6 +456,43 @@ class ExitRecoveryProtectionTests(unittest.TestCase):
         self.assertEqual(status['residuals']['SOLUSDT']['status'], 'unprotectable_residual')
         self.assertTrue(pos['recovery_pending'])
         self.assertIn('SOL residual sin OCO', send_alert.call_args.args[0])
+
+    def test_long_recovery_uses_oco_leg_notional_before_post(self):
+        client = Mock()
+        client.get_spot_price.return_value = 2.0
+        client.get_spot_filters.return_value = {
+            'tick_size': 0.001,
+            'step_size': 0.001,
+            'min_qty': 0.001,
+            'min_notional': 5.0,
+        }
+        client.get_asset_spot.return_value = 2.595
+        pos = {
+            'id': 'long_NEARUSDT_1',
+            'symbol': 'NEARUSDT',
+            'entry_price': 2.0,
+            'quantity': 2.595,
+            'sl': 1.93,
+            'tp': 2.3,
+            'recovery_pending': True,
+        }
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(longs, 'BINANCE', client), \
+             patch.object(residuals, 'DEFAULT_STATUS_FILE', os.path.join(tmp, 'residuals_status.json')), \
+             patch('utils.send_alert') as send_alert, \
+             patch('decision_timeline.record_event'):
+            action, price, pnl = longs._recolocar_oco(pos, {'positions': [pos]})
+            status = residuals.load_status(os.path.join(tmp, 'residuals_status.json'))
+
+        self.assertEqual(action, 'hold')
+        self.assertEqual(price, 2.0)
+        self.assertEqual(pnl, 0)
+        client.spot_signed.assert_not_called()
+        saved = status['residuals']['NEARUSDT']
+        self.assertEqual(saved['reason'], 'oco_leg_below_min_notional')
+        self.assertLess(saved['stop_notional'], saved['min_notional'])
+        self.assertIn('una pata de la OCO', send_alert.call_args.args[0])
 
     def test_position_lifecycle_recolocar_oco_detects_residual_before_post(self):
         client = Mock()
