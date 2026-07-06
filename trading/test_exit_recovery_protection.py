@@ -313,8 +313,11 @@ class ExitRecoveryProtectionTests(unittest.TestCase):
         self.assertEqual(client.spot_signed.call_args.args[0], 'GET')
         alert = send_alert.call_args.args[0]
         self.assertIn('SOL residual sin OCO', alert)
-        self.assertIn('valor queda por debajo del mínimo permitido', alert)
-        self.assertIn('Cantidad: 0.06186400', alert)
+        self.assertIn('orden OCO final queda bajo el mínimo', alert)
+        self.assertIn('Valor estimado:', alert)
+        self.assertIn('Notional TP:', alert)
+        self.assertIn('Notional SL:', alert)
+        self.assertIn('Pata limitante:', alert)
         self.assertIn('Mínimo requerido: 10.00 USDT', alert)
         self.assertIn('vender manualmente o acumular más saldo', alert)
         self.assertTrue(record_event.called)
@@ -462,6 +465,24 @@ class ExitRecoveryProtectionTests(unittest.TestCase):
         self.assertTrue(result['should_send_oco'])
         self.assertAlmostEqual(result['stop_notional'], 5.0125)
 
+    def test_final_oco_payload_with_unrounded_quantity_can_be_valid(self):
+        payload = {
+            'symbol': 'NEARUSDT',
+            'side': 'SELL',
+            'quantity': '2.595',
+            'price': '2.3',
+            'stopPrice': '1.93',
+            'stopLimitPrice': '1.928',
+            'stopLimitTimeInForce': 'GTC',
+        }
+        result = residuals.validate_spot_oco_payload_notional(
+            payload,
+            {'min_notional': 5.0},
+        )
+
+        self.assertTrue(result['should_send_oco'])
+        self.assertAlmostEqual(result['stop_notional'], 5.00316)
+
     def test_final_payload_warning_message_is_not_contradictory(self):
         msg = residuals.residual_alert_message({
             'asset': 'NEAR',
@@ -546,7 +567,7 @@ class ExitRecoveryProtectionTests(unittest.TestCase):
             'symbol': 'NEARUSDT',
             'entry_price': 2.0,
             'quantity': 2.595,
-            'sl': 1.93,
+            'sl': 1.998,
             'tp': 2.3,
             'recovery_pending': True,
         }
@@ -566,6 +587,8 @@ class ExitRecoveryProtectionTests(unittest.TestCase):
         saved = status['residuals']['NEARUSDT']
         self.assertEqual(saved['reason'], 'oco_payload_below_min_notional')
         self.assertEqual(saved['payload_quantity'], 2.5)
+        self.assertEqual(saved['stop_limit_price'], 1.996)
+        self.assertAlmostEqual(saved['stop_notional'], 4.99)
         self.assertLess(saved['stop_notional'], saved['min_notional'])
         self.assertIn('orden OCO final', send_alert.call_args.args[0])
 
