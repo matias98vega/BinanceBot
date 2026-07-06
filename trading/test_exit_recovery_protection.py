@@ -411,6 +411,80 @@ class ExitRecoveryProtectionTests(unittest.TestCase):
         self.assertIn('Pata limitante: SL / stopLimitPrice', msg)
         self.assertNotIn('valor queda por debajo', msg)
 
+    def test_final_oco_payload_below_min_notional_is_unprotectable(self):
+        payload = {
+            'symbol': 'NEARUSDT',
+            'side': 'SELL',
+            'quantity': '2.5',
+            'price': '2.039',
+            'stopPrice': '1.999',
+            'stopLimitPrice': '1.996',
+            'stopLimitTimeInForce': 'GTC',
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'residuals_status.json')
+            handled = residuals.handle_unprotectable_spot_residual(
+                'NEARUSDT',
+                'NEAR',
+                2.595,
+                2.02,
+                {'tick_size': 0.001, 'step_size': 0.1, 'min_qty': 0.1, 'min_notional': 5.0},
+                oco_payload=payload,
+                path=path,
+            )
+            data = residuals.load_status(path)
+
+        saved = data['residuals']['NEARUSDT']
+        self.assertTrue(handled)
+        self.assertEqual(saved['reason'], 'oco_payload_below_min_notional')
+        self.assertEqual(saved['balance_quantity'], 2.595)
+        self.assertEqual(saved['payload_quantity'], 2.5)
+        self.assertAlmostEqual(saved['stop_notional'], 4.99)
+        self.assertLess(saved['stop_notional'], saved['min_notional'])
+        self.assertEqual(saved['limiting_leg'], 'SL')
+        self.assertEqual(saved['raw_payload_sanitized']['quantity'], '2.5')
+
+    def test_final_oco_payload_allows_current_flow_when_notional_is_valid(self):
+        payload = {
+            'symbol': 'NEARUSDT',
+            'side': 'SELL',
+            'quantity': '2.5',
+            'price': '2.04',
+            'stopPrice': '2.006',
+            'stopLimitPrice': '2.005',
+            'stopLimitTimeInForce': 'GTC',
+        }
+        result = residuals.validate_spot_oco_payload_notional(
+            payload,
+            {'min_notional': 5.0},
+        )
+
+        self.assertTrue(result['should_send_oco'])
+        self.assertAlmostEqual(result['stop_notional'], 5.0125)
+
+    def test_final_payload_warning_message_is_not_contradictory(self):
+        msg = residuals.residual_alert_message({
+            'asset': 'NEAR',
+            'symbol': 'NEARUSDT',
+            'quantity': 2.595,
+            'balance_quantity': 2.595,
+            'payload_quantity': 2.5,
+            'estimated_value': 5.24,
+            'min_notional': 5.0,
+            'limit_notional': 5.10,
+            'stop_notional': 4.99,
+            'limiting_leg': 'SL',
+            'reason': 'oco_payload_below_min_notional',
+        })
+
+        self.assertIn('orden OCO final queda bajo el mínimo', msg)
+        self.assertIn('Cantidad balance: 2.59500000', msg)
+        self.assertIn('Cantidad enviada: 2.50000000', msg)
+        self.assertIn('Valor estimado: 5.24 USDT', msg)
+        self.assertIn('Notional SL: 4.99 USDT', msg)
+        self.assertIn('Pata limitante: SL', msg)
+        self.assertNotIn('valor queda por debajo', msg)
+
     def test_unprotectable_residual_alert_is_throttled(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, 'residuals_status.json')
@@ -462,8 +536,8 @@ class ExitRecoveryProtectionTests(unittest.TestCase):
         client.get_spot_price.return_value = 2.0
         client.get_spot_filters.return_value = {
             'tick_size': 0.001,
-            'step_size': 0.001,
-            'min_qty': 0.001,
+            'step_size': 0.1,
+            'min_qty': 0.1,
             'min_notional': 5.0,
         }
         client.get_asset_spot.return_value = 2.595
@@ -490,9 +564,10 @@ class ExitRecoveryProtectionTests(unittest.TestCase):
         self.assertEqual(pnl, 0)
         client.spot_signed.assert_not_called()
         saved = status['residuals']['NEARUSDT']
-        self.assertEqual(saved['reason'], 'oco_leg_below_min_notional')
+        self.assertEqual(saved['reason'], 'oco_payload_below_min_notional')
+        self.assertEqual(saved['payload_quantity'], 2.5)
         self.assertLess(saved['stop_notional'], saved['min_notional'])
-        self.assertIn('una pata de la OCO', send_alert.call_args.args[0])
+        self.assertIn('orden OCO final', send_alert.call_args.args[0])
 
     def test_position_lifecycle_recolocar_oco_detects_residual_before_post(self):
         client = Mock()

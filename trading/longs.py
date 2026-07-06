@@ -530,19 +530,6 @@ def _recolocar_oco(pos, state):
         sl_r = utils.round_tick(sl, tick)
         tp_r = utils.round_tick(tp, tick)
         sl_limit_r = utils.round_tick(sl_r * 0.999, tick)
-        if residuals.handle_unprotectable_spot_residual(
-            sym,
-            _asset_from_symbol(sym),
-            qty,
-            price_now,
-            filters,
-            limit_price=tp_r,
-            stop_price=sl_r,
-            stop_limit_price=sl_limit_r,
-        ):
-            pos['quantity'] = qty
-            pos['recovery_pending'] = True
-            return 'hold', price_now, 0
         oco_params = {
             'symbol':               sym,
             'side':                 'SELL',
@@ -552,6 +539,17 @@ def _recolocar_oco(pos, state):
             'stopLimitPrice':       str(sl_limit_r),
             'stopLimitTimeInForce': 'GTC',
         }
+        if residuals.handle_unprotectable_spot_residual(
+            sym,
+            _asset_from_symbol(sym),
+            real_asset_balance,
+            price_now,
+            filters,
+            oco_payload=oco_params,
+        ):
+            pos['quantity'] = qty
+            pos['recovery_pending'] = True
+            return 'hold', price_now, 0
         oco = BINANCE.spot_signed('POST', '/api/v3/order/oco', oco_params)
         pos['oco_order_list_id'] = str(oco.get('orderListId', ''))
         pos['oco_order_ids']     = [str(o['orderId']) for o in oco.get('orders', [])]
@@ -567,6 +565,12 @@ def _recolocar_oco(pos, state):
     except Exception as e:
         reason = str(e)
         if hasattr(e, 'code'):
+            residuals.log_spot_oco_payload_notional(
+                sym,
+                locals().get('oco_params', {}),
+                locals().get('filters', {}),
+                context='spot OCO recovery rejected',
+            )
             details = utils.log_binance_http_error('spot OCO recovery', sym, 'SELL', 'OCO', locals().get('oco_params', {}), e)
             reason = details.get('msg') or details.get('raw_body') or reason
         utils.send_alert(

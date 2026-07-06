@@ -86,24 +86,6 @@ def audit_orphans(state, binance, out_fn, safe_log_open_fn):
                 sl = max(sl, cur * (1 - config.SL_MIN_DIST_PCT / 100 * 1.05))
                 sl = utils.round_tick(sl, tick)
                 sl_limit = utils.round_tick(sl * 0.9985, tick)
-
-                if residuals.handle_unprotectable_spot_residual(
-                    sym,
-                    asset,
-                    free,
-                    cur,
-                    filters,
-                    out_fn=out_fn,
-                    limit_price=tp,
-                    stop_price=sl,
-                    stop_limit_price=sl_limit,
-                ):
-                    continue
-
-                if tp <= cur or sl >= cur or qty <= 0:
-                    raise ValueError(f'precios inválidos: sl={sl} cur={cur} tp={tp} qty={qty}')
-
-                utils.send_alert(msg)
                 oco_params = {
                     'symbol': sym,
                     'side': 'SELL',
@@ -113,6 +95,22 @@ def audit_orphans(state, binance, out_fn, safe_log_open_fn):
                     'stopLimitPrice': str(sl_limit),
                     'stopLimitTimeInForce': 'GTC',
                 }
+
+                if residuals.handle_unprotectable_spot_residual(
+                    sym,
+                    asset,
+                    free,
+                    cur,
+                    filters,
+                    out_fn=out_fn,
+                    oco_payload=oco_params,
+                ):
+                    continue
+
+                if tp <= cur or sl >= cur or qty <= 0:
+                    raise ValueError(f'precios inválidos: sl={sl} cur={cur} tp={tp} qty={qty}')
+
+                utils.send_alert(msg)
                 oco = binance.spot_signed('POST', '/api/v3/order/oco', oco_params)
                 oco_id = str(oco.get('orderListId', ''))
 
@@ -139,6 +137,12 @@ def audit_orphans(state, binance, out_fn, safe_log_open_fn):
             except Exception as e:
                 details = {}
                 if hasattr(e, 'code') or hasattr(e, 'status'):
+                    residuals.log_spot_oco_payload_notional(
+                        sym,
+                        locals().get('oco_params', {}),
+                        locals().get('filters', {}),
+                        context='orphan spot OCO recovery rejected',
+                    )
                     details = utils.log_binance_http_error(
                         'orphan spot OCO recovery',
                         sym,

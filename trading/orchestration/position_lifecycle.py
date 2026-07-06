@@ -20,6 +20,11 @@ def recolocar_oco_long(pos, sym, qty_total, step, price, tp, entry, binance, out
         new_sl = utils.round_tick(entry * (1 - config.SL_MIN_DIST_PCT / 100), tick)
         new_sl_l = utils.round_tick(new_sl * 0.999, tick)
         new_tp = utils.round_tick(tp, tick)
+        oco_params = {
+            'symbol': sym, 'side': 'SELL', 'quantity': str(qty),
+            'price': str(new_tp), 'stopPrice': str(new_sl),
+            'stopLimitPrice': str(new_sl_l), 'stopLimitTimeInForce': 'GTC',
+        }
         if residuals.handle_unprotectable_spot_residual(
             sym,
             str(sym).replace('USDT', ''),
@@ -27,25 +32,24 @@ def recolocar_oco_long(pos, sym, qty_total, step, price, tp, entry, binance, out
             price,
             filters,
             out_fn=out_fn,
-            limit_price=new_tp,
-            stop_price=new_sl,
-            stop_limit_price=new_sl_l,
+            oco_payload=oco_params,
         ):
             return
         if qty * price < 5.0:
             utils.send_alert(f'🚨 {sym}: no pude recolocar OCO (qty insuficiente). Revisión manual requerida.')
             return
-        oco_params = {
-            'symbol': sym, 'side': 'SELL', 'quantity': str(qty),
-            'price': str(new_tp), 'stopPrice': str(new_sl),
-            'stopLimitPrice': str(new_sl_l), 'stopLimitTimeInForce': 'GTC',
-        }
         oco = binance.spot_signed('POST', '/api/v3/order/oco', oco_params)
         pos['oco_order_list_id'] = str(oco.get('orderListId', ''))
         pos['oco_order_ids'] = [str(o['orderId']) for o in oco.get('orders', [])]
         pos['quantity'] = qty
         out_fn(f'✅ OCO recolocado para {sym} tras fallo de parcial')
     except _ue.HTTPError as e:
+        residuals.log_spot_oco_payload_notional(
+            sym,
+            locals().get('oco_params', {}),
+            locals().get('filters', {}),
+            context='partial spot OCO recovery rejected',
+        )
         err = utils._binance_error_msg(e)
         utils.send_alert(f'🚨 {sym}: no pude recolocar OCO ({err}). Revisión manual requerida.')
     except Exception as e:
