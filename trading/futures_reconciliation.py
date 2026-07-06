@@ -267,6 +267,26 @@ def _summary(positions, allowed_count=None, position_margin_total=None):
     }
 
 
+def summary_has_risk(summary):
+    summary = summary if isinstance(summary, dict) else {}
+    try:
+        observed = int(summary.get('observed_count') or 0)
+    except (TypeError, ValueError):
+        observed = 0
+    try:
+        allowed = int(summary.get('allowed_count')) if summary.get('allowed_count') is not None else None
+    except (TypeError, ValueError):
+        allowed = None
+    return (
+        summary.get('aligned') is False
+        or (allowed is not None and observed > allowed)
+        or int(summary.get('unmanaged_count') or 0) > 0
+        or int(summary.get('orphan_count') or 0) > 0
+        or int(summary.get('unprotected_count') or 0) > 0
+        or int(summary.get('desynced_count') or 0) > 0
+    )
+
+
 def _alert_message(entry):
     return (
         '🚨 Futures desincronizadas detectadas\n\n'
@@ -315,7 +335,8 @@ def persist_reconciliation(positions, status_file=DEFAULT_STATUS_FILE, alert_fn=
         'positions': positions,
     }
     summary = payload['summary']
-    logging.warning(
+    log_fn = logging.warning if summary_has_risk(summary) else logging.info
+    log_fn(
         'FUTURES RECONCILIATION summary observed=%s managed=%s unmanaged=%s orphan=%s '
         'unprotected=%s desynced=%s allowed=%s status=%s',
         summary.get('observed_count'),

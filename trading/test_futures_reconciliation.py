@@ -193,6 +193,49 @@ class FuturesReconciliationTests(unittest.TestCase):
         self.assertIn('CRCLUSDT', first['positions'])
         self.assertEqual(second['summary']['unprotected_count'], 1)
 
+    def test_aligned_reconciliation_logs_info_not_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            status = os.path.join(tmp, 'futures_reconciliation_status.json')
+            with self.assertLogs(level='INFO') as logs:
+                payload = futures_reconciliation.persist_reconciliation(
+                    {},
+                    status_file=status,
+                    allowed_count=2,
+                )
+
+        self.assertEqual(payload['summary']['status'], 'ALINEADO')
+        self.assertTrue(payload['summary']['aligned'])
+        warning_lines = [line for line in logs.output if line.startswith('WARNING')]
+        self.assertEqual(warning_lines, [])
+        self.assertTrue(any('FUTURES RECONCILIATION summary' in line for line in logs.output))
+
+    def test_risky_reconciliation_keeps_warning_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            status = os.path.join(tmp, 'futures_reconciliation_status.json')
+            positions = {
+                'CRCLUSDT': {
+                    'symbol': 'CRCLUSDT',
+                    'side': 'SHORT',
+                    'position_amt': -0.17,
+                    'notional': 11.67,
+                    'has_open_orders': False,
+                    'managed_in_state': False,
+                    'classification': ['observed_futures_position', 'unmanaged_futures_position', 'unprotected_futures_position'],
+                    'severity': 'WARNING',
+                }
+            }
+            with self.assertLogs(level='WARNING') as logs:
+                payload = futures_reconciliation.persist_reconciliation(
+                    positions,
+                    status_file=status,
+                    allowed_count=0,
+                )
+
+        self.assertFalse(payload['summary']['aligned'])
+        self.assertEqual(payload['summary']['observed_count'], 1)
+        self.assertEqual(payload['summary']['unmanaged_count'], 1)
+        self.assertTrue(any('FUTURES RECONCILIATION summary' in line for line in logs.output))
+
     def test_collect_open_orders_does_not_close_positions(self):
         binance = Mock()
         binance.futures_open_orders.return_value = []
