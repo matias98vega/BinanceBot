@@ -316,6 +316,8 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Estado reconciliado:** `ALINEADO` solo aplica si `observed_count <= allowed_count` cuando hay limite disponible, y ademas `unmanaged_count`, `orphan_count`, `unprotected_count` y `desynced_count` son cero. Si hay exceso contra capacidad o posiciones no gestionadas, el estado explicita ambos motivos.
 
+**Presentacion Telegram:** Home y Capital usan formato compacto cuando la reconciliacion esta sana: `Shorts: abiertas/permitidas` y `Futures: usado / real`. El bloque expandido con observadas, gestionadas, permitidas, sin proteccion y estado aparece solo si hay riesgo: exceso contra la capacidad operativa, posiciones no gestionadas/huerfanas/sin proteccion/desincronizadas o estado no alineado. `allowed_count` debe venir de la misma politica operativa que usa el ciclo para decidir capacidad de shorts; en Bull, si el ciclo permite cero shorts, Telegram muestra `Shorts: 0/0`. Esto es solo UI/observabilidad y no modifica trading, recovery ni rebalance.
+
 **Hallazgo stale/24h:** la regla stale opera sobre posiciones activas en `state.json`. Si una posicion residual queda fuera de `state.json` o fue registrada como cerrada antes de confirmar `positionAmt=0`, el lifecycle normal ya no la recorre y la regla stale no puede cerrarla. Por eso esta iteracion solo alerta y clasifica.
 
 **Riesgo:** una posicion Futures sin TP/SL/reduce-only abierta puede seguir acumulando PnL no realizado y bloquear transferencias. El bot no debe cerrarla automaticamente sin un flujo explicito de recovery porque podria cerrar una posicion que requiere revision humana o conciliacion de historial.

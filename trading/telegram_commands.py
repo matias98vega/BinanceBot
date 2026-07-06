@@ -267,6 +267,61 @@ def _display_capacity(current, maximum):
     return max(current_i, max_i)
 
 
+def _to_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _reconciliation_allowed_count(metrics, reconciliation):
+    allowed = reconciliation.get('allowed_count') if isinstance(reconciliation, dict) else None
+    if allowed is None:
+        allowed = metrics.get('max_shorts')
+    return allowed
+
+
+def _reconciliation_observed_count(metrics, reconciliation):
+    if not isinstance(reconciliation, dict):
+        return _to_int(metrics.get('short_count'))
+    observed = reconciliation.get('observed_count')
+    if observed is None or (_to_int(observed) == 0 and _to_int(metrics.get('short_count')) > 0):
+        observed = metrics.get('short_count')
+    return _to_int(observed)
+
+
+def _reconciliation_status_label(reconciliation):
+    if not isinstance(reconciliation, dict) or not reconciliation:
+        return 'NO DISPONIBLE'
+    status = reconciliation.get('status')
+    if status:
+        return status
+    return 'ALINEADO' if reconciliation.get('aligned') is True else 'NO ALINEADO'
+
+
+def _futures_reconciliation_has_risk(metrics, reconciliation):
+    if not isinstance(reconciliation, dict) or not reconciliation:
+        return False
+    observed = _reconciliation_observed_count(metrics, reconciliation)
+    allowed = _reconciliation_allowed_count(metrics, reconciliation)
+    allowed_i = None
+    try:
+        if allowed is not None:
+            allowed_i = int(allowed)
+    except (TypeError, ValueError):
+        allowed_i = None
+    status = str(reconciliation.get('status') or '').upper()
+    return (
+        (allowed_i is not None and observed > allowed_i)
+        or _to_int(reconciliation.get('unmanaged_count')) > 0
+        or _to_int(reconciliation.get('orphan_count')) > 0
+        or _to_int(reconciliation.get('unprotected_count')) > 0
+        or _to_int(reconciliation.get('desynced_count')) > 0
+        or reconciliation.get('aligned') is False
+        or (status not in ('', 'ALINEADO'))
+    )
+
+
 def _public_price(symbol, direction):
     if not symbol:
         return None
@@ -1279,29 +1334,22 @@ class HomePage(MenuPage):
         guardian = _guardian_status()
         metrics = _exposure_metrics()
         max_longs = _display_capacity(metrics["long_count"], metrics["max_longs"])
-        max_shorts = _display_capacity(metrics["short_count"], metrics["max_shorts"])
         reconciliation = metrics.get('futures_reconciliation') or {}
-        unprotected_shorts = int(reconciliation.get('unprotected_count') or 0)
-        managed_shorts = int(reconciliation.get('managed_count') or 0)
-        observed_shorts = int(reconciliation.get('observed_count') or metrics["short_count"] or 0)
-        permitted_shorts = reconciliation.get('allowed_count')
-        if permitted_shorts is None:
-            permitted_shorts = metrics.get('max_shorts')
-        futures_status = reconciliation.get('status')
-        if not futures_status:
-            futures_status = 'ALINEADO' if reconciliation.get('aligned') is True else 'NO ALINEADO'
-        short_lines = (
-            [
+        reconciliation_risk = _futures_reconciliation_has_risk(metrics, reconciliation)
+        permitted_shorts = _reconciliation_allowed_count(metrics, reconciliation)
+        observed_shorts = _reconciliation_observed_count(metrics, reconciliation)
+        max_shorts = permitted_shorts if reconciliation else _display_capacity(metrics["short_count"], metrics["max_shorts"])
+        if reconciliation and reconciliation_risk:
+            short_lines = [
                 'Shorts:',
                 f'- Observadas: {observed_shorts}',
-                f'- Gestionadas: {managed_shorts}',
+                f'- Gestionadas: {_to_int(reconciliation.get("managed_count"))}',
                 f'- Permitidas ahora: {permitted_shorts}',
-                f'- Sin proteccion: {unprotected_shorts}',
-                f'- Estado: {futures_status}',
+                f'- Sin proteccion: {_to_int(reconciliation.get("unprotected_count"))}',
+                f'- Estado: {_reconciliation_status_label(reconciliation)}',
             ]
-            if reconciliation
-            else [f'Shorts: {metrics["short_count"]}/{max_shorts}']
-        )
+        else:
+            short_lines = [f'Shorts: {observed_shorts}/{max_shorts}']
         lines = [
             f'{_status_icon(bot)} Bot: {bot}',
             f'{_status_icon(guardian)} Guardian: {guardian}',
@@ -1377,18 +1425,21 @@ class CapitalPage(MenuPage):
             lines.append(f'Disponible: {_fmt_money(metrics.get("futures_available_balance"))}')
         reconciliation = metrics.get('futures_reconciliation') or {}
         if reconciliation:
-            observed_display = int(reconciliation.get('observed_count') or metrics.get('short_count') or 0)
-            allowed = reconciliation.get('allowed_count')
-            if allowed is None:
-                allowed = metrics.get('max_shorts')
-            lines.extend([
-                f'Shorts observadas: {observed_display}',
-                f'Gestionadas: {int(reconciliation.get("managed_count") or 0)}',
-                f'Permitidas ahora: {allowed}',
-                f'Sin proteccion: {int(reconciliation.get("unprotected_count") or 0)}',
-                f'Estado: {reconciliation.get("status") or ("ALINEADO" if reconciliation.get("aligned") is True else "NO ALINEADO")}',
-            ])
-            if (reconciliation.get('observed_count') or 0) and (metrics.get('futures_available_balance') == 0 or metrics.get('futures_position_margin')):
+            observed_display = _reconciliation_observed_count(metrics, reconciliation)
+            allowed = _reconciliation_allowed_count(metrics, reconciliation)
+            status = _reconciliation_status_label(reconciliation)
+            if _futures_reconciliation_has_risk(metrics, reconciliation):
+                lines.extend([
+                    'Shorts:',
+                    f'- Observadas: {observed_display}',
+                    f'- Gestionadas: {_to_int(reconciliation.get("managed_count"))}',
+                    f'- Permitidas ahora: {allowed}',
+                    f'- Sin proteccion: {_to_int(reconciliation.get("unprotected_count"))}',
+                    f'- Estado: {status}',
+                ])
+            else:
+                lines.append(f'Shorts: {observed_display}/{allowed} | Estado: {status}')
+            if _futures_reconciliation_has_risk(metrics, reconciliation) and observed_display and (metrics.get('futures_available_balance') == 0 or metrics.get('futures_position_margin')):
                 lines.extend([
                     'Bloqueo:',
                     'Rebalance bloqueado porque hay posiciones Futures abiertas.',
