@@ -8,6 +8,12 @@ import market
 
 def safe_log_open(pos, candidate, btc_ctx, capital_at_entry, analytics):
     try:
+        observed_capital = capital_at_entry
+        if observed_capital is None:
+            try:
+                observed_capital = float(pos.get('entry_price') or 0) * float(pos.get('quantity') or 0)
+            except (TypeError, ValueError):
+                observed_capital = None
         analytics.log_trade_open(
             trade_id=pos.get('id'),
             symbol=pos.get('symbol'),
@@ -27,7 +33,7 @@ def safe_log_open(pos, candidate, btc_ctx, capital_at_entry, analytics):
                              candidate.get('corr_btc') if candidate else None),
             reject_reason=candidate.get('reject_reason') if candidate else None,
             reject_reasons=candidate.get('reject_reasons') if candidate else None,
-            capital_at_entry=capital_at_entry,
+            capital_at_entry=observed_capital,
             quantity=pos.get('quantity'),
             wallet='SPOT' if pos.get('direction') == 'long' else 'FUTURES',
             btc_context=btc_ctx or {},

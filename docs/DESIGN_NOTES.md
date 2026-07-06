@@ -339,3 +339,15 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 **Solucion actual:** `audit_data_quality.py` es una herramienta local de solo lectura que valida archivos runtime/historicos, resume errores criticos, warnings, campos faltantes, completitud y recomendaciones. Devuelve exit code `1` si encuentra errores criticos y `0` cuando solo hay warnings o todo esta correcto.
 
 **Ventajas:** permite auditar calidad antes de usar los datos para Analytics avanzado, PnL ajustado o aprendizaje futuro sin tocar estrategia ni estado operativo.
+
+## Data Quality Repair Plan
+
+**Estado investigado:** los faltantes historicos de `features.jsonl` antes de que el Feature Store guardara `market.regime` son deuda historica y no deben rellenarse sin migracion auditable. El registro reciente `long_NEARUSDT_recovered_1783299788` corresponde al flujo de recovery Spot: se genera desde `audit_pipeline.audit_orphans()` y entra a persistencia con `candidate=None` y `btc_ctx=None`, por lo que no puede tener scoring normal ni contexto BTC completo. Para nuevos registros, `safe_log_open()` ahora persiste `capital_at_entry` observacional como `entry_price * quantity` si el flujo no entrega capital explicito, de modo que `capital.position_final` no quede vacio en recoveries futuros.
+
+**Clasificacion auditor:** los features de recovery usan schema reducido: deben conservar `trade_id`, simbolo, direccion, wallet, `entry_price` y `capital.position_final`, pero no requieren `scoring.score_total`, `market.btc_price` ni `market.btc_change_4h`. Un registro reciente no-recovery con esos campos faltantes se clasifica como posible bug actual de recoleccion, no como dato historico esperado.
+
+**WLDUSDT:** un cierre total como `short_WLDUSDT_1782763085` sin apertura previa no debe repararse a ciegas. La clasificacion correcta es `requires_manual_review` hasta confirmar en `trades.jsonl`, `trade_analytics.jsonl`, timeline y estado si falta realmente `TRADE_OPEN`, si el trade fue importado/reconciliado o si hubo cambio de `trade_id`. El auditor mantiene esto como error critico y agrega recomendacion de migracion auditada.
+
+**Timestamps y gaps:** `trade_analytics.jsonl` puede contener entradas recuperadas/importadas con `entry_time` historico escritas en append durante una corrida posterior. Eso explica algunos out-of-order/gaps sin implicar automaticamente bug actual. El auditor no los silencia: los reporta como warnings y la revision debe distinguir import/recovery historico de escritura normal fuera de orden.
+
+**Migracion futura:** una futura herramienta `trading/repair_data_quality.py` deberia ser `--dry-run` por defecto, crear backup automatico antes de modificar, escribir reporte JSON/Markdown de cambios, reparar un solo tipo de problema por ejecucion, requerir confirmacion explicita para escribir, registrar checksums antes/despues y nunca alterar datos sin trazabilidad. Los archivos candidatos a backup obligatorio son `data/history/trades.jsonl`, `data/history/features.jsonl`, `trading/trade_analytics.jsonl`, `data/history/timeline.jsonl` y cualquier estado runtime relacionado.

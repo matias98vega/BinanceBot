@@ -218,6 +218,19 @@ def _looks_recovered_or_imported(record):
     return any(token in text for token in ('recovery', 'recovered', 'import', 'reconcile', 'manual'))
 
 
+def _is_recovery_feature_record(record):
+    trade_id = _get_nested(record, 'identification.trade_id') or record.get('trade_id')
+    context = record.get('decision_context') if isinstance(record.get('decision_context'), dict) else {}
+    extra = record.get('extra') if isinstance(record.get('extra'), dict) else {}
+    text = ' '.join(str(value or '') for value in (
+        trade_id,
+        context.get('open_reason'),
+        extra.get('source'),
+        extra.get('reason'),
+    )).lower()
+    return 'recovered' in text or 'recovery' in text
+
+
 def _looks_binance_error(data):
     text = ' '.join(str(data.get(key) or '') for key in (
         'last_error', 'last_message', 'status', 'pending_reason', 'blocked_reason',
@@ -349,6 +362,9 @@ def _audit_trade_records(path, records, report):
                     message = f'cierre total sin apertura previa trade_id={trade_id}'
                     report.error(path, message)
                     report.critical_example(path, message, record)
+                    report.recommendations.add(
+                        'Trades: cierres totales sin apertura previa requieren revision manual o migracion auditada con backup.'
+                    )
             if record.get('pnl_usdt') is None:
                 report.error(path, f'pnl_usdt faltante en CLOSED trade_id={trade_id}')
                 report.critical_example(path, f'pnl_usdt faltante en CLOSED trade_id={trade_id}', record)
@@ -382,31 +398,53 @@ def _audit_feature_records(path, records, report, trade_ids=None):
         total += 1
         complete = True
         missing_fields = []
-        checks = {
+        is_recovery = _is_recovery_feature_record(record)
+        required_checks = {
             'trade_id': _get_nested(record, 'identification.trade_id') or record.get('trade_id'),
             'symbol': _get_nested(record, 'identification.symbol') or record.get('symbol'),
             'market.regime': _get_nested(record, 'market.regime'),
-            'market.btc_price': _get_nested(record, 'market.btc_price'),
-            'market.btc_change_4h': _get_nested(record, 'market.btc_change_4h'),
-            'scoring.score_total': _get_nested(record, 'scoring.score_total'),
             'capital.position_final': _get_nested(record, 'capital.position_final'),
             'symbol_indicators.entry_price': _get_nested(record, 'symbol_indicators.entry_price'),
         }
-        for field, value in checks.items():
+        if not is_recovery:
+            required_checks.update({
+                'market.btc_price': _get_nested(record, 'market.btc_price'),
+                'market.btc_change_4h': _get_nested(record, 'market.btc_change_4h'),
+                'scoring.score_total': _get_nested(record, 'scoring.score_total'),
+            })
+        else:
+            optional_recovery_fields = {
+                'market.btc_price': _get_nested(record, 'market.btc_price'),
+                'market.btc_change_4h': _get_nested(record, 'market.btc_change_4h'),
+                'scoring.score_total': _get_nested(record, 'scoring.score_total'),
+            }
+            missing_optional = [field for field, value in optional_recovery_fields.items() if value in (None, '')]
+            if missing_optional:
+                report.warning(path, f'recovery feature sin contexto normal de señal trade_id={required_checks.get("trade_id")} missing={missing_optional}')
+                report.false_positive(
+                    path,
+                    f'recovery feature usa schema reducido trade_id={required_checks.get("trade_id")}',
+                    record,
+                )
+        for field, value in required_checks.items():
             if value in (None, ''):
                 report.warning(path, f'{field} faltante')
                 report.missing(path, field)
                 missing_fields.append(field)
                 complete = False
-        regime = str(checks['market.regime'] or 'unknown').lower()
+        regime = str(required_checks['market.regime'] or 'unknown').lower()
         if regime == 'unknown':
             unknown += 1
         if regime not in VALID_REGIMES:
             report.warning(path, f'market.regime no canonico: {regime}')
-        trade_id = checks['trade_id']
+        trade_id = required_checks['trade_id']
         if trade_id and trade_ids and trade_id not in trade_ids:
             report.warning(path, f'feature sin trade relacionado trade_id={trade_id}')
             missing_fields.append('trade_relation')
+        if missing_fields and idx >= recent_start and not is_recovery:
+            report.recommendations.add('Feature Store: registro reciente incompleto no-recovery indica posible bug actual de recoleccion.')
+        if missing_fields and idx >= recent_start and is_recovery:
+            report.recommendations.add('Feature Store: recovery reciente debe conservar capital.position_final y entry_price; no requiere scoring normal.')
         report.completeness(path, complete)
         if not complete or missing_fields:
             report.incomplete_example(path, record, missing_fields, recent=idx >= recent_start)
