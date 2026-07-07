@@ -191,14 +191,14 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertGreater(len(chunks), 1)
         self.assertTrue(all(len(chunk) <= 1000 for chunk in chunks))
 
-    def test_home_uses_analytics_pnl_and_real_wallet_totals(self):
+    def test_home_uses_bot_state_pnl_and_real_wallet_totals(self):
         stats = sample_stats()
         stats['general']['pnl_total'] = 12.34
         today = telegram_commands.datetime.now(telegram_commands.UY_TZ).date().isoformat()
         stats['general']['pnl_daily'] = {today: 1.23}
         bot_snapshot = {
             'system': {'health': 'OK', 'last_execution': '2026-01-01T12:00:00Z'},
-            'pnl': {'today': 99, 'total': 99},
+            'pnl': {'today': -0.4402, 'total': 5.0022},
             'market': {'regime': 'bearish', 'btc_change_4h': -1.23, 'btc_price': 61234.56, 'directional_mode': True},
             'capital': {
                 'spot_real': 26.9,
@@ -222,15 +222,15 @@ class TelegramStatsTests(unittest.TestCase):
              patch.object(telegram_commands, '_guardian_status', return_value='ONLINE'):
             text = telegram_commands._render_page('home')['text']
 
-        self.assertIn('PnL hoy: +1.23 USDT', text)
-        self.assertIn('PnL total: +12.34 USDT', text)
+        self.assertIn('PnL hoy: -0.44 USDT', text)
+        self.assertIn('PnL total: +5.00 USDT', text)
         self.assertIn('Régimen actual: Bear', text)
         self.assertIn('BTC 4h: -1.23%', text)
         self.assertIn('BTC precio: $61,234.56', text)
         self.assertIn('Modo direccional: Activo', text)
         self.assertIn('Spot: 8.40 USDT / 26.90 USDT', text)
         self.assertIn('Futures: 18.20 USDT / 27.10 USDT', text)
-        self.assertNotIn('+99.00 USDT', text)
+        self.assertNotIn('+12.34 USDT', text)
 
     def test_capital_market_regime_fallback_when_missing(self):
         with patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics()), \
@@ -393,7 +393,7 @@ class TelegramStatsTests(unittest.TestCase):
 
     def test_home_compacts_healthy_futures_reconciliation(self):
         metrics = self._metrics(short_count=0)
-        metrics['max_shorts'] = 2
+        metrics['max_shorts'] = 0
         metrics['futures_used'] = 0.0
         metrics['futures_real'] = 0.10
         metrics['futures_reconciliation'] = {
@@ -403,7 +403,7 @@ class TelegramStatsTests(unittest.TestCase):
             'orphan_count': 0,
             'unprotected_count': 0,
             'desynced_count': 0,
-            'allowed_count': 0,
+            'allowed_count': 2,
             'aligned': True,
             'status': 'ALINEADO',
         }
@@ -417,6 +417,7 @@ class TelegramStatsTests(unittest.TestCase):
             home = telegram_commands._render_page('home')['text']
 
         self.assertIn('Shorts: 0/0', home)
+        self.assertNotIn('Shorts: 0/2', home)
         self.assertIn('Futures: 0.00 USDT / 0.10 USDT', home)
         self.assertNotIn('- Observadas:', home)
         self.assertNotIn('- Gestionadas:', home)
@@ -617,6 +618,7 @@ class TelegramStatsTests(unittest.TestCase):
     def test_capital_compacts_healthy_futures_reconciliation(self):
         metrics = self._metrics(short_count=0)
         metrics.update({
+            'max_shorts': 0,
             'futures_used': 0.0,
             'futures_real': 0.10,
             'futures_reconciliation': {
@@ -626,7 +628,7 @@ class TelegramStatsTests(unittest.TestCase):
                 'orphan_count': 0,
                 'unprotected_count': 0,
                 'desynced_count': 0,
-                'allowed_count': 0,
+                'allowed_count': 2,
                 'aligned': True,
                 'status': 'ALINEADO',
             },
@@ -637,6 +639,7 @@ class TelegramStatsTests(unittest.TestCase):
             text = telegram_commands._render_page('capital')['text']
 
         self.assertIn('Shorts: 0/0 | Estado: ALINEADO', text)
+        self.assertNotIn('Shorts: 0/2', text)
         self.assertNotIn('Shorts observadas:', text)
         self.assertNotIn('Permitidas ahora:', text)
         self.assertNotIn('Sin proteccion:', text)

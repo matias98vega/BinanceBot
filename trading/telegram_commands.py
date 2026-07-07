@@ -1102,7 +1102,14 @@ def _pnl_for_period(stats, key):
     return 0
 
 
-def _analytics_pnl_summary():
+def _analytics_pnl_summary(snapshot=None):
+    snapshot = snapshot if isinstance(snapshot, dict) else None
+    pnl_state = snapshot.get('pnl') if isinstance((snapshot or {}).get('pnl'), dict) else {}
+    if pnl_state.get('today') is not None or pnl_state.get('total') is not None:
+        return {
+            'today': pnl_state.get('today'),
+            'total': pnl_state.get('total'),
+        }
     stats, _warning = _stats_payload()
     return {
         'today': _pnl_for_period(stats, 'day'),
@@ -1326,7 +1333,7 @@ class HomePage(MenuPage):
         state = _state()
         snapshot = _bot_state()
         system = snapshot.get('system') if isinstance(snapshot.get('system'), dict) else {}
-        pnl = _analytics_pnl_summary()
+        pnl = _analytics_pnl_summary(snapshot)
         health, _, _ = _health_summary()
         if system.get('health'):
             health = system.get('health')
@@ -1338,7 +1345,9 @@ class HomePage(MenuPage):
         reconciliation_risk = _futures_reconciliation_has_risk(metrics, reconciliation)
         permitted_shorts = _reconciliation_allowed_count(metrics, reconciliation)
         observed_shorts = _reconciliation_observed_count(metrics, reconciliation)
-        max_shorts = permitted_shorts if reconciliation else _display_capacity(metrics["short_count"], metrics["max_shorts"])
+        compact_short_count = metrics["short_count"]
+        compact_max_shorts = metrics["max_shorts"]
+        max_shorts = _display_capacity(metrics["short_count"], metrics["max_shorts"])
         if reconciliation and reconciliation_risk:
             short_lines = [
                 'Shorts:',
@@ -1348,8 +1357,10 @@ class HomePage(MenuPage):
                 f'- Sin proteccion: {_to_int(reconciliation.get("unprotected_count"))}',
                 f'- Estado: {_reconciliation_status_label(reconciliation)}',
             ]
+        elif reconciliation:
+            short_lines = [f'Shorts: {compact_short_count}/{compact_max_shorts}']
         else:
-            short_lines = [f'Shorts: {observed_shorts}/{max_shorts}']
+            short_lines = [f'Shorts: {metrics["short_count"]}/{max_shorts}']
         lines = [
             f'{_status_icon(bot)} Bot: {bot}',
             f'{_status_icon(guardian)} Guardian: {guardian}',
@@ -1438,7 +1449,7 @@ class CapitalPage(MenuPage):
                     f'- Estado: {status}',
                 ])
             else:
-                lines.append(f'Shorts: {observed_display}/{allowed} | Estado: {status}')
+                lines.append(f'Shorts: {metrics.get("short_count")}/{metrics.get("max_shorts")} | Estado: {status}')
             if _futures_reconciliation_has_risk(metrics, reconciliation) and observed_display and (metrics.get('futures_available_balance') == 0 or metrics.get('futures_position_margin')):
                 lines.extend([
                     'Bloqueo:',
