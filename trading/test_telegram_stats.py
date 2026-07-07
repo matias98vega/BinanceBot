@@ -130,7 +130,8 @@ class TelegramStatsTests(unittest.TestCase):
 
     def test_stats_general_format(self):
         with self._patch_stats(), \
-             patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics(long_count=1)):
+             patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics(long_count=1)), \
+             patch.object(telegram_commands, '_bot_state', return_value={}):
             response = telegram_commands._render_page('stats_general')
 
         text = response['text']
@@ -138,7 +139,7 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertIn('Trades totales: 3', text)
         self.assertIn('Win Rate: 50.0%', text)
         self.assertIn('Profit Factor: 2.00', text)
-        self.assertIn('PnL total: +5.00 USDT', text)
+        self.assertIn('Total: +5.00 USDT', text)
 
     def test_stats_symbols_format(self):
         with self._patch_stats():
@@ -151,7 +152,8 @@ class TelegramStatsTests(unittest.TestCase):
 
     def test_stats_missing_file_warns_and_uses_engine(self):
         with self._patch_stats(), \
-             patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics(long_count=1)):
+             patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics(long_count=1)), \
+             patch.object(telegram_commands, '_bot_state', return_value={}):
             response = telegram_commands._render_page('stats')
 
         self.assertIn('Stats no existia; reconstruido desde historial.', response['text'])
@@ -262,7 +264,9 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertIn('Modo direccional: Inactivo', text)
 
     def test_capital_shows_capital_accounting_metrics(self):
-        with patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics()), \
+        metrics = self._metrics()
+        metrics['capital_accounting_starting_equity'] = 129.0
+        with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics), \
              patch.object(telegram_commands, '_bot_state', return_value={}), \
              patch.object(
                  telegram_commands.analytics_engine,
@@ -324,7 +328,8 @@ class TelegramStatsTests(unittest.TestCase):
         stats['general']['open_trades'] = 0
 
         with patch.object(telegram_commands, '_stats_payload', return_value=(stats, None)), \
-             patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics(short_count=2)):
+             patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics(short_count=2)), \
+             patch.object(telegram_commands, '_bot_state', return_value={}):
             text = telegram_commands._render_page('stats_general')['text']
 
         self.assertIn('Trades totales: 19', text)
@@ -338,7 +343,8 @@ class TelegramStatsTests(unittest.TestCase):
         stats['general']['open_trades'] = 4
 
         with patch.object(telegram_commands, '_stats_payload', return_value=(stats, None)), \
-             patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics()):
+             patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics()), \
+             patch.object(telegram_commands, '_bot_state', return_value={}):
             text = telegram_commands._render_page('stats_general')['text']
 
         self.assertIn('Trades totales: 17', text)
@@ -461,18 +467,22 @@ class TelegramStatsTests(unittest.TestCase):
         stats['general']['pnl_total'] = 12.34
 
         with patch.object(telegram_commands, '_stats_payload', return_value=(stats, None)), \
-             patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics(long_count=1, short_count=1)):
+             patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics(long_count=1, short_count=1)), \
+             patch.object(telegram_commands, '_bot_state', return_value={}):
             text = telegram_commands._render_page('stats_general')['text']
 
         self.assertIn('Win Rate: 64.7%', text)
         self.assertIn('Profit Factor: 1.85', text)
         self.assertIn('Expectancy: +0.73 USDT', text)
-        self.assertIn('PnL total: +12.34 USDT', text)
+        self.assertIn('Total: +12.34 USDT', text)
 
     def test_stats_adds_capital_accounting_without_replacing_existing_metrics(self):
         stats = sample_stats()
+        metrics = self._metrics()
+        metrics['capital_accounting_starting_equity'] = 129.0
         with patch.object(telegram_commands, '_stats_payload', return_value=(stats, None)), \
-             patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics()), \
+             patch.object(telegram_commands, '_exposure_metrics', return_value=metrics), \
+             patch.object(telegram_commands, '_bot_state', return_value={}), \
              patch.object(
                  telegram_commands.analytics_engine,
                  'get_capital_accounting_stats',
@@ -488,13 +498,58 @@ class TelegramStatsTests(unittest.TestCase):
 
         self.assertIn('Win Rate: 50.0%', text)
         self.assertIn('Profit Factor: 2.00', text)
-        self.assertIn('PnL total: +5.00 USDT', text)
-        self.assertIn('Capital ajustado:', text)
+        self.assertIn('Total: +5.00 USDT', text)
+        self.assertIn('Trading ajustado:', text)
         self.assertIn('PnL Trading: -75.00 USDT', text)
         self.assertIn('ROI Trading: -138.89%', text)
         self.assertIn('Aportes netos: 75.00 USDT', text)
         self.assertIn('Comisiones: 0.50 USDT', text)
         self.assertIn('Funding: -0.10 USDT', text)
+
+    def test_stats_uses_bot_state_pnl_total_when_available(self):
+        stats = sample_stats()
+        stats['general']['pnl_total'] = 3.26
+        metrics = self._metrics()
+        bot_snapshot = {'pnl': {'today': -0.4402, 'total': 5.0022}}
+
+        with patch.object(telegram_commands, '_stats_payload', return_value=(stats, None)), \
+             patch.object(telegram_commands, '_exposure_metrics', return_value=metrics), \
+             patch.object(telegram_commands, '_bot_state', return_value=bot_snapshot):
+            text = telegram_commands._render_page('stats_general')['text']
+
+        self.assertIn('Total: +5.00 USDT', text)
+        self.assertIn('Hoy: -0.44 USDT', text)
+        self.assertNotIn('+3.26 USDT', text)
+
+    def test_stats_does_not_treat_limit_gap_as_trading_loss(self):
+        stats = sample_stats()
+        metrics = self._metrics()
+        metrics['total_real'] = 47.76
+        metrics['total_limit'] = 100.0
+        metrics['total_authorized'] = 47.76
+
+        with patch.object(telegram_commands, '_stats_payload', return_value=(stats, None)), \
+             patch.object(telegram_commands, '_exposure_metrics', return_value=metrics), \
+             patch.object(telegram_commands, '_bot_state', return_value={'pnl': {'today': -0.4402, 'total': 5.0022}}), \
+             patch.object(
+                 telegram_commands.analytics_engine,
+                 'get_capital_accounting_stats',
+                 return_value=self._accounting(
+                     adjusted_equity=47.76,
+                     adjusted_pnl=-52.24,
+                     adjusted_roi=-52.24,
+                 ),
+             ):
+            text = telegram_commands._render_page('stats_general')['text']
+
+        self.assertIn('Real: 47.76 USDT', text)
+        self.assertIn('Limite: 100.00 USDT', text)
+        self.assertIn('Autorizado: 47.76 USDT', text)
+        self.assertIn('PnL Trading: No disponible', text)
+        self.assertIn('ROI Trading: No disponible', text)
+        self.assertIn('Motivo: faltan aportes/retiros/base inicial confiable', text)
+        self.assertNotIn('PnL Trading: -52.24 USDT', text)
+        self.assertNotIn('ROI Trading: -52.24%', text)
 
     def test_telegram_uses_analytics_for_capital_accounting_only(self):
         source = inspect.getsource(telegram_commands)

@@ -1120,7 +1120,12 @@ def _analytics_pnl_summary(snapshot=None):
 def _capital_accounting_payload(metrics=None):
     metrics = metrics or _exposure_metrics()
     current_equity = metrics.get('total_real')
-    starting_equity = metrics.get('total_limit')
+    starting_equity = (
+        metrics.get('capital_accounting_starting_equity')
+        if metrics.get('capital_accounting_starting_equity') is not None
+        else metrics.get('starting_equity')
+    )
+    has_reliable_baseline = starting_equity is not None
     try:
         summary = analytics_engine.get_capital_accounting_stats(
             current_equity=current_equity,
@@ -1136,8 +1141,9 @@ def _capital_accounting_payload(metrics=None):
         'funding': summary.get('funding', 0.0),
         'realized_trading_pnl': summary.get('realized_trading_pnl', 0.0),
         'adjusted_equity': summary.get('adjusted_equity') if current_equity is not None else None,
-        'adjusted_pnl': summary.get('adjusted_pnl') if current_equity is not None and starting_equity is not None else None,
-        'adjusted_roi': summary.get('adjusted_roi') if current_equity is not None and starting_equity is not None else None,
+        'adjusted_pnl': summary.get('adjusted_pnl') if current_equity is not None and has_reliable_baseline else None,
+        'adjusted_roi': summary.get('adjusted_roi') if current_equity is not None and has_reliable_baseline else None,
+        'has_reliable_baseline': has_reliable_baseline,
     }
     return payload
 
@@ -1145,14 +1151,19 @@ def _capital_accounting_payload(metrics=None):
 def _capital_accounting_lines(metrics=None, compact=False):
     accounting = _capital_accounting_payload(metrics)
     if compact:
-        return [
-            'Capital ajustado:',
+        lines = [
+            'Trading ajustado:',
             f'PnL Trading: {_fmt_money_or_unavailable(accounting.get("adjusted_pnl"))}',
             f'ROI Trading: {_fmt_pct_or_unavailable(accounting.get("adjusted_roi"))}',
+        ]
+        if not accounting.get('has_reliable_baseline'):
+            lines.append('Motivo: faltan aportes/retiros/base inicial confiable')
+        lines.extend([
             f'Aportes netos: {_fmt_money_or_unavailable(accounting.get("net_external_flows"))}',
             f'Comisiones: {_fmt_money_or_unavailable(accounting.get("commissions"))}',
             f'Funding: {_fmt_money_or_unavailable(accounting.get("funding"))}',
-        ]
+        ])
+        return lines
     return [
         'Contabilidad:',
         f'Depositos externos: {_fmt_money_or_unavailable(accounting.get("external_deposits"))}',
@@ -1710,13 +1721,22 @@ class StatsMenuPage(MenuPage):
         general = stats.get('general', {})
         counts = _stats_live_trade_counts(general)
         metrics = _exposure_metrics()
+        pnl = _analytics_pnl_summary(_bot_state())
         lines = ['\U0001F4CA Estadisticas', '']
         lines.extend(_stats_warning_lines(warning))
         lines.extend([
             f'Trades: {_fmt_count(counts["total"])}',
             f'Cerrados: {_fmt_count(counts["closed"])}',
             f'Win Rate: {_fmt_stat_pct(general.get("win_rate"))}',
-            f'PnL total: {_fmt_pnl(general.get("pnl_total"))}',
+            '',
+            'PnL:',
+            f'Total: {_fmt_pnl(pnl.get("total"))}',
+            f'Hoy: {_fmt_pnl(pnl.get("today"))}',
+            '',
+            'Capital:',
+            f'Real: {_fmt_money(metrics.get("total_real"))}',
+            f'Limite: {_fmt_money(metrics.get("total_limit"))}',
+            f'Autorizado: {_fmt_money(metrics.get("total_authorized"))}',
             '',
         ])
         lines.extend(_capital_accounting_lines(metrics, compact=True))
@@ -1744,6 +1764,7 @@ class StatsGeneralPage(MenuPage):
         general = stats.get('general', {})
         counts = _stats_live_trade_counts(general)
         metrics = _exposure_metrics()
+        pnl = _analytics_pnl_summary(_bot_state())
         best = general.get('best_trade') or {}
         worst = general.get('worst_trade') or {}
         lines = ['\U0001F4C8 Resumen General', '']
@@ -1760,10 +1781,16 @@ class StatsGeneralPage(MenuPage):
             f'Profit Factor: {_fmt_ratio(general.get("profit_factor"))}',
             f'Expectancy: {_fmt_pnl(general.get("expectancy"))}',
             '',
-            f'PnL total: {_fmt_pnl(general.get("pnl_total"))}',
-            f'PnL hoy: {_fmt_pnl(_pnl_for_period(stats, "day"))}',
+            'PnL:',
+            f'Total: {_fmt_pnl(pnl.get("total"))}',
+            f'Hoy: {_fmt_pnl(pnl.get("today"))}',
             f'PnL semana: {_fmt_pnl(_pnl_for_period(stats, "week"))}',
             f'PnL mes: {_fmt_pnl(_pnl_for_period(stats, "month"))}',
+            '',
+            'Capital:',
+            f'Real: {_fmt_money(metrics.get("total_real"))}',
+            f'Limite: {_fmt_money(metrics.get("total_limit"))}',
+            f'Autorizado: {_fmt_money(metrics.get("total_authorized"))}',
             f'Duracion promedio: {_fmt_number(general.get("duration_average_minutes"), 1)}m',
             '',
             f'Mejor: {_fmt(best.get("symbol"))} {_fmt_pnl(best.get("pnl_usdt"))} ({_fmt_stat_pct(best.get("pnl_pct"))})',
