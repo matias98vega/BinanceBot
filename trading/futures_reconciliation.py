@@ -287,6 +287,26 @@ def summary_has_risk(summary):
     )
 
 
+def log_reconciliation_summary(summary):
+    summary = summary if isinstance(summary, dict) else {}
+    log_args = (
+        'FUTURES RECONCILIATION summary observed=%s managed=%s unmanaged=%s orphan=%s '
+        'unprotected=%s desynced=%s allowed=%s status=%s',
+        summary.get('observed_count'),
+        summary.get('managed_count'),
+        summary.get('unmanaged_count'),
+        summary.get('orphan_count'),
+        summary.get('unprotected_count'),
+        summary.get('desynced_count'),
+        summary.get('allowed_count'),
+        summary.get('status'),
+    )
+    if summary_has_risk(summary):
+        logging.warning(*log_args)
+    else:
+        logging.debug(*log_args)
+
+
 def _alert_message(entry):
     return (
         '🚨 Futures desincronizadas detectadas\n\n'
@@ -335,19 +355,7 @@ def persist_reconciliation(positions, status_file=DEFAULT_STATUS_FILE, alert_fn=
         'positions': positions,
     }
     summary = payload['summary']
-    log_fn = logging.warning if summary_has_risk(summary) else logging.info
-    log_fn(
-        'FUTURES RECONCILIATION summary observed=%s managed=%s unmanaged=%s orphan=%s '
-        'unprotected=%s desynced=%s allowed=%s status=%s',
-        summary.get('observed_count'),
-        summary.get('managed_count'),
-        summary.get('unmanaged_count'),
-        summary.get('orphan_count'),
-        summary.get('unprotected_count'),
-        summary.get('desynced_count'),
-        summary.get('allowed_count'),
-        summary.get('status'),
-    )
+    log_reconciliation_summary(summary)
     _write_json(status_file, payload)
     return payload
 

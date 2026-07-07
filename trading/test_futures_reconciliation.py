@@ -4,7 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -193,10 +193,11 @@ class FuturesReconciliationTests(unittest.TestCase):
         self.assertIn('CRCLUSDT', first['positions'])
         self.assertEqual(second['summary']['unprotected_count'], 1)
 
-    def test_aligned_reconciliation_logs_info_not_warning(self):
+    def test_aligned_reconciliation_does_not_log_warning(self):
         with tempfile.TemporaryDirectory() as tmp:
             status = os.path.join(tmp, 'futures_reconciliation_status.json')
-            with self.assertLogs(level='INFO') as logs:
+            with patch.object(futures_reconciliation.logging, 'warning') as warning_log, \
+                 patch.object(futures_reconciliation.logging, 'debug') as debug_log:
                 payload = futures_reconciliation.persist_reconciliation(
                     {},
                     status_file=status,
@@ -205,9 +206,15 @@ class FuturesReconciliationTests(unittest.TestCase):
 
         self.assertEqual(payload['summary']['status'], 'ALINEADO')
         self.assertTrue(payload['summary']['aligned'])
-        warning_lines = [line for line in logs.output if line.startswith('WARNING')]
-        self.assertEqual(warning_lines, [])
-        self.assertTrue(any('FUTURES RECONCILIATION summary' in line for line in logs.output))
+        self.assertEqual(payload['summary']['observed_count'], 0)
+        self.assertEqual(payload['summary']['managed_count'], 0)
+        self.assertEqual(payload['summary']['unmanaged_count'], 0)
+        self.assertEqual(payload['summary']['orphan_count'], 0)
+        self.assertEqual(payload['summary']['unprotected_count'], 0)
+        self.assertEqual(payload['summary']['desynced_count'], 0)
+        self.assertEqual(payload['summary']['allowed_count'], 2)
+        warning_log.assert_not_called()
+        debug_log.assert_called_once()
 
     def test_risky_reconciliation_keeps_warning_log(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -224,7 +231,7 @@ class FuturesReconciliationTests(unittest.TestCase):
                     'severity': 'WARNING',
                 }
             }
-            with self.assertLogs(level='WARNING') as logs:
+            with patch.object(futures_reconciliation.logging, 'warning') as warning_log:
                 payload = futures_reconciliation.persist_reconciliation(
                     positions,
                     status_file=status,
@@ -234,7 +241,8 @@ class FuturesReconciliationTests(unittest.TestCase):
         self.assertFalse(payload['summary']['aligned'])
         self.assertEqual(payload['summary']['observed_count'], 1)
         self.assertEqual(payload['summary']['unmanaged_count'], 1)
-        self.assertTrue(any('FUTURES RECONCILIATION summary' in line for line in logs.output))
+        warning_log.assert_called_once()
+        self.assertIn('FUTURES RECONCILIATION summary', warning_log.call_args.args[0])
 
     def test_collect_open_orders_does_not_close_positions(self):
         binance = Mock()
