@@ -94,15 +94,32 @@ def _history_index(trades_file=DEFAULT_TRADES_FILE):
         side = str(record.get('side') or record.get('direction') or '').upper()
         if not symbol or side != 'SHORT':
             continue
-        bucket = by_symbol.setdefault(symbol, {'known': False, 'has_closed': False, 'last_opened_at': None, 'last_closed_at': None})
+        bucket = by_symbol.setdefault(symbol, {
+            'known': False,
+            'has_closed': False,
+            'has_open': False,
+            'last_opened_at': None,
+            'last_closed_at': None,
+            'trades': {},
+        })
         bucket['known'] = True
+        trade_id = str(record.get('trade_id') or record.get('id') or '').strip()
         event_type = str(record.get('event_type') or '').upper()
         status = str(record.get('status') or '').upper()
         if event_type == 'TRADE_OPEN' or status == 'OPEN':
+            bucket['has_open'] = True
             bucket['last_opened_at'] = record.get('opened_at') or record.get('recorded_at') or bucket.get('last_opened_at')
+            if trade_id:
+                trade = bucket['trades'].setdefault(trade_id, {})
+                trade['last_status'] = 'OPEN'
+                trade['opened_at'] = bucket['last_opened_at']
         if event_type == 'TRADE_CLOSE' or status == 'CLOSED':
             bucket['has_closed'] = True
             bucket['last_closed_at'] = record.get('closed_at') or record.get('recorded_at') or bucket.get('last_closed_at')
+            if trade_id:
+                trade = bucket['trades'].setdefault(trade_id, {})
+                trade['last_status'] = 'CLOSED'
+                trade['closed_at'] = bucket['last_closed_at']
     return by_symbol
 
 
@@ -123,6 +140,45 @@ def _has_lifecycle_metadata(pos):
     if not isinstance(pos, dict):
         return False
     return bool(pos.get('entry_price') and pos.get('quantity') and (pos.get('id') or pos.get('trade_id') or pos.get('entry_time')))
+
+
+def _state_trade_id(pos):
+    if not isinstance(pos, dict):
+        return ''
+    return str(pos.get('trade_id') or pos.get('id') or '').strip()
+
+
+def _history_trade_status(hist, trade_id):
+    trades = hist.get('trades') if isinstance(hist, dict) and isinstance(hist.get('trades'), dict) else {}
+    trade = trades.get(trade_id) if trade_id else None
+    return trade if isinstance(trade, dict) else {}
+
+
+def _is_closed_but_open_desync(hist, state_pos, managed):
+    if not isinstance(hist, dict) or not hist.get('known'):
+        return False
+    trade_id = _state_trade_id(state_pos)
+    trade = _history_trade_status(hist, trade_id)
+    if trade.get('last_status') == 'OPEN':
+        return False
+    if trade.get('last_status') == 'CLOSED':
+        return True
+    if managed:
+        return bool(hist.get('has_closed') and not hist.get('has_open'))
+    return bool(hist.get('has_closed'))
+
+
+def _suggested_action(classification):
+    classes = set(classification or [])
+    if classes == {'observed_futures_position', 'managed_futures_position'}:
+        return 'none'
+    if 'desynced_closed_but_open_on_exchange' in classes:
+        return 'manual review or explicit recovery close'
+    if 'unprotected_futures_position' in classes:
+        return 'recreate protection or close managed residual if below threshold'
+    if 'unmanaged_futures_position' in classes or 'orphan_futures_position' in classes:
+        return 'manual review or explicit recovery close'
+    return 'monitor'
 
 
 def _normalise_position(raw):
@@ -187,9 +243,11 @@ def classify_positions(observed_positions, state=None, open_orders_by_symbol=Non
             classification.extend(['unmanaged_futures_position', 'orphan_futures_position'])
         if not has_open_orders:
             classification.append('unprotected_futures_position')
-        if hist.get('has_closed'):
+        if _is_closed_but_open_desync(hist, state_pos, managed):
             classification.append('desynced_closed_but_open_on_exchange')
-        opened_at = hist.get('last_opened_at') or (state_pos or {}).get('entry_time')
+        trade_id = _state_trade_id(state_pos)
+        trade_hist = _history_trade_status(hist, trade_id)
+        opened_at = trade_hist.get('opened_at') or hist.get('last_opened_at') or (state_pos or {}).get('entry_time')
         opened_ts = _parse_ts(opened_at)
         age_hours = None if opened_ts is None else round(max(0, time.time() - opened_ts) / 3600, 2)
         if age_hours is not None and age_hours >= 24:
@@ -211,12 +269,14 @@ def classify_positions(observed_positions, state=None, open_orders_by_symbol=Non
             'open_orders_count': len(orders) if isinstance(orders, list) else (1 if orders else 0),
             'managed_in_state': managed,
             'known_in_history': bool(hist.get('known')),
+            'history_trade_id': trade_id or None,
+            'history_trade_status': trade_hist.get('last_status'),
             'classification': classification,
             'suspected_opened_at': opened_at,
             'age_hours': age_hours,
             'last_seen': now,
             'severity': _severity(classification),
-            'suggested_action': 'manual review or explicit recovery close',
+            'suggested_action': _suggested_action(classification),
         }
     return positions
 

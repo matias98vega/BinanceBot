@@ -328,6 +328,8 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Clasificaciones:** `observed_futures_position` significa que Binance reporta `positionAmt != 0`. `managed_futures_position` existe tambien en `state.json` con metadata suficiente de lifecycle. `unmanaged_futures_position` y `orphan_futures_position` indican que Binance ve la posicion pero el bot no tiene lifecycle confiable. `unprotected_futures_position` indica que no hay open orders. `desynced_closed_but_open_on_exchange` indica que el historial tiene cierre total pero Binance sigue abierto. `stale_observed_futures_position` marca posiciones observadas con antiguedad estimada mayor a 24h.
 
+**Desync por historial:** `desynced_closed_but_open_on_exchange` se evalua contra el `trade_id` gestionado cuando existe. Un cierre historico viejo del mismo simbolo no basta para marcar desync si `state.json` gestiona la posicion actual y `trades.jsonl` contiene `TRADE_OPEN status=OPEN` para ese `trade_id`. Esto evita falsos positivos en shorts sanos con TP reduce-only abierto y SL nativo vacio.
+
 **Parsing Binance:** shorts con `notional` negativo siguen siendo posiciones abiertas si `abs(positionAmt) > 0`. Para totales y resumen se usa `abs(notional)`, preservando `position_amt` firmado para entender el lado real.
 
 **Estado reconciliado:** `ALINEADO` solo aplica si `observed_count <= allowed_count` cuando hay limite disponible, y ademas `unmanaged_count`, `orphan_count`, `unprotected_count` y `desynced_count` son cero. Si hay exceso contra capacidad o posiciones no gestionadas, el estado explicita ambos motivos.

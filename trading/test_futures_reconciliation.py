@@ -45,6 +45,31 @@ class FuturesReconciliationTests(unittest.TestCase):
             'liquidationPrice': '120.50',
         }
 
+    def _managed_state_short(self, symbol='CRCLUSDT', trade_id='short_CRCLUSDT_1783540416', quantity=0.49, tp_order_id='634772815'):
+        return {
+            'id': trade_id,
+            'symbol': symbol,
+            'direction': 'short',
+            'entry_price': 64.2,
+            'quantity': quantity,
+            'tp': 62.24,
+            'tp_order_id': tp_order_id,
+            'sl_order_id': '',
+            'partial_taken': False,
+            'entry_time': '2026-07-08T12:00:00Z',
+        }
+
+    def _reduce_only_tp_order(self, symbol='CRCLUSDT', order_id='634772815', quantity='0.49', price='62.24'):
+        return {
+            'symbol': symbol,
+            'orderId': int(order_id),
+            'side': 'BUY',
+            'type': 'LIMIT',
+            'reduceOnly': True,
+            'origQty': quantity,
+            'price': price,
+        }
+
     def test_raw_binance_position_amt_detects_open_short(self):
         with tempfile.TemporaryDirectory() as tmp:
             trades = os.path.join(tmp, 'trades.jsonl')
@@ -151,6 +176,106 @@ class FuturesReconciliationTests(unittest.TestCase):
 
         self.assertIn('desynced_closed_but_open_on_exchange', positions['CRCLUSDT']['classification'])
         self.assertEqual(positions['CRCLUSDT']['severity'], 'ERROR')
+
+    def test_managed_open_short_with_matching_open_trade_is_not_desynced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            trades = os.path.join(tmp, 'trades.jsonl')
+            trade_id = 'short_CRCLUSDT_1783540416'
+            self._write_trades(trades, [
+                {'event_type': 'TRADE_OPEN', 'trade_id': trade_id, 'symbol': 'CRCLUSDT', 'side': 'SHORT', 'status': 'OPEN', 'opened_at': '2026-07-08T12:00:00Z'},
+            ])
+
+            positions = futures_reconciliation.classify_positions(
+                [self._raw_binance_short('CRCLUSDT')],
+                state={'positions': [self._managed_state_short('CRCLUSDT', trade_id=trade_id)]},
+                open_orders_by_symbol={'CRCLUSDT': [self._reduce_only_tp_order('CRCLUSDT')]},
+                trades_file=trades,
+            )
+
+        entry = positions['CRCLUSDT']
+        self.assertTrue(entry['managed_in_state'])
+        self.assertTrue(entry['has_open_orders'])
+        self.assertEqual(entry['open_orders_count'], 1)
+        self.assertEqual(entry['history_trade_status'], 'OPEN')
+        self.assertNotIn('desynced_closed_but_open_on_exchange', entry['classification'])
+        self.assertNotIn('unprotected_futures_position', entry['classification'])
+        self.assertEqual(entry['severity'], 'INFO')
+        self.assertEqual(entry['suggested_action'], 'none')
+
+    def test_two_managed_open_shorts_are_aligned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            trades = os.path.join(tmp, 'trades.jsonl')
+            zec_id = 'short_ZECUSDT_1783533464'
+            crcl_id = 'short_CRCLUSDT_1783540416'
+            self._write_trades(trades, [
+                {'event_type': 'TRADE_OPEN', 'trade_id': zec_id, 'symbol': 'ZECUSDT', 'side': 'SHORT', 'status': 'OPEN', 'opened_at': '2026-07-08T12:00:00Z'},
+                {'event_type': 'TRADE_OPEN', 'trade_id': crcl_id, 'symbol': 'CRCLUSDT', 'side': 'SHORT', 'status': 'OPEN', 'opened_at': '2026-07-08T12:05:00Z'},
+            ])
+            status = os.path.join(tmp, 'futures_reconciliation_status.json')
+
+            payload = futures_reconciliation.reconcile_observed_positions(
+                [self._raw_binance_short('ZECUSDT'), self._raw_binance_short('CRCLUSDT')],
+                state={'positions': [
+                    self._managed_state_short('ZECUSDT', trade_id=zec_id, quantity=0.067, tp_order_id='803134129964'),
+                    self._managed_state_short('CRCLUSDT', trade_id=crcl_id),
+                ]},
+                open_orders_by_symbol={
+                    'ZECUSDT': [self._reduce_only_tp_order('ZECUSDT', '803134129964', quantity='0.067', price='448.14')],
+                    'CRCLUSDT': [self._reduce_only_tp_order('CRCLUSDT')],
+                },
+                trades_file=trades,
+                status_file=status,
+                allowed_count=2,
+            )
+
+        summary = payload['summary']
+        self.assertEqual(summary['observed_count'], 2)
+        self.assertEqual(summary['managed_count'], 2)
+        self.assertEqual(summary['unmanaged_count'], 0)
+        self.assertEqual(summary['orphan_count'], 0)
+        self.assertEqual(summary['unprotected_count'], 0)
+        self.assertEqual(summary['desynced_count'], 0)
+        self.assertTrue(summary['aligned'])
+        self.assertEqual(summary['status'], 'ALINEADO')
+
+    def test_matching_trade_closed_history_still_marks_desynced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            trades = os.path.join(tmp, 'trades.jsonl')
+            trade_id = 'short_CRCLUSDT_1783540416'
+            self._write_trades(trades, [
+                {'event_type': 'TRADE_OPEN', 'trade_id': trade_id, 'symbol': 'CRCLUSDT', 'side': 'SHORT', 'status': 'OPEN', 'opened_at': '2026-07-08T12:00:00Z'},
+                {'event_type': 'TRADE_CLOSE', 'trade_id': trade_id, 'symbol': 'CRCLUSDT', 'side': 'SHORT', 'status': 'CLOSED', 'closed_at': '2026-07-08T13:00:00Z'},
+            ])
+
+            positions = futures_reconciliation.classify_positions(
+                [self._raw_binance_short('CRCLUSDT')],
+                state={'positions': [self._managed_state_short('CRCLUSDT', trade_id=trade_id)]},
+                open_orders_by_symbol={'CRCLUSDT': [self._reduce_only_tp_order('CRCLUSDT')]},
+                trades_file=trades,
+            )
+
+        self.assertIn('desynced_closed_but_open_on_exchange', positions['CRCLUSDT']['classification'])
+        self.assertEqual(positions['CRCLUSDT']['history_trade_status'], 'CLOSED')
+
+    def test_managed_open_short_without_orders_remains_unprotected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            trades = os.path.join(tmp, 'trades.jsonl')
+            trade_id = 'short_CRCLUSDT_1783540416'
+            self._write_trades(trades, [
+                {'event_type': 'TRADE_OPEN', 'trade_id': trade_id, 'symbol': 'CRCLUSDT', 'side': 'SHORT', 'status': 'OPEN'},
+            ])
+
+            positions = futures_reconciliation.classify_positions(
+                [self._raw_binance_short('CRCLUSDT')],
+                state={'positions': [self._managed_state_short('CRCLUSDT', trade_id=trade_id)]},
+                open_orders_by_symbol={'CRCLUSDT': []},
+                trades_file=trades,
+            )
+
+        classes = positions['CRCLUSDT']['classification']
+        self.assertIn('managed_futures_position', classes)
+        self.assertIn('unprotected_futures_position', classes)
+        self.assertNotIn('desynced_closed_but_open_on_exchange', classes)
 
     def test_old_observed_position_is_stale_observed(self):
         with tempfile.TemporaryDirectory() as tmp:
