@@ -342,6 +342,12 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Orden de recovery:** SHORT (`positionAmt < 0`) se cierra con `BUY MARKET reduceOnly=true`; LONG (`positionAmt > 0`) con `SELL MARKET reduceOnly=true`. `reduceOnly` es obligatorio para impedir abrir una posicion nueva por error.
 
+**Politica preventiva de residuales gestionados:** despues de un parcial SHORT, el bot reconsulta Binance con `futures_position_risk(symbol)` y `futures_open_orders(symbol)` antes de confiar en `state.json`. Si Binance confirma `positionAmt=0`, se limpia la posicion local. Si queda una posicion real sin ordenes y `abs(notional) <= FUTURES_RESIDUAL_MAX_NOTIONAL_USDT` (default `3.0`), `futures_residuals.py` puede cerrarla con MARKET `reduceOnly=true` cuando `FUTURES_RESIDUAL_CLOSE_ENABLED=true`. El cierre genera reporte auditable en `data/history/repair_reports/` y evento de Timeline. No se recalcula PnL ni se duplica el cierre parcial ya registrado por el lifecycle normal.
+
+**Posiciones sin proteccion no residuales:** si queda una posicion Futures real sin open orders y su notional supera el umbral residual, el bot intenta recrear proteccion reduce-only con los TP/SL ya existentes en el estado. Si no puede verificar proteccion posterior, marca `futures_entries_blocked=true`, registra evento critico y bloquea nuevas entradas SHORT con `FUTURES_UNPROTECTED_BLOCK_NEW_ENTRIES=true` (default). La gestion/cierre de posiciones existentes sigue permitida.
+
+**Recovery explicito para residual gestionado:** `futures_recovery.close_managed_residual(symbol, confirm="CONFIRM")` es una ruta separada de `close_position()`. Solo acepta posiciones `managed_in_state=true`, observadas en Binance, sin proteccion o sin open orders, con notional dentro del umbral. Siempre usa `reduceOnly`, reconsulta Binance antes y despues, persiste reporte auditable y limpia `state.json` solo si Binance confirma `positionAmt=0`. Posiciones grandes no se cierran automaticamente.
+
 **Riesgos restantes:** si Binance rechaza por precision, minimo, margen o estado de posicion, el recovery no reintenta ni fuerza cierre. Registra timeline con `code/msg/raw_body` y deja el caso para revision manual.
 
 **Mejora futura:** agregar una segunda capa opcional de recovery con aprobacion persistente, reporte post-cierre y reconciliacion automatica del estado una vez confirmado `positionAmt=0`.

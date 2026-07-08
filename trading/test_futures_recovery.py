@@ -39,6 +39,7 @@ class FuturesRecoveryTests(unittest.TestCase):
                     'unrealized_pnl': -1.2,
                     'managed_in_state': managed,
                     'classification': classes,
+                    'open_orders_count': 0,
                 }
             },
         }
@@ -173,6 +174,72 @@ class FuturesRecoveryTests(unittest.TestCase):
             text = futures_recovery.format_preview_text(futures_recovery.preview_recovery(status))
 
         self.assertIn('/futures_recovery_close NEARUSDT CONFIRM', text)
+
+    def test_close_managed_residual_requires_confirm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            status = self._status_file(tmp, amount=-0.01, managed=True, classes=[
+                'observed_futures_position',
+                'managed_futures_position',
+                'unprotected_futures_position',
+            ])
+            client = self._client(before='-0.01', after='0', filters={'step_size': 0.01, 'min_qty': 0.01})
+
+            result = futures_recovery.close_managed_residual('NEARUSDT', confirm=None, client=client, status_file=status)
+
+        self.assertEqual(result['reason'], 'missing_confirm')
+        client.create_futures_order.assert_not_called()
+
+    def test_close_managed_residual_rejects_notional_above_threshold(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            status = self._status_file(tmp, amount=-12, managed=True, classes=[
+                'observed_futures_position',
+                'managed_futures_position',
+                'unprotected_futures_position',
+            ])
+            client = self._client(before='-12', after='0')
+
+            result = futures_recovery.close_managed_residual(
+                'NEARUSDT',
+                confirm='CONFIRM',
+                client=client,
+                status_file=status,
+                max_notional=3.0,
+            )
+
+        self.assertEqual(result['reason'], 'notional_above_threshold')
+        client.create_futures_order.assert_not_called()
+
+    def test_close_managed_residual_sends_reduce_only_and_cleans_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            status = self._status_file(tmp, amount=-0.01, managed=True, classes=[
+                'observed_futures_position',
+                'managed_futures_position',
+                'unprotected_futures_position',
+            ])
+            state = {'positions': [{'symbol': 'NEARUSDT', 'direction': 'short', 'quantity': 0.12}]}
+            client = self._client(before='-0.01', after='0', filters={'step_size': 0.01, 'min_qty': 0.01})
+
+            with patch('futures_recovery.utils.save_state') as save_state:
+                result = futures_recovery.close_managed_residual(
+                    'NEARUSDT',
+                    confirm='CONFIRM',
+                    client=client,
+                    status_file=status,
+                    max_notional=3.0,
+                    state=state,
+                    report_dir=tmp,
+                )
+
+        self.assertTrue(result['ok'])
+        client.create_futures_order.assert_called_once_with({
+            'symbol': 'NEARUSDT',
+            'side': 'BUY',
+            'type': 'MARKET',
+            'quantity': '0.01',
+            'reduceOnly': 'true',
+        })
+        self.assertEqual(state['positions'], [])
+        save_state.assert_called_once_with(state)
 
 
 if __name__ == '__main__':

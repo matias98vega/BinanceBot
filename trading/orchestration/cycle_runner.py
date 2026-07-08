@@ -8,6 +8,7 @@ import capital_manager
 import config
 import decision_timeline
 import futures_reconciliation
+import futures_residuals
 import longs
 import market
 import rebalance
@@ -21,6 +22,10 @@ def format_cycle_summary(long_count, max_longs, short_count, max_shorts,
         f'\n💼 Longs: {long_count}/{max_longs} | Shorts: {short_count}/{max_shorts} | '
         f'Spot: ${spot_used:.2f}/${spot_total:.2f} | Futures: ${futures_used:.2f}/${futures_total:.2f}'
     )
+
+
+def should_skip_lifecycle_after_residual_cleanup(pos):
+    return bool((pos or {}).get('closed_by_residual_cleanup'))
 
 
 class CycleRunner:
@@ -237,6 +242,8 @@ class CycleRunner:
                 action, price_close, pnl = longs.manage_long(pos, state)
             else:
                 self.check_partial_short(pos, state)
+                if should_skip_lifecycle_after_residual_cleanup(pos):
+                    continue
                 action, price_close, pnl = shorts.manage_short(pos, state)
 
             if action in ('closed_tp', 'closed_sl', 'closed_manual'):
@@ -372,7 +379,28 @@ class CycleRunner:
                     self.out(f'ðŸ” LONG: sin entrada ({motivo})')
 
         # â”€â”€ 2b. SHORTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        if short_count < max_shorts and force != 'long_only' and not skip_new_entries:
+        futures_blocked, futures_block_reason = futures_residuals.has_unprotected_futures_risk()
+        if state.get('futures_entries_blocked'):
+            futures_blocked = True
+            futures_block_reason = state.get('futures_entries_block_reason') or 'Futures unprotected position present'
+        if futures_blocked:
+            self.out(f'CAPACITY LIMIT REJECT: {futures_block_reason}')
+            try:
+                decision_timeline.record_signal_rejected(
+                    'SHORT_SCAN',
+                    'SHORT',
+                    futures_block_reason,
+                    cycle_id=cycle_id,
+                    details={'source': 'futures_reconciliation'},
+                )
+            except Exception:
+                pass
+        if (
+            not futures_blocked
+            and short_count < max_shorts
+            and force != 'long_only'
+            and not skip_new_entries
+        ):
             excl_short = {p['symbol'] for p in state['positions']} | cooldowns
             best_short, descarte_short = market.scan_shorts(btc_ctx, excluded_symbols=excl_short)
             utils.log_analysis('short', best_short, descarte_short)

@@ -4,8 +4,10 @@
 import logging
 
 import binance_client
+import config
 import decision_timeline
 import futures_reconciliation
+import futures_residuals
 import utils
 
 
@@ -232,6 +234,88 @@ def close_position(symbol, confirm=None, client=None, status_file=None):
         f'{symbol} recovery close {"success" if success else "not fully closed"}',
         symbol=symbol,
         level='INFO' if success else 'ERROR',
+        details=result,
+    )
+    return result
+
+
+def close_managed_residual(symbol, confirm=None, client=None, status_file=None,
+                           max_notional=None, state=None, report_dir=None):
+    symbol = str(symbol or '').upper()
+    client = client or binance_client.get_default_client()
+    entry = _entry(symbol, status_file)
+    threshold = float(max_notional if max_notional is not None else getattr(config, 'FUTURES_RESIDUAL_MAX_NOTIONAL_USDT', 3.0))
+    _record(
+        'futures_managed_residual_close_requested',
+        f'{symbol} managed residual close requested',
+        symbol=symbol,
+        details={'confirm': confirm, 'threshold': threshold},
+    )
+
+    if confirm != 'CONFIRM':
+        result = {'ok': False, 'status': 'skipped', 'reason': 'missing_confirm', 'symbol': symbol}
+        _record('futures_managed_residual_close_skipped', f'{symbol} managed residual skipped: missing CONFIRM', symbol=symbol, level='WARNING', details=result)
+        return result
+    if not entry:
+        result = {'ok': False, 'status': 'skipped', 'reason': 'symbol_not_reconciled', 'symbol': symbol}
+        _record('futures_managed_residual_close_skipped', f'{symbol} managed residual skipped: not reconciled', symbol=symbol, level='WARNING', details=result)
+        return result
+    if not entry.get('managed_in_state'):
+        result = {'ok': False, 'status': 'skipped', 'reason': 'not_managed_position', 'symbol': symbol}
+        _record('futures_managed_residual_close_skipped', f'{symbol} managed residual skipped: not managed in state', symbol=symbol, level='WARNING', details=result)
+        return result
+    classes = _classification(entry)
+    open_orders_count = int(entry.get('open_orders_count') or 0)
+    if 'unprotected_futures_position' not in classes and open_orders_count > 0:
+        result = {
+            'ok': False,
+            'status': 'skipped',
+            'reason': 'managed_position_has_protection',
+            'symbol': symbol,
+            'classification': classes,
+            'open_orders_count': open_orders_count,
+        }
+        _record('futures_managed_residual_close_skipped', f'{symbol} managed residual skipped: protected', symbol=symbol, level='WARNING', details=result)
+        return result
+    notional = abs(_safe_float(entry.get('notional'), 0.0) or 0.0)
+    if notional > threshold:
+        result = {
+            'ok': False,
+            'status': 'skipped',
+            'reason': 'notional_above_threshold',
+            'symbol': symbol,
+            'notional': notional,
+            'threshold': threshold,
+        }
+        _record('futures_managed_residual_close_skipped', f'{symbol} managed residual skipped: notional above threshold', symbol=symbol, level='WARNING', details=result)
+        return result
+
+    current = futures_residuals.refresh_position(client, symbol)
+    amount = _safe_float(current.get('position_amt'), 0.0) or 0.0
+    if abs(amount) <= POSITION_ZERO_TOLERANCE:
+        state = state if isinstance(state, dict) else utils.load_state()
+        futures_residuals.remove_state_position(state, symbol)
+        utils.save_state(state)
+        result = {'ok': True, 'status': 'already_closed', 'reason': 'no_open_position', 'symbol': symbol}
+        _record('futures_managed_residual_close_success', f'{symbol} already closed on Binance', symbol=symbol, details=result)
+        return result
+
+    state = state if isinstance(state, dict) else utils.load_state()
+    result = futures_residuals.close_residual_reduce_only(
+        client,
+        state,
+        {'symbol': symbol},
+        current,
+        reason='manual_managed_residual_close',
+        report_dir=report_dir or futures_residuals.REPORT_DIR,
+    )
+    if result.get('ok'):
+        utils.save_state(state)
+    _record(
+        'futures_managed_residual_close_success' if result.get('ok') else 'futures_managed_residual_close_error',
+        f'{symbol} managed residual close {result.get("status")}',
+        symbol=symbol,
+        level='INFO' if result.get('ok') else 'ERROR',
         details=result,
     )
     return result

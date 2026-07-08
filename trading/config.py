@@ -95,6 +95,11 @@ TRAIL_STEP_PCT       = 1.0    # actualizar SL cada 1% de movimiento favorable
 # ── SL nativo en futures (STOP_MARKET en el exchange) ────────────────────────
 NATIVE_SL_ENABLED    = True   # True = STOP_MARKET nativo; False = solo guardian software
 
+# ── Residuos Futures sin protección ─────────────────────────────────────────
+FUTURES_RESIDUAL_CLOSE_ENABLED = _env_bool('FUTURES_RESIDUAL_CLOSE_ENABLED', True)
+FUTURES_RESIDUAL_MAX_NOTIONAL_USDT = float(os.environ.get('FUTURES_RESIDUAL_MAX_NOTIONAL_USDT', '3.0') or 3.0)
+FUTURES_UNPROTECTED_BLOCK_NEW_ENTRIES = _env_bool('FUTURES_UNPROTECTED_BLOCK_NEW_ENTRIES', True)
+
 # ── Filtro de recuperación desde mínimo (anti-short en rebote) ───────────────
 RECOVERY_FROM_LOW_PCT     = 3.0  # si precio rebotó >3% desde mínimo 24h → penalizar short
 RECOVERY_CONSEC_CANDLES   = 3    # velas 1h consecutivamente alcistas desde el mínimo → subir min_score

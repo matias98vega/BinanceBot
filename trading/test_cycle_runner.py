@@ -32,6 +32,15 @@ class CycleRunnerTests(unittest.TestCase):
         self.assertNotIn('Shorts: 0/0', line)
         self.assertNotIn('Futures: $0.00/$22.16', line)
 
+    def test_residual_cleanup_marker_skips_normal_lifecycle(self):
+        self.assertTrue(cycle_runner.should_skip_lifecycle_after_residual_cleanup({
+            'symbol': 'SPCXUSDT',
+            'closed_by_residual_cleanup': True,
+        }))
+        self.assertFalse(cycle_runner.should_skip_lifecycle_after_residual_cleanup({
+            'symbol': 'SPCXUSDT',
+        }))
+
     def test_paused_cycle_runs_audit_and_persists_warning(self):
         state = {
             'status': 'paused',

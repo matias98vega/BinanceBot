@@ -5,6 +5,7 @@ import time
 
 import config
 import decision_timeline
+import futures_residuals
 import rebalance
 import residuals
 import shorts
@@ -386,6 +387,18 @@ def check_partial_short(pos, state, binance, out_fn, analytics):
         except Exception:
             pass
         utils.log_trade(state['trade_count'], sym, 'short', 'PARCIAL TP 💰 (50%)', pnl_partial, capital_now)
+        try:
+            residual_result = futures_residuals.handle_after_partial_short(
+                pos,
+                state,
+                binance,
+                out_fn=out_fn,
+                alert_fn=utils.send_alert,
+            )
+            if residual_result.get('status') in ('closed', 'already_closed'):
+                pos['closed_by_residual_cleanup'] = True
+        except Exception as residual_error:
+            out_fn(f'⚠️ Futures residual check {sym} falló: {residual_error}')
 
     except Exception as e:
         out_fn(f'⚠️ Parcial SHORT {sym} falló: {e}')
