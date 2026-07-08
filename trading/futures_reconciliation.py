@@ -53,7 +53,7 @@ def _read_json(path, default=None):
 
 def _write_json(path, payload):
     try:
-        version_history.attach_version_metadata(payload)
+        payload = version_history.attach_version_metadata(payload)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = f'{path}.tmp'
         with open(tmp, 'w', encoding='utf-8') as f:

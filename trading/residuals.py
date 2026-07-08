@@ -47,7 +47,7 @@ def _load(path=None):
 def _save(data, path=None):
     path = _status_path(path)
     try:
-        version_history.attach_version_metadata(data)
+        data = version_history.attach_version_metadata(data)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp_path = f'{path}.tmp'
         with open(tmp_path, 'w', encoding='utf-8') as f:

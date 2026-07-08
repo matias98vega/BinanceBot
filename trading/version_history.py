@@ -16,6 +16,7 @@ SCHEMA_VERSION = 1
 BOT_VERSION = os.environ.get('BOT_VERSION') or 'v1.1-observability-hardening'
 STRATEGY_VERSION = os.environ.get('STRATEGY_VERSION') or 'current'
 DATA_SCHEMA_VERSION = os.environ.get('DATA_SCHEMA_VERSION') or 'v1'
+VERSION_FIELDS = ('bot_version', 'strategy_version', 'data_schema_version')
 
 UNKNOWN_VERSION = 'unknown'
 UNKNOWN_RELIABILITY = 'unknown'
@@ -138,6 +139,12 @@ def attach_version_metadata(record, overwrite=False):
         if overwrite or record.get(key) in (None, ''):
             record[key] = value
     return record
+
+
+def has_top_level_version_metadata(record):
+    if not isinstance(record, dict):
+        return False
+    return all(record.get(key) not in (None, '') for key in VERSION_FIELDS)
 
 
 def _parse_timestamp(value):

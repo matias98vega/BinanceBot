@@ -920,7 +920,7 @@ def build_bot_state(
 
 
 def persist_bot_state(payload):
-    version_history.attach_version_metadata(payload)
+    payload = version_history.attach_version_metadata(payload)
     os.makedirs(os.path.dirname(BOT_STATE_FILE), exist_ok=True)
     tmp = f'{BOT_STATE_FILE}.tmp'
     with open(tmp, 'w', encoding='utf-8') as f:

@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
+import json
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -47,6 +48,7 @@ class VersionHistoryTests(unittest.TestCase):
         self.assertEqual('v1.1-observability-hardening', record['bot_version'])
         self.assertEqual('current', record['strategy_version'])
         self.assertEqual('v1', record['data_schema_version'])
+        self.assertTrue(version_history.has_top_level_version_metadata(record))
 
     def test_attach_version_metadata_does_not_overwrite_by_default(self):
         record = {'bot_version': 'old', 'strategy_version': 'legacy', 'data_schema_version': 'old_schema'}
@@ -108,14 +110,32 @@ class VersionHistoryTests(unittest.TestCase):
         self.assertEqual('current', payload['strategy_version'])
         self.assertEqual('v1', payload['data_schema_version'])
 
+    def test_bot_state_writer_persists_top_level_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'bot_state.json')
+            payload = {'timestamp': '2026-07-08T00:00:00Z'}
+            with patch.object(bot_state, 'BOT_STATE_FILE', path):
+                bot_state.persist_bot_state(payload)
+            with open(path, encoding='utf-8') as f:
+                data = json.load(f)
+
+        self.assertEqual('v1.1-observability-hardening', data.get('bot_version'))
+        self.assertEqual('current', data.get('strategy_version'))
+        self.assertEqual('v1', data.get('data_schema_version'))
+        self.assertTrue(version_history.has_top_level_version_metadata(data))
+
     def test_timeline_record_includes_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, 'timeline.jsonl')
             record = decision_timeline.record_event('test', 'message', path=path)
+            with open(path, encoding='utf-8') as f:
+                persisted = json.loads(f.readline())
 
         self.assertEqual('v1.1-observability-hardening', record['bot_version'])
         self.assertEqual('current', record['strategy_version'])
         self.assertEqual('v1', record['data_schema_version'])
+        self.assertEqual('v1.1-observability-hardening', persisted.get('bot_version'))
+        self.assertTrue(version_history.has_top_level_version_metadata(persisted))
 
     def test_history_trade_records_include_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -126,10 +146,14 @@ class VersionHistoryTests(unittest.TestCase):
             )
             with patch.object(history.decision_timeline, 'record_event'):
                 record = store.record_trade_open('t1', 'ETHUSDT', 'LONG')
+            with open(store.trades_file, encoding='utf-8') as f:
+                persisted = json.loads(f.readline())
 
         self.assertEqual('v1.1-observability-hardening', record['bot_version'])
         self.assertEqual('current', record['strategy_version'])
         self.assertEqual('v1', record['data_schema_version'])
+        self.assertEqual('v1.1-observability-hardening', persisted.get('bot_version'))
+        self.assertTrue(version_history.has_top_level_version_metadata(persisted))
 
     def test_analytics_trade_record_includes_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -139,10 +163,14 @@ class VersionHistoryTests(unittest.TestCase):
                  patch.object(analytics.history, 'record_snapshot'), \
                  patch.object(analytics.feature_store, 'record_trade_features'):
                 record = logger.log_trade_open('t1', 'ETHUSDT', 'LONG', 100)
+            with open(logger.path, encoding='utf-8') as f:
+                persisted = json.loads(f.readline())
 
         self.assertEqual('v1.1-observability-hardening', record['bot_version'])
         self.assertEqual('current', record['strategy_version'])
         self.assertEqual('v1', record['data_schema_version'])
+        self.assertEqual('v1.1-observability-hardening', persisted.get('bot_version'))
+        self.assertTrue(version_history.has_top_level_version_metadata(persisted))
 
     def test_feature_record_includes_metadata(self):
         record = feature_store._record_from_kwargs({'trade_id': 't1', 'symbol': 'ETHUSDT', 'side': 'LONG'})
@@ -151,14 +179,36 @@ class VersionHistoryTests(unittest.TestCase):
         self.assertEqual('v1.1-observability-hardening', record['identification']['bot_version'])
         self.assertEqual('v1', record['data_schema_version'])
 
+    def test_feature_writer_persists_top_level_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'features.jsonl')
+            record = feature_store.record_trade_features(
+                features_file=path,
+                trade_id='t1',
+                symbol='ETHUSDT',
+                side='LONG',
+            )
+            with open(path, encoding='utf-8') as f:
+                persisted = json.loads(f.readline())
+
+        self.assertEqual('v1.1-observability-hardening', record['bot_version'])
+        self.assertEqual('v1.1-observability-hardening', persisted.get('bot_version'))
+        self.assertTrue(version_history.has_top_level_version_metadata(persisted))
+
     def test_futures_reconciliation_status_includes_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, 'futures_reconciliation_status.json')
             payload = futures_reconciliation.persist_reconciliation({}, status_file=path)
+            with open(path, encoding='utf-8') as f:
+                data = json.load(f)
 
         self.assertEqual('v1.1-observability-hardening', payload['bot_version'])
         self.assertEqual('current', payload['strategy_version'])
         self.assertEqual('v1', payload['data_schema_version'])
+        self.assertEqual('v1.1-observability-hardening', data.get('bot_version'))
+        self.assertEqual('current', data.get('strategy_version'))
+        self.assertEqual('v1', data.get('data_schema_version'))
+        self.assertTrue(version_history.has_top_level_version_metadata(data))
 
     def test_residual_status_includes_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -169,6 +219,7 @@ class VersionHistoryTests(unittest.TestCase):
         self.assertEqual('v1.1-observability-hardening', data['bot_version'])
         self.assertEqual('current', data['strategy_version'])
         self.assertEqual('v1', data['data_schema_version'])
+        self.assertTrue(version_history.has_top_level_version_metadata(data))
 
 
 if __name__ == '__main__':
