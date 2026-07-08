@@ -15,6 +15,7 @@ from config_loader import load_config
 import history
 import decision_timeline
 import feature_store
+import version_history
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -104,6 +105,7 @@ class AnalyticsLogger:
             'capital_at_entry': self._float_or_none(capital_at_entry),
             'status': 'OPEN',
         }
+        version_history.attach_version_metadata(record)
         self._append(record)
         try:
             decision_timeline.record_event(
@@ -161,6 +163,7 @@ class AnalyticsLogger:
             'status': 'CLOSED',
         }
         record.update({k: v for k, v in extra.items() if v is not None})
+        version_history.attach_version_metadata(record)
         self._append(record)
         try:
             decision_timeline.record_event(
@@ -183,6 +186,7 @@ class AnalyticsLogger:
             'event_time': self._iso(fields.pop('event_time', None)),
         }
         record.update(fields)
+        version_history.attach_version_metadata(record)
         self._append(record)
         return record
 
@@ -421,6 +425,7 @@ class DecisionSnapshotLogger:
             'mode': mode,
             'candidates': candidates or [],
         }
+        version_history.attach_version_metadata(record)
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         with open(self.path, 'a', encoding='utf-8') as f:
             f.write(json.dumps(record, ensure_ascii=False, separators=(',', ':')) + '\n')

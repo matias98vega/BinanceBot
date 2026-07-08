@@ -7,6 +7,7 @@ import os
 from datetime import datetime, timezone
 
 import history
+import version_history
 
 
 DEFAULT_FEATURES_FILE = os.path.join(history.DEFAULT_HISTORY_DIR, 'features.jsonl')
@@ -141,7 +142,7 @@ def _record_from_kwargs(kwargs):
     ema200 = kwargs.get('ema200')
     regime = _normalise_regime(kwargs.get('regime') or kwargs.get('market_regime') or _btc_value(btc_context, 'trend', 'regime'))
 
-    return {
+    record = {
         'schema_version': 1,
         'recorded_at': _now_iso(),
         'identification': {
@@ -215,6 +216,11 @@ def _record_from_kwargs(kwargs):
         },
         'extra': _sanitize(kwargs.get('extra') or {}),
     }
+    version_history.attach_version_metadata(record)
+    record['identification']['bot_version'] = record.get('bot_version')
+    record['identification']['strategy_version'] = record.get('strategy_version')
+    record['identification']['data_schema_version'] = record.get('data_schema_version')
+    return record
 
 
 def record_trade_features(features_file=DEFAULT_FEATURES_FILE, **kwargs):

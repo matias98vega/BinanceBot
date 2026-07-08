@@ -30,6 +30,7 @@ bot.py --------------------------+
    +--> data/history/stats.json
    +--> data/history/insights.json
    +--> data/history/timeline.jsonl
+   +--> VERSION / version_history.py
    |
    +--> Telegram read-only
    +--> Dashboard read-only
@@ -66,6 +67,8 @@ orchestration/cycle_runner.py CycleRunner.run()
 ```
 
 El bootstrap vive en `trading/bot.py`; la orquestacion principal del ciclo vive en `trading/orchestration/cycle_runner.py`. Las decisiones de mercado viven en `market.py`, la ejecucion Long en `longs.py`, la ejecucion Short en `shorts.py`, los guardrails en `capital_manager.py`, el lifecycle de cierres/parciales en `trading/orchestration/position_lifecycle.py`, la auditoria Spot en `trading/orchestration/audit_pipeline.py` y la observabilidad persistente en `trading/orchestration/persistence_pipeline.py`/`analytics.py`/`decision_timeline.py`/`bot_state.py`.
+
+`trading/version_history.py` es una capa read-only de metadata historica y runtime. Permite clasificar registros por version/capacidades/bugs conocidos y agrega `bot_version`, `strategy_version` y `data_schema_version` a nuevos registros al momento de persistir. `trading/repair_data_quality.py` es un scaffold dry-run para futuras reparaciones auditables; actualmente no escribe ni repara datos y solo previsualiza planes como `version-backfill`.
 
 ## Flujo de Apertura
 

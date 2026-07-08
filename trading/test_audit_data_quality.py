@@ -76,6 +76,69 @@ class AuditDataQualityTests(unittest.TestCase):
         self.assertTrue(any('linea corrupta' in item for item in report.errors))
         self.assertEqual(1, 1 if report.errors else 0)
 
+    def test_audit_groups_records_by_explicit_bot_version(self):
+        self.valid_bot_state()
+        self.write_jsonl('trading/decision_snapshots.jsonl', [
+            {
+                'timestamp': '2026-07-08T12:00:00Z',
+                'market_regime': 'neutral',
+                'bot_version': 'v1.1-observability-hardening',
+            }
+        ])
+        self.write_jsonl('trading/trade_analytics.jsonl', [
+            {
+                'trade_id': 't1',
+                'symbol': 'ETHUSDT',
+                'side': 'LONG',
+                'status': 'OPEN',
+                'entry_time': '2026-07-08T12:00:00Z',
+                'entry_price': 100,
+                'bot_version': 'v1.1-observability-hardening',
+            }
+        ])
+
+        report = audit_data_quality.audit_project(self.project)
+        text = audit_data_quality.format_report(report)
+
+        self.assertIn('DATA QUALITY BY BOT VERSION', text)
+        self.assertIn('v1.1-observability-hardening:', text)
+        self.assertGreaterEqual(report.version_summary['v1.1-observability-hardening']['records'], 2)
+
+    def test_audit_keeps_unknown_for_unclassifiable_records(self):
+        self.valid_bot_state()
+        self.write_jsonl('trading/decision_snapshots.jsonl', [{'market_regime': 'neutral'}])
+        self.write_jsonl('trading/trade_analytics.jsonl', [])
+
+        report = audit_data_quality.audit_project(self.project)
+        text = audit_data_quality.format_report(report)
+
+        self.assertIn('unknown:', text)
+        self.assertIn('optional auditable backfill', text)
+
+    def test_version_grouping_does_not_hide_critical_errors(self):
+        self.valid_bot_state()
+        self.write_jsonl('trading/decision_snapshots.jsonl', [
+            {'timestamp': '2026-07-08T12:00:00Z', 'market_regime': 'neutral'}
+        ])
+        self.write_jsonl('trading/trade_analytics.jsonl', [
+            {
+                'event_type': 'TRADE_CLOSE',
+                'trade_id': 'bad_close',
+                'symbol': 'ETHUSDT',
+                'side': 'LONG',
+                'status': 'CLOSED',
+                'exit_time': '2026-07-08T12:00:00Z',
+                'exit_price': 100,
+                'pnl_usdt': 1,
+                'bot_version': 'v1.1-observability-hardening',
+            }
+        ])
+
+        report = audit_data_quality.audit_project(self.project)
+
+        self.assertTrue(any('cierre total sin apertura previa' in item for item in report.errors))
+        self.assertEqual(1, report.version_summary['v1.1-observability-hardening']['critical_errors'])
+
     def test_timestamp_future_and_out_of_order(self):
         self.valid_bot_state()
         future = (datetime.now(timezone.utc) + timedelta(days=1)).replace(microsecond=0).isoformat().replace('+00:00', 'Z')

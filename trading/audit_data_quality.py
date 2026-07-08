@@ -8,6 +8,8 @@ import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
+import version_history
+
 
 TRADING_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(TRADING_DIR)
@@ -40,12 +42,31 @@ class AuditReport:
         self.critical_examples = []
         self.possible_false_positives = []
         self.incomplete_examples = defaultdict(list)
+        self.version_summary = defaultdict(lambda: {'records': 0, 'critical_errors': 0, 'warnings': 0})
 
     def error(self, path, message):
         self.errors.append(f'{_display_path(path)}: {message}')
 
     def warning(self, path, message):
         self.warnings.append(f'{_display_path(path)}: {message}')
+
+    def record_version(self, record):
+        classified = version_history.classify_record(record)
+        version = classified.get('version') or 'unknown'
+        self.version_summary[version]['records'] += 1
+        if version == 'unknown':
+            self.recommendations.add('Versioning: registros sin bot_version ni timestamp clasificable requieren backfill auditable opcional.')
+        return version
+
+    def record_error(self, path, message, record):
+        self.error(path, message)
+        version = record.get('_audit_version') if isinstance(record, dict) else None
+        self.version_summary[version or 'unknown']['critical_errors'] += 1
+
+    def record_warning(self, path, message, record):
+        self.warning(path, message)
+        version = record.get('_audit_version') if isinstance(record, dict) else None
+        self.version_summary[version or 'unknown']['warnings'] += 1
 
     def missing(self, path, field):
         self.missing_fields[_display_path(path)][field] += 1
@@ -266,6 +287,7 @@ def _read_json(path, report, required=False):
             report.error(path, 'JSON no es objeto dict')
             return None
         report.records_checked += 1
+        data['_audit_version'] = report.record_version(data)
         return data
     except json.JSONDecodeError as exc:
         report.error(path, f'JSON corrupto: {exc}')
@@ -302,6 +324,7 @@ def _read_jsonl(path, report, required=False):
                     report.error(path, f'linea #{lineno} no es objeto dict')
                     continue
                 record['_audit_line'] = lineno
+                record['_audit_version'] = report.record_version(record)
                 previous_dt = _validate_timestamp(report, path, record, previous_dt=previous_dt, require=False) or previous_dt
                 records.append(record)
                 report.records_checked += 1
@@ -352,15 +375,15 @@ def _audit_trade_records(path, records, report):
                 base_id = _base_trade_id(trade_id)
                 if _is_partial_trade_id(trade_id) and base_id in base_ids:
                     message = f'cierre parcial sin apertura exacta pero base relacionado existe trade_id={trade_id} base={base_id}'
-                    report.warning(path, message)
+                    report.record_warning(path, message, record)
                     report.false_positive(path, message, record)
                 elif _looks_recovered_or_imported(record):
                     message = f'cierre recuperado/importado sin apertura previa trade_id={trade_id}'
-                    report.warning(path, message)
+                    report.record_warning(path, message, record)
                     report.false_positive(path, message, record)
                 else:
                     message = f'cierre total sin apertura previa trade_id={trade_id}'
-                    report.error(path, message)
+                    report.record_error(path, message, record)
                     report.critical_example(path, message, record)
                     report.recommendations.add(
                         'Trades: cierres totales sin apertura previa requieren revision manual o migracion auditada con backup.'
@@ -672,6 +695,17 @@ def format_report(report):
     lines.extend([f'- {item}' for item in report.warnings[:50]] or ['- ninguno'])
     if len(report.warnings) > 50:
         lines.append(f'- ... {len(report.warnings) - 50} warnings adicionales')
+    lines.extend(['', 'DATA QUALITY BY BOT VERSION'])
+    if report.version_summary:
+        for version, summary in sorted(report.version_summary.items()):
+            lines.append(f'{version}:')
+            lines.append(f'- records: {summary.get("records", 0)}')
+            lines.append(f'- critical_errors: {summary.get("critical_errors", 0)}')
+            lines.append(f'- warnings: {summary.get("warnings", 0)}')
+            if version == 'unknown':
+                lines.append('- recommendation: optional auditable backfill')
+    else:
+        lines.append('- sin registros con version clasificable')
     lines.extend(['', 'Recomendaciones:'])
     lines.extend([f'- {item}' for item in sorted(report.recommendations)] or ['- ninguna'])
     return '\n'.join(lines)

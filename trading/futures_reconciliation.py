@@ -7,6 +7,7 @@ import os
 import time
 from datetime import datetime, timezone
 
+import version_history
 
 TRADING_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(TRADING_DIR)
@@ -52,6 +53,7 @@ def _read_json(path, default=None):
 
 def _write_json(path, payload):
     try:
+        version_history.attach_version_metadata(payload)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = f'{path}.tmp'
         with open(tmp, 'w', encoding='utf-8') as f:
@@ -354,6 +356,7 @@ def persist_reconciliation(positions, status_file=DEFAULT_STATUS_FILE, alert_fn=
         'summary': _summary(positions, allowed_count=allowed_count, position_margin_total=position_margin_total),
         'positions': positions,
     }
+    version_history.attach_version_metadata(payload)
     summary = payload['summary']
     log_reconciliation_summary(summary)
     _write_json(status_file, payload)

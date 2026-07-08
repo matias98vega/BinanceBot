@@ -6,6 +6,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 
+import version_history
 
 TRADING_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(TRADING_DIR)
@@ -121,6 +122,7 @@ def record_event(
             'details': _sanitize(details or {}),
             'related_trade_id': related_trade_id,
         }
+        version_history.attach_version_metadata(record)
         with open(path, 'a', encoding='utf-8') as f:
             f.write(json.dumps(record, ensure_ascii=False, separators=(',', ':')) + '\n')
         return record

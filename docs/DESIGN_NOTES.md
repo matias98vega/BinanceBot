@@ -30,6 +30,20 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Mejoras futuras:** mostrar freshness de `stats.json` en Home o Sistema si la edad del indice supera un umbral.
 
+## Versionado Historico y Reparacion Auditable
+
+**Problema:** algunos datos historicos fueron generados antes de fixes importantes de observabilidad, reconciliacion o contabilidad. Sin metadata de version es dificil decidir si un trade debe usarse, excluirse o marcarse como parcialmente confiable.
+
+**Alternativas consideradas:** reescribir los historicos, confiar solo en commits Git, o mantener un registro explicito de capacidades/bugs por rango.
+
+**Solucion actual:** `trading/version_history.py` define metadata read-only con rangos historicos, capacidades, bugs conocidos, limitaciones, fixes y politica de uso de datos. Tambien expone la metadata runtime (`bot_version`, `strategy_version`, `data_schema_version`) y `attach_version_metadata(...)` para enriquecer nuevos registros al persistirlos. `docs/VERSION_HISTORY.md` documenta la misma informacion para mantenimiento humano. `trading/repair_data_quality.py` existe solo como scaffold dry-run: genera un plan auditable desde `audit_data_quality.py`, soporta `--plan version-backfill`, rechaza `--write`/`--apply` y no modifica archivos historicos.
+
+**Ventajas:** permite clasificar registros viejos sin alterar el bot ni reescribir datos. Prepara un camino seguro para reparaciones futuras con backup, checksums y reporte.
+
+**Desventajas:** la version actual `v1.0-alpha` sigue siendo gruesa; todavia falta convertir cada fix relevante en release formal con fecha precisa.
+
+**Mejoras futuras:** versionar cada fix operativo/observabilidad como release interno mas granular y habilitar reparaciones una por una solo con dry-run aprobado, backup, checksums y reporte.
+
 ## Guardian Independiente
 
 **Problema:** el ciclo principal corre cada pocos minutos; un SL no deberia depender solo de ese intervalo.
