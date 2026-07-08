@@ -521,6 +521,109 @@ class ExitRecoveryProtectionTests(unittest.TestCase):
         self.assertEqual(second['alert_count'], first['alert_count'])
         self.assertEqual(second['first_seen'], first['first_seen'])
 
+    def test_unprotectable_residual_throttling_survives_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'residuals_status.json')
+            first, first_alert = residuals.classify_unprotectable_residual(
+                'NEARUSDT',
+                'NEAR',
+                2.595,
+                5.19,
+                5.0,
+                reason='oco_payload_below_min_notional',
+                rounded_qty=2.5,
+                payload_quantity=2.5,
+                min_leg_notional=4.99,
+                limiting_leg='SL',
+                path=path,
+            )
+            persisted = residuals.load_status(path)
+            self.assertEqual(1, persisted['residuals']['NEARUSDT']['alert_count'])
+
+            second, second_alert = residuals.classify_unprotectable_residual(
+                'NEARUSDT',
+                'NEAR',
+                2.595,
+                5.19,
+                5.0,
+                reason='oco_payload_below_min_notional',
+                rounded_qty=2.5,
+                payload_quantity=2.5,
+                min_leg_notional=4.99,
+                limiting_leg='SL',
+                path=path,
+            )
+
+        self.assertTrue(first_alert)
+        self.assertFalse(second_alert)
+        self.assertEqual(first['fingerprint'], second['fingerprint'])
+        self.assertEqual(1, second['alert_count'])
+        self.assertEqual(second['last_alert'], first['last_alert'])
+
+    def test_unprotectable_residual_alerts_again_when_fingerprint_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'residuals_status.json')
+            first, first_alert = residuals.classify_unprotectable_residual(
+                'NEARUSDT',
+                'NEAR',
+                2.595,
+                5.19,
+                5.0,
+                reason='oco_payload_below_min_notional',
+                rounded_qty=2.5,
+                payload_quantity=2.5,
+                min_leg_notional=4.99,
+                limiting_leg='SL',
+                path=path,
+            )
+            second, second_alert = residuals.classify_unprotectable_residual(
+                'NEARUSDT',
+                'NEAR',
+                2.595,
+                5.19,
+                5.0,
+                reason='oco_payload_below_min_notional',
+                rounded_qty=2.5,
+                payload_quantity=2.4,
+                min_leg_notional=4.79,
+                limiting_leg='SL',
+                path=path,
+            )
+
+        self.assertTrue(first_alert)
+        self.assertTrue(second_alert)
+        self.assertNotEqual(first['fingerprint'], second['fingerprint'])
+        self.assertEqual(2, second['alert_count'])
+
+    def test_unprotectable_residual_duplicate_paths_do_not_alert_twice(self):
+        filters = {'tick_size': 0.001, 'step_size': 0.1, 'min_notional': 5.0}
+        payload = {
+            'symbol': 'NEARUSDT',
+            'side': 'SELL',
+            'quantity': '2.5',
+            'price': '2.3',
+            'stopPrice': '1.998',
+            'stopLimitPrice': '1.996',
+            'stopLimitTimeInForce': 'GTC',
+        }
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(residuals, 'DEFAULT_STATUS_FILE', os.path.join(tmp, 'residuals_status.json')), \
+             patch('utils.send_alert') as send_alert, \
+             patch('decision_timeline.record_event'):
+            first = residuals.handle_unprotectable_spot_residual(
+                'NEARUSDT', 'NEAR', 2.595, 2.0, filters, oco_payload=payload
+            )
+            second = residuals.handle_unprotectable_spot_residual(
+                'NEARUSDT', 'NEAR', 2.595, 2.0, filters, oco_payload=payload
+            )
+            status = residuals.load_status(os.path.join(tmp, 'residuals_status.json'))
+
+        self.assertTrue(first)
+        self.assertTrue(second)
+        send_alert.assert_called_once()
+        self.assertEqual(1, status['residuals']['NEARUSDT']['alert_count'])
+        self.assertEqual('v1.1-observability-hardening', status['bot_version'])
+
     def test_long_recovery_without_oco_records_residual_before_post(self):
         client = Mock()
         client.get_spot_price.return_value = 100.0

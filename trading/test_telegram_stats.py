@@ -430,6 +430,38 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertNotIn('- Sin proteccion:', home)
         self.assertNotIn('- Estado:', home)
 
+    def test_home_compacts_managed_futures_even_when_capital_not_aligned(self):
+        metrics = self._metrics(short_count=2)
+        metrics['max_shorts'] = 2
+        metrics['futures_used'] = 17.72
+        metrics['futures_real'] = 23.72
+        metrics['futures_reconciliation'] = {
+            'observed_count': 2,
+            'managed_count': 2,
+            'unmanaged_count': 0,
+            'orphan_count': 0,
+            'unprotected_count': 0,
+            'desynced_count': 0,
+            'allowed_count': 2,
+            'aligned': False,
+            'status': 'NO ALINEADO',
+        }
+
+        with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics), \
+             patch.object(telegram_commands, '_bot_state', return_value={'system': {'health': 'OK'}}), \
+             patch.object(telegram_commands, '_state', return_value={}), \
+             patch.object(telegram_commands, '_health_summary', return_value=('OK', [], [])), \
+             patch.object(telegram_commands, '_bot_status', return_value='ONLINE'), \
+             patch.object(telegram_commands, '_guardian_status', return_value='ONLINE'):
+            home = telegram_commands._render_page('home')['text']
+
+        self.assertIn('Shorts: 2/2', home)
+        self.assertIn('Futures: 17.72 USDT / 23.72 USDT', home)
+        self.assertNotIn('- Observadas:', home)
+        self.assertNotIn('- Gestionadas:', home)
+        self.assertNotIn('- Permitidas ahora:', home)
+        self.assertNotIn('Estado: NO ALINEADO', home)
+
     def test_system_shows_runtime_version_metadata(self):
         with patch.object(telegram_commands, '_bot_status', return_value='ONLINE'), \
              patch.object(telegram_commands, '_guardian_status', return_value='ONLINE'), \
@@ -723,6 +755,32 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertNotIn('Shorts observadas:', text)
         self.assertNotIn('Permitidas ahora:', text)
         self.assertNotIn('Sin proteccion:', text)
+
+    def test_capital_compacts_managed_futures_without_position_risk(self):
+        metrics = self._metrics(short_count=2)
+        metrics.update({
+            'max_shorts': 2,
+            'futures_used': 17.72,
+            'futures_real': 23.72,
+            'futures_reconciliation': {
+                'observed_count': 2,
+                'managed_count': 2,
+                'unmanaged_count': 0,
+                'orphan_count': 0,
+                'unprotected_count': 0,
+                'desynced_count': 0,
+                'allowed_count': 2,
+                'aligned': False,
+                'status': 'NO ALINEADO',
+            },
+        })
+        with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics), \
+             patch.object(telegram_commands, '_bot_state', return_value={}):
+            text = telegram_commands._render_page('capital')['text']
+
+        self.assertIn('Shorts: 2/2', text)
+        self.assertNotIn('- Observadas:', text)
+        self.assertNotIn('Estado: NO ALINEADO', text)
 
     def test_capital_falls_back_to_live_short_count_when_summary_is_empty(self):
         metrics = self._metrics(short_count=5)

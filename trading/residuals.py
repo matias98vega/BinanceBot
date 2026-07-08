@@ -11,7 +11,7 @@ import version_history
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_STATUS_FILE = os.path.join(BASE_DIR, 'data', 'history', 'residuals_status.json')
-ALERT_THROTTLE_SECONDS = 6 * 3600
+ALERT_THROTTLE_SECONDS = 12 * 3600
 
 
 def _now_iso():
@@ -25,6 +25,33 @@ def _safe_float(value, default=None):
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _fingerprint_value(value, digits=8):
+    number = _safe_float(value)
+    if number is None:
+        return None
+    return round(number, digits)
+
+
+def _residual_fingerprint(symbol, reason, quantity=None, rounded_qty=None, payload_quantity=None,
+                          min_notional=None, min_leg_notional=None, limiting_leg=None):
+    return {
+        'symbol': str(symbol or '').upper(),
+        'reason': reason,
+        'quantity': _fingerprint_value(quantity),
+        'rounded_qty': _fingerprint_value(rounded_qty),
+        'payload_quantity': _fingerprint_value(payload_quantity),
+        'min_notional': _fingerprint_value(min_notional),
+        'min_leg_notional': _fingerprint_value(min_leg_notional),
+        'limiting_leg': limiting_leg,
+    }
+
+
+def _fingerprint_changed(previous, current):
+    if not isinstance(previous, dict):
+        return True
+    return previous != current
 
 
 def _status_path(path=None):
@@ -84,7 +111,22 @@ def classify_unprotectable_residual(symbol, asset, quantity, estimated_value, mi
     now = _now_iso()
     last_alert = previous.get('last_alert')
     last_alert_ts = _parse_ts(last_alert)
-    should_alert = last_alert_ts is None or time.time() - last_alert_ts >= ALERT_THROTTLE_SECONDS
+    fingerprint = _residual_fingerprint(
+        symbol,
+        reason,
+        quantity=quantity,
+        rounded_qty=rounded_qty,
+        payload_quantity=payload_quantity,
+        min_notional=min_notional,
+        min_leg_notional=min_leg_notional,
+        limiting_leg=limiting_leg,
+    )
+    fingerprint_changed = _fingerprint_changed(previous.get('fingerprint'), fingerprint)
+    should_alert = (
+        fingerprint_changed
+        or last_alert_ts is None
+        or time.time() - last_alert_ts >= ALERT_THROTTLE_SECONDS
+    )
     alert_count = int(previous.get('alert_count') or 0)
     if should_alert:
         alert_count += 1
@@ -102,6 +144,8 @@ def classify_unprotectable_residual(symbol, asset, quantity, estimated_value, mi
         'last_seen': now,
         'last_alert': now if should_alert else previous.get('last_alert'),
         'alert_count': alert_count,
+        'fingerprint': fingerprint,
+        'fingerprint_changed': fingerprint_changed,
         'suggested_action': 'vender manualmente o acumular mas saldo antes de proteger',
         'rounded_qty': _safe_float(rounded_qty),
         'rounded_price': _safe_float(rounded_price),

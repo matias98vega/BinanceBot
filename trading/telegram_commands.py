@@ -311,15 +311,12 @@ def _futures_reconciliation_has_risk(metrics, reconciliation):
             allowed_i = int(allowed)
     except (TypeError, ValueError):
         allowed_i = None
-    status = str(reconciliation.get('status') or '').upper()
     return (
         (allowed_i is not None and observed > allowed_i)
         or _to_int(reconciliation.get('unmanaged_count')) > 0
         or _to_int(reconciliation.get('orphan_count')) > 0
         or _to_int(reconciliation.get('unprotected_count')) > 0
         or _to_int(reconciliation.get('desynced_count')) > 0
-        or reconciliation.get('aligned') is False
-        or (status not in ('', 'ALINEADO'))
     )
 
 
@@ -1462,7 +1459,10 @@ class CapitalPage(MenuPage):
                     f'- Estado: {status}',
                 ])
             else:
-                lines.append(f'Shorts: {metrics.get("short_count")}/{metrics.get("max_shorts")} | Estado: {status}')
+                compact_line = f'Shorts: {metrics.get("short_count")}/{metrics.get("max_shorts")}'
+                if status == 'ALINEADO':
+                    compact_line += f' | Estado: {status}'
+                lines.append(compact_line)
             if _futures_reconciliation_has_risk(metrics, reconciliation) and observed_display and (metrics.get('futures_available_balance') == 0 or metrics.get('futures_position_margin')):
                 lines.extend([
                     'Bloqueo:',
