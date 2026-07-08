@@ -27,6 +27,13 @@ def audit_orphans(state, binance, out_fn, safe_log_open_fn):
             pass
 
         acc = binance.get_spot_account()
+        try:
+            residuals.reconcile_status_file_with_spot_balances(
+                balances=acc.get('balances', []),
+                state=state,
+            )
+        except Exception as exc:
+            logging.warning('SPOT RESIDUAL stale reconcile failed: %s', exc)
         for b in acc.get('balances', []):
             asset = b['asset']
             free = float(b['free'])

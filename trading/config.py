@@ -99,6 +99,8 @@ NATIVE_SL_ENABLED    = True   # True = STOP_MARKET nativo; False = solo guardian
 FUTURES_RESIDUAL_CLOSE_ENABLED = _env_bool('FUTURES_RESIDUAL_CLOSE_ENABLED', True)
 FUTURES_RESIDUAL_MAX_NOTIONAL_USDT = float(os.environ.get('FUTURES_RESIDUAL_MAX_NOTIONAL_USDT', '3.0') or 3.0)
 FUTURES_UNPROTECTED_BLOCK_NEW_ENTRIES = _env_bool('FUTURES_UNPROTECTED_BLOCK_NEW_ENTRIES', True)
+SPOT_RESIDUAL_STALE_QTY_RATIO = float(os.environ.get('SPOT_RESIDUAL_STALE_QTY_RATIO', '0.5') or 0.5)
+SPOT_RESIDUAL_STALE_MIN_AGE_SECONDS = int(os.environ.get('SPOT_RESIDUAL_STALE_MIN_AGE_SECONDS', '3600') or 3600)
 
 # ── Filtro de recuperación desde mínimo (anti-short en rebote) ───────────────
 RECOVERY_FROM_LOW_PCT     = 3.0  # si precio rebotó >3% desde mínimo 24h → penalizar short

@@ -7,6 +7,7 @@ import os
 import time
 from datetime import datetime, timezone
 
+import config
 import version_history
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -25,6 +26,45 @@ def _safe_float(value, default=None):
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _safe_now_ts(now=None):
+    if now is None:
+        return time.time()
+    if isinstance(now, (int, float)):
+        return float(now)
+    parsed = _parse_ts(now)
+    return parsed if parsed is not None else time.time()
+
+
+def _asset_from_symbol(symbol):
+    text = str(symbol or '').upper()
+    return text[:-4] if text.endswith('USDT') else text
+
+
+def _balances_by_asset(balances):
+    if isinstance(balances, dict) and isinstance(balances.get('balances'), list):
+        balances = balances.get('balances')
+    result = {}
+    for row in balances or []:
+        if not isinstance(row, dict):
+            continue
+        asset = str(row.get('asset') or '').upper()
+        if not asset:
+            continue
+        free = _safe_float(row.get('free'), 0.0) or 0.0
+        locked = _safe_float(row.get('locked'), 0.0) or 0.0
+        result[asset] = {'free': free, 'locked': locked, 'total': free + locked}
+    return result
+
+
+def _active_long_symbols(state):
+    positions = state.get('positions') if isinstance(state, dict) and isinstance(state.get('positions'), list) else []
+    return {
+        str(pos.get('symbol') or '').upper()
+        for pos in positions
+        if isinstance(pos, dict) and str(pos.get('direction') or '').lower() == 'long'
+    }
 
 
 def _fingerprint_value(value, digits=8):
@@ -71,6 +111,19 @@ def _load(path=None):
         return {}
 
 
+def _load_strict(path=None):
+    path = _status_path(path)
+    try:
+        with open(path, encoding='utf-8') as f:
+            data = json.load(f)
+        return (data if isinstance(data, dict) else {}, None)
+    except FileNotFoundError:
+        return {}, None
+    except Exception as exc:
+        logging.warning('residual status read failed path=%s error=%s', path, exc)
+        return None, exc
+
+
 def _save(data, path=None):
     path = _status_path(path)
     try:
@@ -87,6 +140,120 @@ def _save(data, path=None):
 
 def load_status(path=None):
     return _load(path)
+
+
+def reconcile_spot_residual_status_with_balances(
+    status,
+    balances,
+    state=None,
+    now=None,
+    qty_ratio=None,
+    min_age_seconds=None,
+):
+    """Return a status copy with stale Spot residuals removed using injected balances/state."""
+    data = dict(status) if isinstance(status, dict) else {}
+    residuals = data.get('residuals') if isinstance(data.get('residuals'), dict) else {}
+    if not residuals:
+        data['residuals'] = {}
+        return data, []
+
+    ratio = float(qty_ratio if qty_ratio is not None else getattr(config, 'SPOT_RESIDUAL_STALE_QTY_RATIO', 0.5))
+    min_age = float(min_age_seconds if min_age_seconds is not None else getattr(config, 'SPOT_RESIDUAL_STALE_MIN_AGE_SECONDS', 3600))
+    now_ts = _safe_now_ts(now)
+    balance_map = _balances_by_asset(balances)
+    active_symbols = _active_long_symbols(state or {})
+    cleaned = {}
+    removed = []
+
+    for symbol, entry in residuals.items():
+        if not isinstance(entry, dict):
+            cleaned[symbol] = entry
+            continue
+        symbol = str(entry.get('symbol') or symbol or '').upper()
+        asset = str(entry.get('asset') or _asset_from_symbol(symbol)).upper()
+        quantity = _safe_float(entry.get('balance_quantity'), _safe_float(entry.get('quantity'), 0.0)) or 0.0
+        balance = balance_map.get(asset, {'free': 0.0, 'locked': 0.0, 'total': 0.0})
+        actual_total = balance.get('total', 0.0)
+        locked = balance.get('locked', 0.0)
+        last_seen_ts = _parse_ts(entry.get('last_seen')) or _parse_ts(entry.get('updated_at'))
+        age = None if last_seen_ts is None else max(0.0, now_ts - last_seen_ts)
+        is_recent = age is not None and age < min_age
+        has_active_position = symbol in active_symbols
+
+        clear = False
+        reason = None
+        if locked > 0:
+            clear = False
+        elif has_active_position and actual_total > 0:
+            clear = False
+        elif not is_recent and quantity > 0 and actual_total < quantity * ratio:
+            clear = True
+            reason = 'actual_balance_below_residual_quantity'
+        elif has_active_position and actual_total <= 0 and locked <= 0:
+            clear = True
+            reason = 'active_position_without_spot_balance'
+
+        if clear:
+            removed.append({
+                'symbol': symbol,
+                'asset': asset,
+                'residual_quantity': quantity,
+                'actual_balance': actual_total,
+                'free': balance.get('free', 0.0),
+                'locked': locked,
+                'reason': reason,
+                'last_seen': entry.get('last_seen'),
+                'age_seconds': age,
+            })
+            continue
+        cleaned[symbol] = entry
+
+    data['residuals'] = cleaned
+    if removed:
+        data['updated_at'] = _now_iso()
+    return data, removed
+
+
+def reconcile_status_file_with_spot_balances(path=None, balances=None, state=None, now=None,
+                                             qty_ratio=None, min_age_seconds=None):
+    """Safely reconcile residuals_status.json. Corrupt JSON is never overwritten."""
+    resolved_path = _status_path(path)
+    data, error = _load_strict(resolved_path)
+    if error is not None:
+        return {'ok': False, 'removed': [], 'error': str(error), 'path': resolved_path}
+    updated, removed = reconcile_spot_residual_status_with_balances(
+        data,
+        balances or [],
+        state=state,
+        now=now,
+        qty_ratio=qty_ratio,
+        min_age_seconds=min_age_seconds,
+    )
+    if removed:
+        _save(updated, resolved_path)
+        for item in removed:
+            logging.warning(
+                'SPOT RESIDUAL STALE CLEARED symbol=%s asset=%s residual_quantity=%s actual_balance=%s reason=%s',
+                item.get('symbol'),
+                item.get('asset'),
+                item.get('residual_quantity'),
+                item.get('actual_balance'),
+                item.get('reason'),
+            )
+            try:
+                import decision_timeline
+                decision_timeline.record_event(
+                    event='spot_residual_stale_cleared',
+                    message=f'{item.get("symbol")} residual stale eliminado',
+                    level='INFO',
+                    category='RISK',
+                    symbol=item.get('symbol'),
+                    direction='LONG',
+                    details=item,
+                )
+            except Exception:
+                pass
+    return {'ok': True, 'removed': removed, 'status': updated, 'path': resolved_path}
 
 
 def classify_unprotectable_residual(symbol, asset, quantity, estimated_value, min_notional,
