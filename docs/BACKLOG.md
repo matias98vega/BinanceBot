@@ -16,7 +16,8 @@ Este backlog agrupa trabajo pendiente. No implica autorizacion para modificar es
 | Item | Prioridad | Complejidad | Impacto esperado |
 |---|---|---:|---|
 | Formalizar releases historicos por fix con rangos temporales precisos | Alta | Media | Permitir excluir o marcar datos segun capacidades/bugs de cada version |
-| Implementar reparaciones auditables en `repair_data_quality.py` con backup/checksum | Alta | Alta | Sanear deuda historica sin perder trazabilidad |
+| Implementar modo write auditable en `repair_data_quality.py` con backup/checksum | Alta | Alta | Sanear deuda historica sin perder trazabilidad |
+| Revisar plan dry-run `trade-gap` para `short_WLDUSDT_1782763085` en VPS antes de cualquier reparacion | Alta | Media | Resolver deuda historica sin fabricar eventos de apertura |
 | Ampliar cobertura de Decision Timeline | Media | Media | Registrar filtros finos y motivos adicionales sin depender de journalctl |
 | Implementar FakeBinanceClient | Alta | Media | Tests mas confiables sin patching disperso |
 | Implementar ReplayBinanceClient | Media | Alta | Reproducir sesiones historicas sin tocar Binance |

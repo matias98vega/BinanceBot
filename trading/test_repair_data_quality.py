@@ -92,6 +92,94 @@ class RepairDataQualityTests(unittest.TestCase):
         self.assertEqual(1, payload['records_unclassifiable'])
         self.assertFalse(payload['write_performed'])
 
+    def test_trade_gap_plan_flags_total_close_for_manual_review(self):
+        trades = os.path.join(self.project, 'data', 'history', 'trades.jsonl')
+        with open(trades, 'w', encoding='utf-8') as f:
+            f.write(json.dumps({
+                'event_type': 'TRADE_CLOSE',
+                'trade_id': 'short_WLDUSDT_1782763085',
+                'symbol': 'WLDUSDT',
+                'side': 'SHORT',
+                'status': 'CLOSED',
+                'closed_at': '2026-07-01T12:00:00Z',
+                'exit_price': 1.1,
+                'pnl_usdt': 0.5,
+            }) + '\n')
+
+        plan = repair_data_quality.build_trade_gap_plan(self.project, 'short_WLDUSDT_1782763085')
+
+        self.assertEqual('trade-gap', plan['plan'])
+        self.assertEqual('requires_manual_review', plan['classification'])
+        self.assertEqual(0, plan['summary']['exact_open_records'])
+        self.assertEqual(1, plan['summary']['exact_close_records'])
+        self.assertFalse(plan['write_performed'])
+        self.assertTrue(any(item['fields'].get('trade_id') == 'short_WLDUSDT_1782763085' for item in plan['evidence']))
+
+    def test_trade_gap_plan_detects_related_open_candidate(self):
+        trades = os.path.join(self.project, 'data', 'history', 'trades.jsonl')
+        with open(trades, 'w', encoding='utf-8') as f:
+            f.write(json.dumps({
+                'event_type': 'TRADE_OPEN',
+                'trade_id': 'short_WLDUSDT_recovered_1782763000',
+                'symbol': 'WLDUSDT',
+                'side': 'SHORT',
+                'status': 'OPEN',
+                'opened_at': '2026-07-01T11:55:00Z',
+                'entry_price': 1.2,
+            }) + '\n')
+            f.write(json.dumps({
+                'event_type': 'TRADE_CLOSE',
+                'trade_id': 'short_WLDUSDT_1782763085',
+                'symbol': 'WLDUSDT',
+                'side': 'SHORT',
+                'status': 'CLOSED',
+                'closed_at': '2026-07-01T12:00:00Z',
+                'exit_price': 1.1,
+                'pnl_usdt': 0.5,
+            }) + '\n')
+
+        plan = repair_data_quality.build_trade_gap_plan(self.project, 'short_WLDUSDT_1782763085')
+
+        self.assertEqual('related_open_requires_manual_mapping', plan['classification'])
+        self.assertEqual(1, plan['summary']['related_open_records'])
+        self.assertTrue(any(action['action'] == 'manual_link_to_related_open_candidate' for action in plan['proposed_actions']))
+        self.assertFalse(any(action['write_allowed'] for action in plan['proposed_actions']))
+
+    def test_trade_gap_plan_not_found_is_diagnostic_only(self):
+        plan = repair_data_quality.build_trade_gap_plan(self.project, 'short_WLDUSDT_1782763085')
+
+        self.assertEqual('not_found', plan['classification'])
+        self.assertEqual('WLDUSDT', plan['symbol'])
+        self.assertEqual([], plan['evidence'])
+        self.assertFalse(plan['write_performed'])
+
+    def test_trade_gap_cli_outputs_preview_for_trade_id(self):
+        trades = os.path.join(self.project, 'data', 'history', 'trades.jsonl')
+        with open(trades, 'w', encoding='utf-8') as f:
+            f.write(json.dumps({
+                'event_type': 'TRADE_CLOSE',
+                'trade_id': 'short_WLDUSDT_1782763085',
+                'symbol': 'WLDUSDT',
+                'side': 'SHORT',
+                'status': 'CLOSED',
+                'closed_at': '2026-07-01T12:00:00Z',
+                'exit_price': 1.1,
+                'pnl_usdt': 0.5,
+            }) + '\n')
+
+        with patch('builtins.print') as mocked_print:
+            code = repair_data_quality.main([
+                '--project-dir', self.project,
+                '--plan', 'trade-gap',
+                '--trade-id', 'short_WLDUSDT_1782763085',
+            ])
+
+        self.assertEqual(0, code)
+        payload = json.loads(mocked_print.call_args.args[0])
+        self.assertEqual('trade-gap', payload['plan'])
+        self.assertEqual('requires_manual_review', payload['classification'])
+        self.assertFalse(payload['write_performed'])
+
 
 if __name__ == '__main__':
     unittest.main()
