@@ -370,6 +370,93 @@ class RepairDataQualityTests(unittest.TestCase):
         self.assertEqual('already_repaired', plan['classification'])
         self.assertFalse(plan['can_apply'])
 
+    def test_data_hygiene_backfill_proposes_market_regime_from_regime(self):
+        self.write_jsonl('trading/trade_analytics.jsonl', [
+            {
+                'timestamp': '2026-07-08T01:00:00Z',
+                'trade_id': 't1',
+                'symbol': 'ETHUSDT',
+                'regime': 'bear',
+                'capital': {'position_final': 10},
+            }
+        ])
+
+        plan = repair_data_quality.build_data_hygiene_backfill_plan(self.project)
+
+        self.assertEqual('data-hygiene-backfill', plan['plan'])
+        self.assertTrue(any(
+            item['field'] == 'market.regime' and item['source_field'] == 'regime' and item['value'] == 'bear'
+            for item in plan['proposed_changes']
+        ))
+        self.assertFalse(plan['write_performed'])
+
+    def test_data_hygiene_backfill_proposes_market_regime_from_market_regime(self):
+        self.write_jsonl('trading/trade_analytics.jsonl', [
+            {
+                'timestamp': '2026-07-08T01:00:00Z',
+                'trade_id': 't1',
+                'symbol': 'ETHUSDT',
+                'market_regime': 'bull',
+                'capital': {'position_final': 10},
+            }
+        ])
+
+        plan = repair_data_quality.build_data_hygiene_backfill_plan(self.project)
+
+        self.assertTrue(any(
+            item['field'] == 'market.regime' and item['source_field'] == 'market_regime' and item['value'] == 'bull'
+            for item in plan['proposed_changes']
+        ))
+
+    def test_data_hygiene_backfill_does_not_invent_position_final(self):
+        self.write_jsonl('trading/trade_analytics.jsonl', [
+            {
+                'timestamp': '2026-07-08T01:00:00Z',
+                'trade_id': 't1',
+                'symbol': 'ETHUSDT',
+                'market': {'regime': 'bear'},
+                'capital': {'spot': 10},
+            }
+        ])
+
+        plan = repair_data_quality.build_data_hygiene_backfill_plan(self.project)
+
+        self.assertFalse(any(item['field'] == 'capital.position_final' for item in plan['proposed_changes']))
+        self.assertTrue(any(item['field'] == 'capital.position_final' for item in plan['optional_unresolved']))
+
+    def test_data_hygiene_backfill_proposes_inferable_bot_version(self):
+        self.write_jsonl('trading/trade_analytics.jsonl', [
+            {
+                'timestamp': '2026-07-08T01:00:00Z',
+                'trade_id': 't1',
+                'symbol': 'ETHUSDT',
+                'market': {'regime': 'bear'},
+                'capital': {'position_final': 10},
+            }
+        ])
+
+        plan = repair_data_quality.build_data_hygiene_backfill_plan(self.project)
+
+        self.assertTrue(any(
+            item['field'] == 'bot_version' and item['value'] == 'v1.1-observability-hardening'
+            for item in plan['proposed_changes']
+        ))
+
+    def test_data_hygiene_backfill_keeps_uninferable_bot_version_unresolved(self):
+        self.write_jsonl('trading/trade_analytics.jsonl', [
+            {
+                'trade_id': 't1',
+                'symbol': 'ETHUSDT',
+                'market': {'regime': 'bear'},
+                'capital': {'position_final': 10},
+            }
+        ])
+
+        plan = repair_data_quality.build_data_hygiene_backfill_plan(self.project)
+
+        self.assertFalse(any(item['field'] == 'bot_version' for item in plan['proposed_changes']))
+        self.assertTrue(any(item['field'] == 'bot_version' for item in plan['optional_unresolved']))
+
 
 if __name__ == '__main__':
     unittest.main()

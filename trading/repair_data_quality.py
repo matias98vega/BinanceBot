@@ -25,6 +25,7 @@ REPAIRABLE_ISSUES = {
     'legacy_regime_field': 'Potentially normalize legacy regime aliases into canonical regime',
     'trade_close_without_open': 'Investigate total trade close records without a matching open record',
     'trade_open_backfill': 'Backfill a missing history TRADE_OPEN from an exact trade_analytics OPEN',
+    'data_hygiene_backfill': 'Dry-run suggestions for simple missing metadata fields',
 }
 VERSION_BACKFILL_FILES = (
     ('jsonl', 'trading/trade_analytics.jsonl'),
@@ -180,6 +181,24 @@ def _to_float(value):
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _get_nested(record, dotted):
+    current = record
+    for part in dotted.split('.'):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
+def _first_scalar_source(record, fields):
+    for field in fields:
+        value = record.get(field)
+        if value in (None, '') or isinstance(value, (dict, list, tuple, set)):
+            continue
+        return field, value
+    return None, None
 
 
 def _record_matches_trade(record, trade_id, base_id, symbol):
@@ -664,11 +683,118 @@ def build_version_backfill_plan(project_dir=PROJECT_DIR):
     }
 
 
+def build_data_hygiene_backfill_plan(project_dir=PROJECT_DIR):
+    path = os.path.join(project_dir, 'trading', 'trade_analytics.jsonl')
+    files_reviewed = 1 if os.path.exists(path) else 0
+    records_reviewed = 0
+    proposed_changes = []
+    optional_unresolved = []
+
+    for line, record in _iter_jsonl(path) or []:
+        records_reviewed += 1
+        trade_id = record.get('trade_id')
+        symbol = record.get('symbol')
+        market = record.get('market') if isinstance(record.get('market'), dict) else {}
+        capital = record.get('capital') if isinstance(record.get('capital'), dict) else {}
+
+        if _get_nested(record, 'market.regime') in (None, ''):
+            source_value = record.get('regime')
+            source_field = 'regime'
+            if source_value in (None, ''):
+                source_value = record.get('market_regime')
+                source_field = 'market_regime'
+            if source_value not in (None, ''):
+                proposed_changes.append({
+                    'path': 'trading/trade_analytics.jsonl',
+                    'line': line,
+                    'trade_id': trade_id,
+                    'symbol': symbol,
+                    'field': 'market.regime',
+                    'source_field': source_field,
+                    'value': source_value,
+                    'confidence': 'high',
+                    'write_allowed': False,
+                })
+
+        if capital.get('position_final') in (None, ''):
+            source_field, source_value = _first_scalar_source(
+                record,
+                ('position_final', 'capital_used', 'notional'),
+            )
+            if source_value not in (None, ''):
+                proposed_changes.append({
+                    'path': 'trading/trade_analytics.jsonl',
+                    'line': line,
+                    'trade_id': trade_id,
+                    'symbol': symbol,
+                    'field': 'capital.position_final',
+                    'source_field': source_field,
+                    'value': source_value,
+                    'confidence': 'medium',
+                    'write_allowed': False,
+                })
+            else:
+                optional_unresolved.append({
+                    'path': 'trading/trade_analytics.jsonl',
+                    'line': line,
+                    'trade_id': trade_id,
+                    'symbol': symbol,
+                    'field': 'capital.position_final',
+                    'reason': 'no_reliable_same_record_source',
+                })
+
+        if record.get('bot_version') in (None, '', version_history.UNKNOWN_VERSION):
+            classified = version_history.classify_record(record)
+            version = classified.get('version') or version_history.UNKNOWN_VERSION
+            if version != version_history.UNKNOWN_VERSION:
+                proposed_changes.append({
+                    'path': 'trading/trade_analytics.jsonl',
+                    'line': line,
+                    'trade_id': trade_id,
+                    'symbol': symbol,
+                    'field': 'bot_version',
+                    'source_field': 'timestamp',
+                    'value': version,
+                    'confidence': classified.get('confidence') or 'medium',
+                    'reason': classified.get('reason'),
+                    'write_allowed': False,
+                })
+            else:
+                optional_unresolved.append({
+                    'path': 'trading/trade_analytics.jsonl',
+                    'line': line,
+                    'trade_id': trade_id,
+                    'symbol': symbol,
+                    'field': 'bot_version',
+                    'reason': classified.get('reason') or 'no_matching_version_range',
+                })
+
+    return {
+        'schema_version': REPAIR_SCHEMA_VERSION,
+        'generated_at': _now_iso(),
+        'mode': 'dry_run',
+        'plan': 'data-hygiene-backfill',
+        'project_dir': os.path.abspath(project_dir),
+        'files_reviewed': files_reviewed,
+        'records_reviewed': records_reviewed,
+        'proposed_change_count': len(proposed_changes),
+        'unresolved_count': len(optional_unresolved),
+        'proposed_changes': proposed_changes,
+        'optional_unresolved': optional_unresolved,
+        'write_performed': False,
+        'notes': [
+            'No historical file was modified.',
+            'This plan only proposes fields that can be inferred from the same record or version metadata.',
+            'Apply mode is intentionally disabled for this plan.',
+        ],
+    }
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Build a dry-run data repair plan.')
     parser.add_argument('--project-dir', default=PROJECT_DIR)
     parser.add_argument('--dry-run', action='store_true', default=True)
-    parser.add_argument('--plan', choices=('summary', 'version-backfill', 'trade-gap', 'trade-open-backfill'), default='summary')
+    parser.add_argument('--plan', choices=('summary', 'version-backfill', 'trade-gap', 'trade-open-backfill', 'data-hygiene-backfill'), default='summary')
     parser.add_argument('--trade-id', default='short_WLDUSDT_1782763085')
     parser.add_argument('--confirm-trade-id', default=None)
     parser.add_argument('--write', action='store_true', help='Reserved for future use; currently rejected.')
@@ -690,6 +816,8 @@ def main(argv=None):
 
     if args.plan == 'version-backfill':
         plan = build_version_backfill_plan(args.project_dir)
+    elif args.plan == 'data-hygiene-backfill':
+        plan = build_data_hygiene_backfill_plan(args.project_dir)
     elif args.plan == 'trade-gap':
         plan = build_trade_gap_plan(args.project_dir, trade_id=args.trade_id)
     elif args.plan == 'trade-open-backfill':

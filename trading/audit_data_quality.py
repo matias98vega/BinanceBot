@@ -34,6 +34,10 @@ class AuditReport:
         self.records_checked = 0
         self.errors = []
         self.warnings = []
+        self.operational_warnings = []
+        self.legacy_warnings = []
+        self.accepted_warnings = []
+        self.optional_recommendations = set()
         self.missing_fields = defaultdict(Counter)
         self.complete_records = defaultdict(int)
         self.total_records = defaultdict(int)
@@ -48,7 +52,19 @@ class AuditReport:
         self.errors.append(f'{_display_path(path)}: {message}')
 
     def warning(self, path, message):
-        self.warnings.append(f'{_display_path(path)}: {message}')
+        item = f'{_display_path(path)}: {message}'
+        self.warnings.append(item)
+        self.operational_warnings.append(item)
+
+    def legacy_warning(self, path, message):
+        item = f'{_display_path(path)}: {message}'
+        self.warnings.append(item)
+        self.legacy_warnings.append(item)
+
+    def accepted_warning(self, path, message):
+        item = f'{_display_path(path)}: {message}'
+        self.warnings.append(item)
+        self.accepted_warnings.append(item)
 
     def record_version(self, record):
         classified = version_history.classify_record(record)
@@ -64,8 +80,13 @@ class AuditReport:
         self.version_summary[version or 'unknown']['critical_errors'] += 1
 
     def record_warning(self, path, message, record):
-        self.warning(path, message)
         version = record.get('_audit_version') if isinstance(record, dict) else None
+        if _is_accepted_warning_record(record):
+            self.accepted_warning(path, message)
+        elif _is_legacy_record(record):
+            self.legacy_warning(path, message)
+        else:
+            self.warning(path, message)
         self.version_summary[version or 'unknown']['warnings'] += 1
 
     def missing(self, path, field):
@@ -187,9 +208,9 @@ def _validate_timestamp(report, path, record, previous_dt=None, require=True):
     if dt > now:
         report.error(path, f'timestamp futuro: {value}')
     if previous_dt and dt < previous_dt:
-        report.warning(path, f'timestamp fuera de orden: {value}')
+        report.record_warning(path, f'timestamp fuera de orden: {value}', record)
     if previous_dt and (dt - previous_dt).total_seconds() > MAX_APPEND_GAP_SECONDS:
-        report.warning(path, f'gap grande entre registros: {round((dt - previous_dt).total_seconds() / 3600, 2)}h')
+        report.record_warning(path, f'gap grande entre registros: {round((dt - previous_dt).total_seconds() / 3600, 2)}h', record)
     return dt
 
 
@@ -237,6 +258,25 @@ def _base_trade_id(trade_id):
 def _looks_recovered_or_imported(record):
     text = ' '.join(str(record.get(key) or '') for key in ('exit_reason', 'source', 'description', 'event_type')).lower()
     return any(token in text for token in ('recovery', 'recovered', 'import', 'reconcile', 'manual'))
+
+
+def _is_legacy_record(record):
+    if not isinstance(record, dict):
+        return False
+    version = record.get('_audit_version') or record.get('bot_version')
+    if version in {'legacy-pre-history', 'v1.0-alpha'}:
+        return True
+    if _looks_recovered_or_imported(record):
+        return True
+    classified = version_history.classify_record(record)
+    return classified.get('version') in {'legacy-pre-history', 'v1.0-alpha'}
+
+
+def _is_accepted_warning_record(record):
+    if not isinstance(record, dict):
+        return False
+    text = ' '.join(str(record.get(key) or '') for key in ('source', 'description', 'reason', 'event_type')).lower()
+    return any(token in text for token in ('backfill', 'backfilled', 'imported', 'recovered'))
 
 
 def _is_recovery_feature_record(record):
@@ -443,7 +483,7 @@ def _audit_feature_records(path, records, report, trade_ids=None):
             }
             missing_optional = [field for field, value in optional_recovery_fields.items() if value in (None, '')]
             if missing_optional:
-                report.warning(path, f'recovery feature sin contexto normal de señal trade_id={required_checks.get("trade_id")} missing={missing_optional}')
+                report.record_warning(path, f'recovery feature sin contexto normal de señal trade_id={required_checks.get("trade_id")} missing={missing_optional}', record)
                 report.false_positive(
                     path,
                     f'recovery feature usa schema reducido trade_id={required_checks.get("trade_id")}',
@@ -451,7 +491,7 @@ def _audit_feature_records(path, records, report, trade_ids=None):
                 )
         for field, value in required_checks.items():
             if value in (None, ''):
-                report.warning(path, f'{field} faltante')
+                report.record_warning(path, f'{field} faltante', record)
                 report.missing(path, field)
                 missing_fields.append(field)
                 complete = False
@@ -459,10 +499,10 @@ def _audit_feature_records(path, records, report, trade_ids=None):
         if regime == 'unknown':
             unknown += 1
         if regime not in VALID_REGIMES:
-            report.warning(path, f'market.regime no canonico: {regime}')
+            report.record_warning(path, f'market.regime no canonico: {regime}', record)
         trade_id = required_checks['trade_id']
         if trade_id and trade_ids and trade_id not in trade_ids:
-            report.warning(path, f'feature sin trade relacionado trade_id={trade_id}')
+            report.record_warning(path, f'feature sin trade relacionado trade_id={trade_id}', record)
             missing_fields.append('trade_relation')
         if missing_fields and idx >= recent_start and not is_recovery:
             report.recommendations.add('Feature Store: registro reciente incompleto no-recovery indica posible bug actual de recoleccion.')
@@ -628,7 +668,11 @@ def format_report(report):
         f'Archivos revisados: {report.files_checked}',
         f'Registros revisados: {report.records_checked}',
         f'Errores criticos: {len(report.errors)}',
-        f'Warnings: {len(report.warnings)}',
+        f'Warnings operativos recientes: {len(report.operational_warnings)}',
+        f'Warnings legacy/historicos: {len(report.legacy_warnings)}',
+        f'Warnings conocidos aceptados: {len(report.accepted_warnings)}',
+        f'Warnings totales: {len(report.warnings)}',
+        f'Estado operativo: {"OK" if not report.errors and not report.operational_warnings else "REVISAR"}',
         '',
         'Campos faltantes:',
     ]
@@ -691,10 +735,18 @@ def format_report(report):
                 )
     lines.extend(['', 'Errores criticos:'])
     lines.extend([f'- {item}' for item in report.errors] or ['- ninguno'])
-    lines.extend(['', 'Warnings:'])
-    lines.extend([f'- {item}' for item in report.warnings[:50]] or ['- ninguno'])
-    if len(report.warnings) > 50:
-        lines.append(f'- ... {len(report.warnings) - 50} warnings adicionales')
+    lines.extend(['', 'Warnings operativos recientes:'])
+    lines.extend([f'- {item}' for item in report.operational_warnings[:50]] or ['- ninguno'])
+    if len(report.operational_warnings) > 50:
+        lines.append(f'- ... {len(report.operational_warnings) - 50} warnings operativos adicionales')
+    lines.extend(['', 'Warnings legacy/historicos:'])
+    lines.extend([f'- {item}' for item in report.legacy_warnings[:50]] or ['- ninguno'])
+    if len(report.legacy_warnings) > 50:
+        lines.append(f'- ... {len(report.legacy_warnings) - 50} warnings legacy adicionales')
+    lines.extend(['', 'Warnings conocidos aceptados:'])
+    lines.extend([f'- {item}' for item in report.accepted_warnings[:50]] or ['- ninguno'])
+    if len(report.accepted_warnings) > 50:
+        lines.append(f'- ... {len(report.accepted_warnings) - 50} warnings aceptados adicionales')
     lines.extend(['', 'DATA QUALITY BY BOT VERSION'])
     if report.version_summary:
         for version, summary in sorted(report.version_summary.items()):

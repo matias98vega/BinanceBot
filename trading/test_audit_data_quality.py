@@ -154,6 +154,140 @@ class AuditDataQualityTests(unittest.TestCase):
         self.assertTrue(any('timestamp futuro' in item for item in report.errors))
         self.assertTrue(any('timestamp fuera de orden' in item for item in report.warnings))
 
+    def test_v1_alpha_out_of_order_is_legacy_warning_not_operational(self):
+        self.valid_bot_state()
+        self.write_jsonl('decision_snapshots.jsonl', [])
+        self.write_jsonl('trading/decision_snapshots.jsonl', [
+            {'timestamp': '2026-06-02T00:10:00Z', 'bot_version': 'v1.0-alpha'},
+            {'timestamp': '2026-06-02T00:05:00Z', 'bot_version': 'v1.0-alpha'},
+        ])
+        self.write_jsonl('trading/trade_analytics.jsonl', [
+            {
+                'timestamp': '2026-06-02T00:00:00Z',
+                'event_type': 'TRADE_OPEN',
+                'trade_id': 't1',
+                'symbol': 'ETHUSDT',
+                'side': 'LONG',
+                'status': 'OPEN',
+                'entry_price': 10,
+                'bot_version': 'v1.0-alpha',
+            },
+            {
+                'timestamp': '2026-06-02T00:01:00Z',
+                'event_type': 'TRADE_CLOSE',
+                'trade_id': 't1',
+                'symbol': 'ETHUSDT',
+                'side': 'LONG',
+                'status': 'CLOSED',
+                'entry_price': 10,
+                'exit_price': 11,
+                'pnl_usdt': 1,
+                'bot_version': 'v1.0-alpha',
+            },
+        ])
+
+        report = audit_data_quality.audit_project(self.project)
+        text = audit_data_quality.format_report(report)
+
+        self.assertTrue(any('timestamp fuera de orden' in item for item in report.legacy_warnings))
+        self.assertFalse(any('timestamp fuera de orden' in item for item in report.operational_warnings))
+        self.assertIn('Warnings legacy/historicos:', text)
+
+    def test_v11_recent_out_of_order_is_operational_warning(self):
+        self.valid_bot_state()
+        self.write_jsonl('trading/decision_snapshots.jsonl', [
+            {'timestamp': '2026-07-08T00:10:00Z', 'bot_version': 'v1.1-observability-hardening'},
+            {'timestamp': '2026-07-08T00:05:00Z', 'bot_version': 'v1.1-observability-hardening'},
+        ])
+        self.write_jsonl('trading/trade_analytics.jsonl', [])
+
+        report = audit_data_quality.audit_project(self.project)
+
+        self.assertTrue(any('timestamp fuera de orden' in item for item in report.operational_warnings))
+
+    def test_historical_gap_is_legacy_warning(self):
+        self.valid_bot_state()
+        self.write_jsonl('trading/decision_snapshots.jsonl', [
+            {'timestamp': '2026-06-02T00:00:00Z', 'bot_version': 'v1.0-alpha'},
+            {'timestamp': '2026-06-03T00:00:00Z', 'bot_version': 'v1.0-alpha'},
+        ])
+        self.write_jsonl('trading/trade_analytics.jsonl', [])
+
+        report = audit_data_quality.audit_project(self.project)
+
+        self.assertTrue(any('gap grande' in item for item in report.legacy_warnings))
+        self.assertFalse(any('gap grande' in item for item in report.operational_warnings))
+
+    def test_recent_gap_is_operational_warning(self):
+        self.valid_bot_state()
+        self.write_jsonl('trading/decision_snapshots.jsonl', [
+            {'timestamp': '2026-07-08T00:00:00Z', 'bot_version': 'v1.1-observability-hardening'},
+            {'timestamp': '2026-07-08T08:00:00Z', 'bot_version': 'v1.1-observability-hardening'},
+        ])
+        self.write_jsonl('trading/trade_analytics.jsonl', [])
+
+        report = audit_data_quality.audit_project(self.project)
+
+        self.assertTrue(any('gap grande' in item for item in report.operational_warnings))
+
+    def test_only_legacy_warnings_keep_operational_status_ok(self):
+        self.valid_bot_state()
+        self.write_jsonl('trading/decision_snapshots.jsonl', [
+            {'timestamp': '2026-06-02T00:10:00Z', 'bot_version': 'v1.0-alpha'},
+            {'timestamp': '2026-06-02T00:05:00Z', 'bot_version': 'v1.0-alpha'},
+        ])
+        self.write_jsonl('trading/trade_analytics.jsonl', [
+            {
+                'timestamp': '2026-06-02T00:00:00Z',
+                'event_type': 'TRADE_OPEN',
+                'trade_id': 't1',
+                'symbol': 'ETHUSDT',
+                'side': 'LONG',
+                'status': 'OPEN',
+                'entry_price': 10,
+                'bot_version': 'v1.0-alpha',
+            },
+            {
+                'timestamp': '2026-06-02T00:01:00Z',
+                'event_type': 'TRADE_CLOSE',
+                'trade_id': 't1',
+                'symbol': 'ETHUSDT',
+                'side': 'LONG',
+                'status': 'CLOSED',
+                'entry_price': 10,
+                'exit_price': 11,
+                'pnl_usdt': 1,
+                'bot_version': 'v1.0-alpha',
+            },
+        ])
+
+        report = audit_data_quality.audit_project(self.project)
+        text = audit_data_quality.format_report(report)
+
+        self.assertEqual([], report.errors)
+        self.assertEqual([], report.operational_warnings)
+        self.assertTrue(report.legacy_warnings)
+        self.assertIn('Estado operativo: OK', text)
+
+    def test_backfilled_record_warning_is_accepted_not_operational(self):
+        self.valid_bot_state()
+        self.write_jsonl('trading/decision_snapshots.jsonl', [
+            {'timestamp': '2026-07-08T00:10:00Z', 'bot_version': 'v1.1-observability-hardening'},
+            {
+                'timestamp': '2026-07-08T00:05:00Z',
+                'bot_version': 'v1.1-observability-hardening',
+                'source': 'trade_open_backfill',
+            },
+        ])
+        self.write_jsonl('trading/trade_analytics.jsonl', [])
+
+        report = audit_data_quality.audit_project(self.project)
+        text = audit_data_quality.format_report(report)
+
+        self.assertTrue(any('timestamp fuera de orden' in item for item in report.accepted_warnings))
+        self.assertFalse(any('timestamp fuera de orden' in item for item in report.operational_warnings))
+        self.assertIn('Warnings conocidos aceptados:', text)
+
     def test_trade_analytics_validations(self):
         self.valid_bot_state()
         self.write_jsonl('trading/decision_snapshots.jsonl', [{'timestamp': '2026-01-01T00:00:00Z'}])
