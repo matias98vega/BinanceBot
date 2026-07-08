@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Dry-run only scaffold for future auditable data repairs.
+"""Auditable data repair planner for BinanceBot historical files.
 
-This tool intentionally does not modify historical files yet. It exists to make
-future repair work explicit, reviewable and safe.
+Most plans are dry-run only. The trade-open-backfill plan can write only with
+an exact trade_id confirmation and creates backup, checksums and a report.
 """
 import argparse
+import hashlib
 import json
 import os
+import shutil
 import sys
 from datetime import datetime, timezone
 
@@ -22,6 +24,7 @@ REPAIRABLE_ISSUES = {
     'missing_bot_version': 'Potentially annotate records with inferred bot version metadata',
     'legacy_regime_field': 'Potentially normalize legacy regime aliases into canonical regime',
     'trade_close_without_open': 'Investigate total trade close records without a matching open record',
+    'trade_open_backfill': 'Backfill a missing history TRADE_OPEN from an exact trade_analytics OPEN',
 }
 VERSION_BACKFILL_FILES = (
     ('jsonl', 'trading/trade_analytics.jsonl'),
@@ -50,6 +53,43 @@ TRADE_INVESTIGATION_FILES = (
 
 def _now_iso():
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+
+
+def _stamp():
+    return datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+
+
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    if not os.path.exists(path):
+        return None
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _read_jsonl_lines(path):
+    rows = []
+    if not os.path.exists(path):
+        return rows
+    with open(path, encoding='utf-8') as f:
+        for lineno, line in enumerate(f, 1):
+            raw = line.rstrip('\n')
+            if not raw.strip():
+                rows.append((lineno, raw, None))
+                continue
+            try:
+                record = json.loads(raw)
+            except json.JSONDecodeError:
+                rows.append((lineno, raw, None))
+                continue
+            rows.append((lineno, raw, record if isinstance(record, dict) else None))
+    return rows
+
+
+def _json_dumps(record):
+    return json.dumps(record, ensure_ascii=False, separators=(',', ':'))
 
 
 def build_repair_plan(project_dir=PROJECT_DIR):
@@ -131,6 +171,15 @@ def _public_fields(record):
         'result', 'source', 'reason', 'event', 'category', 'message',
     )
     return {key: record.get(key) for key in keys if record.get(key) not in (None, '')}
+
+
+def _to_float(value):
+    if value in (None, ''):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _record_matches_trade(record, trade_id, base_id, symbol):
@@ -299,6 +348,223 @@ def build_trade_gap_plan(project_dir=PROJECT_DIR, trade_id='short_WLDUSDT_178276
     }
 
 
+def _find_exact_analytics_open(project_dir, trade_id):
+    path = os.path.join(project_dir, 'trading', 'trade_analytics.jsonl')
+    matches = []
+    for line, record in _iter_jsonl(path) or []:
+        if str(record.get('trade_id') or '') != trade_id:
+            continue
+        if _classify_trade_record(record) == 'open':
+            matches.append({'path': 'trading/trade_analytics.jsonl', 'line': line, 'record': record})
+    return matches
+
+
+def _history_trade_records(project_dir):
+    path = os.path.join(project_dir, 'data', 'history', 'trades.jsonl')
+    return path, _read_jsonl_lines(path)
+
+
+def _history_has_exact_open(rows, trade_id):
+    for _line, _raw, record in rows:
+        if not isinstance(record, dict):
+            continue
+        if str(record.get('trade_id') or '') == trade_id and _classify_trade_record(record) == 'open':
+            return True
+    return False
+
+
+def _history_close_lines(rows, trade_id):
+    base_id = _base_trade_id(trade_id)
+    close_lines = []
+    for line, _raw, record in rows:
+        if not isinstance(record, dict):
+            continue
+        record_id = str(record.get('trade_id') or '')
+        if record_id not in {trade_id, f'{base_id}:partial'}:
+            continue
+        if _classify_trade_record(record) == 'close':
+            close_lines.append({'line': line, 'record': record})
+    return close_lines
+
+
+def _build_history_open_record(source_record, trade_id):
+    entry_time = (
+        source_record.get('opened_at')
+        or source_record.get('entry_time')
+        or source_record.get('timestamp')
+        or source_record.get('recorded_at')
+    )
+    record = {
+        'event_type': 'TRADE_OPEN',
+        'recorded_at': source_record.get('recorded_at') or entry_time,
+        'trade_id': trade_id,
+        'symbol': source_record.get('symbol'),
+        'side': str(source_record.get('side') or source_record.get('direction') or '').upper() or None,
+        'opened_at': entry_time,
+        'closed_at': None,
+        'duration_seconds': None,
+        'duration_minutes': None,
+        'entry_price': _to_float(source_record.get('entry_price')),
+        'quantity': _to_float(source_record.get('quantity')),
+        'capital_used': _to_float(source_record.get('capital_used') or source_record.get('capital')),
+        'wallet': source_record.get('wallet') or 'FUTURES',
+        'score': _to_float(source_record.get('score')),
+        'atr': _to_float(source_record.get('atr')),
+        'atr_pct': _to_float(source_record.get('atr_pct')),
+        'rsi': _to_float(source_record.get('rsi')),
+        'volatility': _to_float(source_record.get('volatility')),
+        'btc_context': source_record.get('btc_context') if isinstance(source_record.get('btc_context'), dict) else {},
+        'regime': source_record.get('regime') or source_record.get('market_regime') or 'unknown',
+        'market_regime': source_record.get('market_regime'),
+        'strategy_version': source_record.get('strategy_version') or version_history.STRATEGY_VERSION,
+        'bot_version': source_record.get('bot_version') or version_history.current_version(),
+        'exit_price': None,
+        'exit_reason': None,
+        'pnl_pct': None,
+        'pnl_usdt': None,
+        'fees': _to_float(source_record.get('fees')),
+        'status': 'OPEN',
+        'result': None,
+        'repair_metadata': {
+            'repair_type': 'trade_open_backfill',
+            'source_file': 'trading/trade_analytics.jsonl',
+            'source_trade_id': trade_id,
+            'reason': 'missing_trade_open_in_trades_jsonl_but_exact_open_found_in_trade_analytics',
+        },
+    }
+    for key in ('data_schema_version', 'version_confidence', 'version_notes'):
+        if source_record.get(key) not in (None, ''):
+            record[key] = source_record.get(key)
+    if 'data_schema_version' not in record:
+        version_history.attach_version_metadata(record)
+    return record
+
+
+def build_trade_open_backfill_plan(project_dir=PROJECT_DIR, trade_id='short_WLDUSDT_1782763085'):
+    history_path, rows = _history_trade_records(project_dir)
+    source_opens = _find_exact_analytics_open(project_dir, trade_id)
+    close_lines = _history_close_lines(rows, trade_id)
+    has_history_open = _history_has_exact_open(rows, trade_id)
+    source = source_opens[0] if source_opens else None
+    proposed_record = _build_history_open_record(source['record'], trade_id) if source else None
+
+    if has_history_open:
+        classification = 'already_repaired'
+        can_apply = False
+        recommendation = 'data/history/trades.jsonl already contains an exact TRADE_OPEN for this trade_id.'
+    elif len(source_opens) != 1:
+        classification = 'source_open_not_unique' if source_opens else 'source_open_missing'
+        can_apply = False
+        recommendation = 'Expected exactly one matching OPEN in trading/trade_analytics.jsonl before any repair.'
+    elif not close_lines:
+        classification = 'target_close_missing'
+        can_apply = False
+        recommendation = 'Expected at least one matching close in data/history/trades.jsonl before backfilling the open.'
+    else:
+        classification = 'missing_trade_open_in_trades_jsonl_but_exact_open_found_in_trade_analytics'
+        can_apply = True
+        recommendation = 'Safe to backfill a single TRADE_OPEN from the exact trade_analytics OPEN after backup/checksum.'
+
+    insert_before_line = min((item['line'] for item in close_lines), default=None)
+    return {
+        'schema_version': REPAIR_SCHEMA_VERSION,
+        'generated_at': _now_iso(),
+        'mode': 'dry_run',
+        'plan': 'trade-open-backfill',
+        'project_dir': os.path.abspath(project_dir),
+        'trade_id': trade_id,
+        'classification': classification,
+        'can_apply': can_apply,
+        'write_performed': False,
+        'target_file': 'data/history/trades.jsonl',
+        'source_file': 'trading/trade_analytics.jsonl',
+        'source_open_count': len(source_opens),
+        'target_close_count': len(close_lines),
+        'target_has_open': has_history_open,
+        'insert_before_line': insert_before_line,
+        'source_open': {
+            'path': source['path'],
+            'line': source['line'],
+            'fields': _public_fields(source['record']),
+        } if source else None,
+        'target_closes': [
+            {'line': item['line'], 'fields': _public_fields(item['record'])}
+            for item in close_lines
+        ],
+        'proposed_record': proposed_record,
+        'recommendation': recommendation,
+        'notes': [
+            'Dry-run only unless --apply and --confirm-trade-id match the trade_id.',
+            'The proposed record does not alter PnL, exits or existing close records.',
+            'Apply creates backup, before/after checksums and a repair report.',
+        ],
+    }
+
+
+def apply_trade_open_backfill(project_dir=PROJECT_DIR, trade_id='short_WLDUSDT_1782763085', confirm_trade_id=None):
+    if confirm_trade_id != trade_id:
+        return {
+            'schema_version': REPAIR_SCHEMA_VERSION,
+            'generated_at': _now_iso(),
+            'mode': 'apply',
+            'plan': 'trade-open-backfill',
+            'trade_id': trade_id,
+            'write_performed': False,
+            'error': 'confirmation_required',
+            'message': 'Pass --confirm-trade-id with the exact trade_id to apply this repair.',
+        }, 2
+
+    plan = build_trade_open_backfill_plan(project_dir, trade_id)
+    if not plan.get('can_apply'):
+        result = dict(plan)
+        result['mode'] = 'apply'
+        result['write_performed'] = False
+        result['error'] = 'plan_not_applicable'
+        return result, 2
+
+    history_path = os.path.join(project_dir, 'data', 'history', 'trades.jsonl')
+    rows = _read_jsonl_lines(history_path)
+    before_checksum = _sha256_file(history_path)
+    stamp = _stamp()
+    backup_dir = os.path.join(project_dir, 'data', 'history', 'backups')
+    report_dir = os.path.join(project_dir, 'data', 'history', 'repair_reports')
+    os.makedirs(backup_dir, exist_ok=True)
+    os.makedirs(report_dir, exist_ok=True)
+    backup_path = os.path.join(backup_dir, f'trades.jsonl.{trade_id}.{stamp}.bak')
+    shutil.copy2(history_path, backup_path)
+
+    insert_before_line = plan.get('insert_before_line')
+    proposed_raw = _json_dumps(plan['proposed_record'])
+    output_lines = []
+    inserted = False
+    for line, raw, _record in rows:
+        if not inserted and line == insert_before_line:
+            output_lines.append(proposed_raw)
+            inserted = True
+        output_lines.append(raw)
+    if not inserted:
+        output_lines.append(proposed_raw)
+    with open(history_path, 'w', encoding='utf-8', newline='\n') as f:
+        for raw in output_lines:
+            f.write(raw.rstrip('\n') + '\n')
+    after_checksum = _sha256_file(history_path)
+
+    result = dict(plan)
+    result.update({
+        'mode': 'apply',
+        'write_performed': True,
+        'backup_path': os.path.relpath(backup_path, project_dir),
+        'before_checksum': before_checksum,
+        'after_checksum': after_checksum,
+        'inserted_record': plan['proposed_record'],
+    })
+    report_path = os.path.join(report_dir, f'trade_open_backfill.{trade_id}.{stamp}.json')
+    result['report_path'] = os.path.relpath(report_path, project_dir)
+    with open(report_path, 'w', encoding='utf-8') as f:
+        json.dump(result, f, indent=2, sort_keys=True, ensure_ascii=False)
+    return result, 0
+
+
 def build_version_backfill_plan(project_dir=PROJECT_DIR):
     files_reviewed = 0
     records_reviewed = 0
@@ -362,23 +628,35 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description='Build a dry-run data repair plan.')
     parser.add_argument('--project-dir', default=PROJECT_DIR)
     parser.add_argument('--dry-run', action='store_true', default=True)
-    parser.add_argument('--plan', choices=('summary', 'version-backfill', 'trade-gap'), default='summary')
+    parser.add_argument('--plan', choices=('summary', 'version-backfill', 'trade-gap', 'trade-open-backfill'), default='summary')
     parser.add_argument('--trade-id', default='short_WLDUSDT_1782763085')
+    parser.add_argument('--confirm-trade-id', default=None)
     parser.add_argument('--write', action='store_true', help='Reserved for future use; currently rejected.')
     parser.add_argument('--apply', action='store_true', help='Reserved for future use; currently rejected.')
     args = parser.parse_args(argv)
 
-    if args.write or args.apply:
+    if (args.write or args.apply) and args.plan != 'trade-open-backfill':
         print('ERROR: write mode is not implemented. This scaffold is dry-run only.', file=sys.stderr)
         return 2
+
+    if (args.write or args.apply) and args.plan == 'trade-open-backfill':
+        plan, code = apply_trade_open_backfill(
+            args.project_dir,
+            trade_id=args.trade_id,
+            confirm_trade_id=args.confirm_trade_id,
+        )
+        print(json.dumps(plan, indent=2, sort_keys=True, ensure_ascii=False))
+        return code
 
     if args.plan == 'version-backfill':
         plan = build_version_backfill_plan(args.project_dir)
     elif args.plan == 'trade-gap':
         plan = build_trade_gap_plan(args.project_dir, trade_id=args.trade_id)
+    elif args.plan == 'trade-open-backfill':
+        plan = build_trade_open_backfill_plan(args.project_dir, trade_id=args.trade_id)
     else:
         plan = build_repair_plan(args.project_dir)
-    print(json.dumps(plan, indent=2, sort_keys=True))
+    print(json.dumps(plan, indent=2, sort_keys=True, ensure_ascii=False))
     return 0
 
 

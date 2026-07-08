@@ -9,6 +9,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(__file__))
 
 import repair_data_quality
+import audit_data_quality
 
 
 class RepairDataQualityTests(unittest.TestCase):
@@ -20,6 +21,21 @@ class RepairDataQualityTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def write_json(self, relpath, payload):
+        path = os.path.join(self.project, *relpath.split('/'))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(payload, f)
+        return path
+
+    def write_jsonl(self, relpath, rows):
+        path = os.path.join(self.project, *relpath.split('/'))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            for row in rows:
+                f.write(json.dumps(row) + '\n')
+        return path
 
     def test_build_repair_plan_is_dry_run_only(self):
         plan = repair_data_quality.build_repair_plan(self.project)
@@ -179,6 +195,143 @@ class RepairDataQualityTests(unittest.TestCase):
         self.assertEqual('trade-gap', payload['plan'])
         self.assertEqual('requires_manual_review', payload['classification'])
         self.assertFalse(payload['write_performed'])
+
+    def write_wld_backfill_fixture(self):
+        analytics = os.path.join(self.project, 'trading', 'trade_analytics.jsonl')
+        trades = os.path.join(self.project, 'data', 'history', 'trades.jsonl')
+        with open(analytics, 'w', encoding='utf-8') as f:
+            f.write(json.dumps({
+                'trade_id': 'short_WLDUSDT_1782763085',
+                'symbol': 'WLDUSDT',
+                'side': 'SHORT',
+                'status': 'OPEN',
+                'entry_price': 0.4267,
+                'entry_time': '2026-06-29T19:58:05Z',
+                'bot_version': 'v1.0-alpha',
+                'strategy_version': 'test-strategy',
+            }) + '\n')
+        with open(trades, 'w', encoding='utf-8') as f:
+            f.write(json.dumps({
+                'event_type': 'TRADE_CLOSE',
+                'trade_id': 'short_WLDUSDT_1782763085:partial',
+                'symbol': 'WLDUSDT',
+                'side': 'SHORT',
+                'status': 'CLOSED',
+                'opened_at': '2026-06-29T19:58:05Z',
+                'closed_at': '2026-06-30T00:28:50Z',
+                'exit_reason': 'PARTIAL',
+                'exit_price': 0.42,
+                'pnl_usdt': 0.2340000000000002,
+            }) + '\n')
+            f.write(json.dumps({
+                'event_type': 'TRADE_CLOSE',
+                'trade_id': 'short_WLDUSDT_1782763085',
+                'symbol': 'WLDUSDT',
+                'side': 'SHORT',
+                'status': 'CLOSED',
+                'opened_at': '2026-06-29T19:58:05Z',
+                'closed_at': '2026-06-30T01:36:41Z',
+                'exit_reason': 'TP',
+                'exit_price': 0.4105,
+                'pnl_usdt': 0.43645056000000093,
+            }) + '\n')
+        return analytics, trades
+
+    def test_trade_open_backfill_plan_uses_exact_analytics_open(self):
+        self.write_wld_backfill_fixture()
+
+        plan = repair_data_quality.build_trade_open_backfill_plan(
+            self.project,
+            'short_WLDUSDT_1782763085',
+        )
+
+        self.assertEqual('trade-open-backfill', plan['plan'])
+        self.assertEqual(
+            'missing_trade_open_in_trades_jsonl_but_exact_open_found_in_trade_analytics',
+            plan['classification'],
+        )
+        self.assertTrue(plan['can_apply'])
+        self.assertFalse(plan['write_performed'])
+        self.assertEqual(1, plan['source_open_count'])
+        self.assertEqual(2, plan['target_close_count'])
+        self.assertEqual(1, plan['insert_before_line'])
+        proposed = plan['proposed_record']
+        self.assertEqual('TRADE_OPEN', proposed['event_type'])
+        self.assertEqual('short_WLDUSDT_1782763085', proposed['trade_id'])
+        self.assertEqual('2026-06-29T19:58:05Z', proposed['opened_at'])
+        self.assertEqual(0.4267, proposed['entry_price'])
+        self.assertIsNone(proposed['pnl_usdt'])
+
+    def test_trade_open_backfill_apply_requires_confirmation(self):
+        self.write_wld_backfill_fixture()
+
+        result, code = repair_data_quality.apply_trade_open_backfill(
+            self.project,
+            'short_WLDUSDT_1782763085',
+            confirm_trade_id=None,
+        )
+
+        self.assertEqual(2, code)
+        self.assertFalse(result['write_performed'])
+        self.assertEqual('confirmation_required', result['error'])
+
+    def test_trade_open_backfill_apply_creates_backup_report_and_repairs_audit(self):
+        self.write_wld_backfill_fixture()
+        self.write_json('trading/bot_state.json', {
+            'market': {'regime': 'bearish', 'btc_price': 60000, 'btc_change_4h': -1, 'directional_mode': True},
+            'capital': {'spot_real': 1, 'spot_used': 0, 'futures_real': 1, 'futures_used': 0},
+            'positions': {'long': {'current': 0, 'max': 1}, 'short': {'current': 0, 'max': 1}},
+        })
+        self.write_jsonl('trading/decision_snapshots.jsonl', [{'timestamp': '2026-06-29T19:58:05Z'}])
+
+        result, code = repair_data_quality.apply_trade_open_backfill(
+            self.project,
+            'short_WLDUSDT_1782763085',
+            confirm_trade_id='short_WLDUSDT_1782763085',
+        )
+
+        self.assertEqual(0, code)
+        self.assertTrue(result['write_performed'])
+        self.assertIn('before_checksum', result)
+        self.assertIn('after_checksum', result)
+        self.assertNotEqual(result['before_checksum'], result['after_checksum'])
+        self.assertTrue(os.path.exists(os.path.join(self.project, result['backup_path'])))
+        self.assertTrue(os.path.exists(os.path.join(self.project, result['report_path'])))
+
+        trades = os.path.join(self.project, 'data', 'history', 'trades.jsonl')
+        with open(trades, encoding='utf-8') as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+        self.assertEqual('TRADE_OPEN', rows[0]['event_type'])
+        self.assertEqual('short_WLDUSDT_1782763085', rows[0]['trade_id'])
+        self.assertEqual('TRADE_CLOSE', rows[1]['event_type'])
+
+        report = audit_data_quality.audit_project(self.project)
+        self.assertFalse(any('short_WLDUSDT_1782763085' in item for item in report.errors))
+
+    def test_trade_open_backfill_refuses_when_history_open_already_exists(self):
+        self.write_wld_backfill_fixture()
+        trades = os.path.join(self.project, 'data', 'history', 'trades.jsonl')
+        with open(trades, 'r', encoding='utf-8') as f:
+            original = f.read()
+        with open(trades, 'w', encoding='utf-8') as f:
+            f.write(json.dumps({
+                'event_type': 'TRADE_OPEN',
+                'trade_id': 'short_WLDUSDT_1782763085',
+                'symbol': 'WLDUSDT',
+                'side': 'SHORT',
+                'status': 'OPEN',
+                'opened_at': '2026-06-29T19:58:05Z',
+                'entry_price': 0.4267,
+            }) + '\n')
+            f.write(original)
+
+        plan = repair_data_quality.build_trade_open_backfill_plan(
+            self.project,
+            'short_WLDUSDT_1782763085',
+        )
+
+        self.assertEqual('already_repaired', plan['classification'])
+        self.assertFalse(plan['can_apply'])
 
 
 if __name__ == '__main__':
