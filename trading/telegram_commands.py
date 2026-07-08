@@ -20,6 +20,7 @@ import futures_reconciliation
 import futures_recovery
 import insights_engine
 import trade_inspector
+import version_history
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -979,15 +980,16 @@ def _status_icon(status):
 
 
 def _version():
-    for name in ('VERSION', 'version.txt'):
-        path = os.path.join(PROJECT_DIR, name)
-        if os.path.exists(path):
-            try:
-                with open(path, encoding='utf-8') as f:
-                    return f.read().strip() or 'N/A'
-            except Exception:
-                return 'N/A'
-    return 'N/A'
+    return version_history.current_version()
+
+
+def _version_metadata_lines():
+    metadata = version_history.get_current_version_metadata()
+    return [
+        f'Bot version: {metadata.get("bot_version")}',
+        f'Strategy version: {metadata.get("strategy_version")}',
+        f'Schema version: {metadata.get("data_schema_version")}',
+    ]
 
 
 def _run_local(args):
@@ -1565,6 +1567,9 @@ class DiagnosticsPage(MenuPage):
         return '\n'.join([
             '\U0001FA7A Diagnostico',
             '',
+            'Version:',
+            *_version_metadata_lines(),
+            '',
             'Mercado:',
             *_market_summary_lines(),
             '',
@@ -1939,7 +1944,7 @@ class SystemPage(MenuPage):
             f'{_status_icon(guardian)} Guardian: {guardian}',
             f'{_status_icon(dashboard)} Dashboard: {dashboard}',
             f'{_status_icon(telegram)} Telegram: {telegram}',
-            f'Version: {_version()}',
+            *_version_metadata_lines(),
             f'Commit: {_git_commit()}',
             f'Deploy: {_git_deploy_time()}',
             f'Dashboard desde: {dashboard_since}',

@@ -10,6 +10,7 @@ import subprocess
 import time
 from datetime import datetime, timedelta, timezone
 
+import version_history
 from config_loader import PROJECT_DIR, load_dotenv
 
 
@@ -858,7 +859,7 @@ def build_bot_state(
         guardian_status = live_system.get('guardian')
     if live_system.get('dashboard') != 'UNKNOWN':
         dashboard_status = live_system.get('dashboard')
-    return {
+    payload = {
         'timestamp': cycle_timestamp,
         'timezone': 'America/Montevideo',
         'market': {
@@ -915,9 +916,11 @@ def build_bot_state(
         'diagnostics': diagnostics,
         'rebalance': rebalance_info,
     }
+    return version_history.attach_version_metadata(payload)
 
 
 def persist_bot_state(payload):
+    version_history.attach_version_metadata(payload)
     os.makedirs(os.path.dirname(BOT_STATE_FILE), exist_ok=True)
     tmp = f'{BOT_STATE_FILE}.tmp'
     with open(tmp, 'w', encoding='utf-8') as f:

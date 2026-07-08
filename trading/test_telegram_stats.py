@@ -430,6 +430,31 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertNotIn('- Sin proteccion:', home)
         self.assertNotIn('- Estado:', home)
 
+    def test_system_shows_runtime_version_metadata(self):
+        with patch.object(telegram_commands, '_bot_status', return_value='ONLINE'), \
+             patch.object(telegram_commands, '_guardian_status', return_value='ONLINE'), \
+             patch.object(telegram_commands, '_dashboard_status', return_value='ONLINE'), \
+             patch.object(telegram_commands, '_telegram_service_status', return_value='ONLINE'), \
+             patch.object(telegram_commands, '_git_commit', return_value='abc123'), \
+             patch.object(telegram_commands, '_git_deploy_time', return_value='2026-07-08 00:00 UTC'), \
+             patch.object(telegram_commands, '_systemd_active_since', return_value='N/A'), \
+             patch.object(telegram_commands, '_server_uptime', return_value='N/A'):
+            text = telegram_commands._render_page('system')['text']
+
+        self.assertIn('Bot version: v1.1-observability-hardening', text)
+        self.assertIn('Strategy version: current', text)
+        self.assertIn('Schema version: v1', text)
+
+    def test_diagnostics_shows_runtime_version_metadata(self):
+        with patch.object(telegram_commands, '_bot_state', return_value={'system': {'health': 'OK'}}), \
+             patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics()), \
+             patch.object(telegram_commands, '_market_summary_lines', return_value=['Regimen actual: Neutral']):
+            text = telegram_commands._render_page('diagnostics')['text']
+
+        self.assertIn('Bot version: v1.1-observability-hardening', text)
+        self.assertIn('Strategy version: current', text)
+        self.assertIn('Schema version: v1', text)
+
     def test_home_expands_futures_reconciliation_when_unmanaged(self):
         metrics = self._metrics(short_count=1)
         metrics['futures_reconciliation'] = {

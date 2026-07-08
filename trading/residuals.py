@@ -7,6 +7,7 @@ import os
 import time
 from datetime import datetime, timezone
 
+import version_history
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_STATUS_FILE = os.path.join(BASE_DIR, 'data', 'history', 'residuals_status.json')
@@ -46,6 +47,7 @@ def _load(path=None):
 def _save(data, path=None):
     path = _status_path(path)
     try:
+        version_history.attach_version_metadata(data)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp_path = f'{path}.tmp'
         with open(tmp_path, 'w', encoding='utf-8') as f:
@@ -116,6 +118,7 @@ def classify_unprotectable_residual(symbol, asset, quantity, estimated_value, mi
     residuals[symbol] = entry
     data['residuals'] = residuals
     data['updated_at'] = now
+    version_history.attach_version_metadata(data)
     _save(data, resolved_path)
     return entry, should_alert
 

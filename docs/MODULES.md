@@ -60,6 +60,26 @@ Guia de alto nivel de los modulos principales.
 
 **Lo usan:** `bot.py`.
 
+## `trading/version_history.py`
+
+**Proposito:** registrar metadata historica de versiones, capacidades, bugs conocidos, limitaciones y politicas de uso de datos.
+
+**Responsabilidades:** exponer `current_version()`, `get_current_version_metadata()`, `attach_version_metadata(...)`, `get_version_history()` y `classify_record(...)` para clasificar registros historicos y enriquecer nuevos registros sin modificar comportamiento operativo.
+
+**Consume:** `VERSION`.
+
+**Lo usan:** auditorias, herramientas futuras de saneamiento y analisis historico.
+
+## `trading/repair_data_quality.py`
+
+**Proposito:** scaffold seguro para futuras reparaciones auditables de datos.
+
+**Responsabilidades:** ejecutar auditoria, construir planes dry-run, previsualizar `version-backfill` y rechazar escritura. No repara ni reescribe historicos en su estado actual.
+
+**Consume:** `audit_data_quality.py`.
+
+**Lo usan:** mantenimiento manual futuro.
+
 ## `trading/capital_manager.py`
 
 **Proposito:** fuente de verdad de guardrails de capital.

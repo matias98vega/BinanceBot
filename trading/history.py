@@ -6,6 +6,7 @@ import os
 from datetime import datetime, timezone
 
 import decision_timeline
+import version_history
 
 
 TRADING_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -101,12 +102,7 @@ def normalise_regime(value):
 
 
 def _bot_version():
-    path = os.path.join(PROJECT_DIR, 'VERSION')
-    try:
-        with open(path, encoding='utf-8') as f:
-            return f.read().strip() or None
-    except Exception:
-        return None
+    return version_history.current_version()
 
 
 class HistoryStore:
@@ -160,7 +156,7 @@ class HistoryStore:
             'btc_context': btc_context or {},
             'regime': normalise_regime(market_regime or (btc_context or {}).get('trend') or (btc_context or {}).get('regime')),
             'market_regime': market_regime,
-            'strategy_version': strategy_version or os.environ.get('STRATEGY_VERSION') or 'current',
+            'strategy_version': strategy_version or version_history.STRATEGY_VERSION,
             'bot_version': bot_version or _bot_version(),
             'exit_price': None,
             'exit_reason': None,
@@ -172,6 +168,7 @@ class HistoryStore:
         }
         if isinstance(extra, dict):
             record['extra'] = extra
+        version_history.attach_version_metadata(record)
         self._append(self.trades_file, record)
         decision_timeline.record_event(
             'history_trade_open',
@@ -222,6 +219,7 @@ class HistoryStore:
         }
         if isinstance(extra, dict):
             record['extra'] = extra
+        version_history.attach_version_metadata(record)
         self._append(self.trades_file, record)
         decision_timeline.record_event(
             'history_trade_close',
@@ -251,6 +249,7 @@ class HistoryStore:
             'btc_context': btc_context or {},
             'details': details or {},
         }
+        version_history.attach_version_metadata(record)
         self._append(self.decisions_file, record)
         decision_timeline.record_event(
             'history_decision',
@@ -276,6 +275,7 @@ class HistoryStore:
             'max_positions': max_positions or {},
             'details': details or {},
         }
+        version_history.attach_version_metadata(record)
         self._append(self.snapshots_file, record)
         decision_timeline.record_event(
             'history_snapshot',

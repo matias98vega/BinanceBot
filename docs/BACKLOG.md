@@ -15,6 +15,8 @@ Este backlog agrupa trabajo pendiente. No implica autorizacion para modificar es
 
 | Item | Prioridad | Complejidad | Impacto esperado |
 |---|---|---:|---|
+| Formalizar releases historicos por fix con rangos temporales precisos | Alta | Media | Permitir excluir o marcar datos segun capacidades/bugs de cada version |
+| Implementar reparaciones auditables en `repair_data_quality.py` con backup/checksum | Alta | Alta | Sanear deuda historica sin perder trazabilidad |
 | Ampliar cobertura de Decision Timeline | Media | Media | Registrar filtros finos y motivos adicionales sin depender de journalctl |
 | Implementar FakeBinanceClient | Alta | Media | Tests mas confiables sin patching disperso |
 | Implementar ReplayBinanceClient | Media | Alta | Reproducir sesiones historicas sin tocar Binance |
