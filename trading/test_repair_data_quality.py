@@ -196,20 +196,23 @@ class RepairDataQualityTests(unittest.TestCase):
         self.assertEqual('requires_manual_review', payload['classification'])
         self.assertFalse(payload['write_performed'])
 
-    def write_wld_backfill_fixture(self):
+    def write_wld_backfill_fixture(self, source_bot_version=None, source_strategy_version=None):
         analytics = os.path.join(self.project, 'trading', 'trade_analytics.jsonl')
         trades = os.path.join(self.project, 'data', 'history', 'trades.jsonl')
+        source_open = {
+            'trade_id': 'short_WLDUSDT_1782763085',
+            'symbol': 'WLDUSDT',
+            'side': 'SHORT',
+            'status': 'OPEN',
+            'entry_price': 0.4267,
+            'entry_time': '2026-06-29T19:58:05Z',
+        }
+        if source_bot_version is not None:
+            source_open['bot_version'] = source_bot_version
+        if source_strategy_version is not None:
+            source_open['strategy_version'] = source_strategy_version
         with open(analytics, 'w', encoding='utf-8') as f:
-            f.write(json.dumps({
-                'trade_id': 'short_WLDUSDT_1782763085',
-                'symbol': 'WLDUSDT',
-                'side': 'SHORT',
-                'status': 'OPEN',
-                'entry_price': 0.4267,
-                'entry_time': '2026-06-29T19:58:05Z',
-                'bot_version': 'v1.0-alpha',
-                'strategy_version': 'test-strategy',
-            }) + '\n')
+            f.write(json.dumps(source_open) + '\n')
         with open(trades, 'w', encoding='utf-8') as f:
             f.write(json.dumps({
                 'event_type': 'TRADE_CLOSE',
@@ -260,7 +263,39 @@ class RepairDataQualityTests(unittest.TestCase):
         self.assertEqual('short_WLDUSDT_1782763085', proposed['trade_id'])
         self.assertEqual('2026-06-29T19:58:05Z', proposed['opened_at'])
         self.assertEqual(0.4267, proposed['entry_price'])
+        self.assertEqual('v1.0-alpha', proposed['bot_version'])
+        self.assertEqual('current', proposed['strategy_version'])
+        self.assertEqual('v1', proposed['data_schema_version'])
+        self.assertEqual('matched_timestamp_range', proposed['repair_metadata']['inferred_bot_version_reason'])
+        self.assertEqual(1, proposed['repair_metadata']['source_line'])
         self.assertIsNone(proposed['pnl_usdt'])
+
+    def test_trade_open_backfill_prefers_historical_timestamp_over_runtime_source_version(self):
+        self.write_wld_backfill_fixture(source_bot_version='v1.1-observability-hardening')
+
+        plan = repair_data_quality.build_trade_open_backfill_plan(
+            self.project,
+            'short_WLDUSDT_1782763085',
+        )
+
+        self.assertTrue(plan['can_apply'])
+        proposed = plan['proposed_record']
+        self.assertEqual('v1.0-alpha', proposed['bot_version'])
+        self.assertEqual('v1.1-observability-hardening', proposed['repair_metadata']['source_bot_version'])
+        self.assertTrue(proposed['repair_metadata']['source_bot_version_contradicted_by_timestamp'])
+
+    def test_trade_open_backfill_respects_matching_source_version(self):
+        self.write_wld_backfill_fixture(source_bot_version='v1.0-alpha', source_strategy_version='legacy-strategy')
+
+        plan = repair_data_quality.build_trade_open_backfill_plan(
+            self.project,
+            'short_WLDUSDT_1782763085',
+        )
+
+        proposed = plan['proposed_record']
+        self.assertEqual('v1.0-alpha', proposed['bot_version'])
+        self.assertEqual('legacy-strategy', proposed['strategy_version'])
+        self.assertNotIn('source_bot_version_contradicted_by_timestamp', proposed['repair_metadata'])
 
     def test_trade_open_backfill_apply_requires_confirmation(self):
         self.write_wld_backfill_fixture()
@@ -303,6 +338,8 @@ class RepairDataQualityTests(unittest.TestCase):
             rows = [json.loads(line) for line in f if line.strip()]
         self.assertEqual('TRADE_OPEN', rows[0]['event_type'])
         self.assertEqual('short_WLDUSDT_1782763085', rows[0]['trade_id'])
+        self.assertEqual('v1.0-alpha', rows[0]['bot_version'])
+        self.assertEqual('v1', rows[0]['data_schema_version'])
         self.assertEqual('TRADE_CLOSE', rows[1]['event_type'])
 
         report = audit_data_quality.audit_project(self.project)

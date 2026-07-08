@@ -387,13 +387,48 @@ def _history_close_lines(rows, trade_id):
     return close_lines
 
 
-def _build_history_open_record(source_record, trade_id):
+def _historical_version_metadata(source_record, timestamp):
+    probe = dict(source_record or {})
+    probe.pop('bot_version', None)
+    if timestamp not in (None, ''):
+        probe['opened_at'] = timestamp
+        probe['entry_time'] = timestamp
+    inferred = version_history.classify_record(probe)
+    inferred_version = inferred.get('version')
+    source_version = source_record.get('bot_version') if isinstance(source_record, dict) else None
+    if inferred_version and inferred_version != version_history.UNKNOWN_VERSION:
+        bot_version = inferred_version
+        reason = inferred.get('reason')
+    elif source_version:
+        bot_version = source_version
+        reason = 'source_open_bot_version'
+    else:
+        bot_version = version_history.UNKNOWN_VERSION
+        reason = inferred.get('reason') or 'no_matching_version_range'
+    contradicted = bool(
+        source_version
+        and inferred_version
+        and inferred_version != version_history.UNKNOWN_VERSION
+        and source_version != inferred_version
+    )
+    return {
+        'bot_version': bot_version,
+        'strategy_version': source_record.get('strategy_version') or version_history.STRATEGY_VERSION,
+        'data_schema_version': source_record.get('data_schema_version') or version_history.DATA_SCHEMA_VERSION,
+        'inferred_bot_version_reason': reason,
+        'source_bot_version': source_version,
+        'source_bot_version_contradicted_by_timestamp': contradicted,
+    }
+
+
+def _build_history_open_record(source_record, trade_id, source_line=None):
     entry_time = (
         source_record.get('opened_at')
         or source_record.get('entry_time')
         or source_record.get('timestamp')
         or source_record.get('recorded_at')
     )
+    version_meta = _historical_version_metadata(source_record, entry_time)
     record = {
         'event_type': 'TRADE_OPEN',
         'recorded_at': source_record.get('recorded_at') or entry_time,
@@ -416,8 +451,8 @@ def _build_history_open_record(source_record, trade_id):
         'btc_context': source_record.get('btc_context') if isinstance(source_record.get('btc_context'), dict) else {},
         'regime': source_record.get('regime') or source_record.get('market_regime') or 'unknown',
         'market_regime': source_record.get('market_regime'),
-        'strategy_version': source_record.get('strategy_version') or version_history.STRATEGY_VERSION,
-        'bot_version': source_record.get('bot_version') or version_history.current_version(),
+        'strategy_version': version_meta['strategy_version'],
+        'bot_version': version_meta['bot_version'],
         'exit_price': None,
         'exit_reason': None,
         'pnl_pct': None,
@@ -428,15 +463,20 @@ def _build_history_open_record(source_record, trade_id):
         'repair_metadata': {
             'repair_type': 'trade_open_backfill',
             'source_file': 'trading/trade_analytics.jsonl',
+            'source_line': source_line,
             'source_trade_id': trade_id,
             'reason': 'missing_trade_open_in_trades_jsonl_but_exact_open_found_in_trade_analytics',
+            'inferred_bot_version_reason': version_meta['inferred_bot_version_reason'],
         },
     }
-    for key in ('data_schema_version', 'version_confidence', 'version_notes'):
+    record['data_schema_version'] = version_meta['data_schema_version']
+    if version_meta.get('source_bot_version') not in (None, ''):
+        record['repair_metadata']['source_bot_version'] = version_meta.get('source_bot_version')
+    if version_meta.get('source_bot_version_contradicted_by_timestamp'):
+        record['repair_metadata']['source_bot_version_contradicted_by_timestamp'] = True
+    for key in ('version_confidence', 'version_notes'):
         if source_record.get(key) not in (None, ''):
             record[key] = source_record.get(key)
-    if 'data_schema_version' not in record:
-        version_history.attach_version_metadata(record)
     return record
 
 
@@ -446,7 +486,7 @@ def build_trade_open_backfill_plan(project_dir=PROJECT_DIR, trade_id='short_WLDU
     close_lines = _history_close_lines(rows, trade_id)
     has_history_open = _history_has_exact_open(rows, trade_id)
     source = source_opens[0] if source_opens else None
-    proposed_record = _build_history_open_record(source['record'], trade_id) if source else None
+    proposed_record = _build_history_open_record(source['record'], trade_id, source_line=source['line']) if source else None
 
     if has_history_open:
         classification = 'already_repaired'
