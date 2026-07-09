@@ -66,6 +66,9 @@ class AuditReport:
         self.warnings.append(item)
         self.accepted_warnings.append(item)
 
+    def info(self, path, message):
+        self.accepted_warning(path, f'INFO {message}')
+
     def record_version(self, record):
         classified = version_history.classify_record(record)
         version = classified.get('version') or 'unknown'
@@ -193,7 +196,20 @@ def _timestamp_value(record):
     return None
 
 
-def _validate_timestamp(report, path, record, previous_dt=None, require=True):
+def _record_context(record):
+    if not isinstance(record, dict):
+        return ''
+    fields = {
+        'line': record.get('_audit_line'),
+        'trade_id': record.get('trade_id') or _get_nested(record, 'identification.trade_id'),
+        'event_type': record.get('event_type'),
+        'status': record.get('status'),
+        'bot_version': record.get('_audit_version') or record.get('bot_version'),
+    }
+    return ' '.join(f'{key}={value}' for key, value in fields.items() if value not in (None, ''))
+
+
+def _validate_timestamp(report, path, record, previous_dt=None, previous_record=None, require=True):
     value = _timestamp_value(record)
     dt, err = _parse_ts(value)
     if err == 'missing':
@@ -208,9 +224,12 @@ def _validate_timestamp(report, path, record, previous_dt=None, require=True):
     if dt > now:
         report.error(path, f'timestamp futuro: {value}')
     if previous_dt and dt < previous_dt:
-        report.record_warning(path, f'timestamp fuera de orden: {value}', record)
+        prev_value = _timestamp_value(previous_record) if isinstance(previous_record, dict) else previous_dt.isoformat()
+        report.record_warning(path, f'timestamp fuera de orden: previous={prev_value} current={value} {_record_context(record)}', record)
     if previous_dt and (dt - previous_dt).total_seconds() > MAX_APPEND_GAP_SECONDS:
-        report.record_warning(path, f'gap grande entre registros: {round((dt - previous_dt).total_seconds() / 3600, 2)}h', record)
+        prev_value = _timestamp_value(previous_record) if isinstance(previous_record, dict) else previous_dt.isoformat()
+        gap_hours = round((dt - previous_dt).total_seconds() / 3600, 2)
+        report.record_warning(path, f'gap grande entre registros: {gap_hours}h previous={prev_value} current={value} {_record_context(record)}', record)
     return dt
 
 
@@ -311,6 +330,66 @@ def _has_sensitive_metadata(value):
     return False
 
 
+class ActiveTradeContext:
+    def __init__(self, state=None, bot_state=None, reconciliation=None):
+        self.trade_ids = set()
+        self.symbol_sides = set()
+        self.managed_symbols = set()
+        self.aligned = False
+        self._collect(state)
+        self._collect(bot_state)
+        self._collect_reconciliation(reconciliation)
+
+    def _collect(self, value):
+        if isinstance(value, dict):
+            trade_id = value.get('trade_id') or value.get('id')
+            symbol = value.get('symbol')
+            side = value.get('side') or value.get('direction')
+            status = str(value.get('status') or value.get('state') or '').upper()
+            if trade_id and status != 'CLOSED':
+                self.trade_ids.add(str(trade_id))
+            if symbol:
+                if side:
+                    self.symbol_sides.add((str(symbol).upper(), str(side).upper()))
+                self.managed_symbols.add(str(symbol).upper())
+            for item in value.values():
+                self._collect(item)
+        elif isinstance(value, list):
+            for item in value:
+                self._collect(item)
+
+    def _collect_reconciliation(self, value):
+        if not isinstance(value, dict):
+            return
+        summary = value.get('summary') if isinstance(value.get('summary'), dict) else {}
+        status = str(summary.get('status') or value.get('status') or '').upper()
+        self.aligned = bool(summary.get('aligned') or value.get('aligned') or status in {'ALINEADO', 'ALIGNED'})
+        self._collect(value)
+        for key in ('managed_positions', 'managed_futures_positions', 'positions', 'observed_positions'):
+            positions = value.get(key)
+            if isinstance(positions, list):
+                for position in positions:
+                    if isinstance(position, dict) and position.get('managed_in_state') is True:
+                        symbol = position.get('symbol')
+                        side = position.get('side') or position.get('direction')
+                        if symbol:
+                            self.managed_symbols.add(str(symbol).upper())
+                            if side:
+                                self.symbol_sides.add((str(symbol).upper(), str(side).upper()))
+
+    def evidence_for_open_trade(self, record):
+        trade_id = str(record.get('trade_id') or '')
+        symbol = str(record.get('symbol') or '').upper()
+        side = str(record.get('side') or record.get('direction') or '').upper()
+        if trade_id and trade_id in self.trade_ids:
+            return 'state_trade_id'
+        if symbol and side and (symbol, side) in self.symbol_sides:
+            return 'managed_symbol_side'
+        if symbol and symbol in self.managed_symbols and self.aligned:
+            return 'futures_reconciliation_managed_aligned'
+        return None
+
+
 def _read_json(path, report, required=False):
     if not os.path.exists(path):
         if required:
@@ -349,6 +428,7 @@ def _read_jsonl(path, report, required=False):
             report.warning(path, 'archivo vacio')
             return records
         previous_dt = None
+        previous_record = None
         with open(path, encoding='utf-8') as f:
             for lineno, raw in enumerate(f, 1):
                 line = raw.strip()
@@ -365,7 +445,17 @@ def _read_jsonl(path, report, required=False):
                     continue
                 record['_audit_line'] = lineno
                 record['_audit_version'] = report.record_version(record)
-                previous_dt = _validate_timestamp(report, path, record, previous_dt=previous_dt, require=False) or previous_dt
+                current_dt = _validate_timestamp(
+                    report,
+                    path,
+                    record,
+                    previous_dt=previous_dt,
+                    previous_record=previous_record,
+                    require=False,
+                )
+                if current_dt:
+                    previous_dt = current_dt
+                    previous_record = record
                 records.append(record)
                 report.records_checked += 1
     except Exception as exc:
@@ -373,10 +463,11 @@ def _read_jsonl(path, report, required=False):
     return records
 
 
-def _audit_trade_records(path, records, report):
+def _audit_trade_records(path, records, report, active_context=None):
     opens = set()
     closes = set()
     open_status = set()
+    open_records = {}
     all_ids = {record.get('trade_id') for record in records if isinstance(record, dict) and record.get('trade_id')}
     base_ids = {_base_trade_id(trade_id) for trade_id in all_ids}
     for record in records:
@@ -385,6 +476,7 @@ def _audit_trade_records(path, records, report):
         event_type = str(record.get('event_type') or '').upper()
         if trade_id and (event_type == 'TRADE_OPEN' or status == 'OPEN'):
             opens.add(trade_id)
+            open_records[trade_id] = record
             base_ids.add(_base_trade_id(trade_id))
     for record in records:
         required = ['trade_id', 'symbol', 'side', 'status']
@@ -414,8 +506,8 @@ def _audit_trade_records(path, records, report):
             if trade_id not in opens and event_type == 'TRADE_CLOSE':
                 base_id = _base_trade_id(trade_id)
                 if _is_partial_trade_id(trade_id) and base_id in base_ids:
-                    message = f'cierre parcial sin apertura exacta pero base relacionado existe trade_id={trade_id} base={base_id}'
-                    report.record_warning(path, message, record)
+                    message = f'partial_close_with_related_base cierre parcial sin apertura exacta pero base relacionado existe trade_id={trade_id} base={base_id}'
+                    report.accepted_warning(path, message)
                     report.false_positive(path, message, record)
                 elif _looks_recovered_or_imported(record):
                     message = f'cierre recuperado/importado sin apertura previa trade_id={trade_id}'
@@ -449,7 +541,14 @@ def _audit_trade_records(path, records, report):
             complete = False
         report.completeness(path, complete)
     for trade_id in sorted(open_status - closes):
-        report.warning(path, f'trade abierto sin cierre trade_id={trade_id}')
+        record = open_records.get(trade_id, {'trade_id': trade_id})
+        evidence = active_context.evidence_for_open_trade(record) if active_context else None
+        if evidence:
+            report.info(path, f'active_open_trade trade_id={trade_id} evidence={evidence}')
+        elif str(trade_id).lower() == 't1':
+            report.warning(path, f'suspicious_test_record trade abierto sin cierre trade_id={trade_id}')
+        else:
+            report.warning(path, f'trade abierto sin cierre trade_id={trade_id}')
 
 
 def _audit_feature_records(path, records, report, trade_ids=None):
@@ -612,6 +711,9 @@ def audit_project(project_dir=PROJECT_DIR):
     trade_analytics = _read_jsonl(_project_path(trading_dir, 'trade_analytics.jsonl'), report, required=True)
     decision_snapshots = _read_jsonl(_project_path(trading_dir, 'decision_snapshots.jsonl'), report, required=True)
     bot_state = _read_json(_project_path(trading_dir, 'bot_state.json'), report, required=True)
+    state = _read_json(_project_path(trading_dir, 'state.json'), report)
+    futures_reconciliation = _read_json(_project_path(history_dir, 'futures_reconciliation_status.json'), report)
+    active_context = ActiveTradeContext(state=state, bot_state=bot_state, reconciliation=futures_reconciliation)
 
     history_jsonl_paths = sorted(glob.glob(_project_path(history_dir, '*.jsonl')))
     history_records = {}
@@ -622,9 +724,9 @@ def audit_project(project_dir=PROJECT_DIR):
     all_trade_records = trade_analytics + trades_history
     trade_ids = _collect_trade_ids(all_trade_records)
     if trade_analytics:
-        _audit_trade_records(_project_path(trading_dir, 'trade_analytics.jsonl'), trade_analytics, report)
+        _audit_trade_records(_project_path(trading_dir, 'trade_analytics.jsonl'), trade_analytics, report, active_context=active_context)
     if trades_history:
-        _audit_trade_records(_project_path(history_dir, 'trades.jsonl'), trades_history, report)
+        _audit_trade_records(_project_path(history_dir, 'trades.jsonl'), trades_history, report, active_context=active_context)
 
     features_path = _project_path(history_dir, 'features.jsonl')
     if features_path in history_records:

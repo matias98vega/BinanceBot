@@ -457,6 +457,26 @@ class RepairDataQualityTests(unittest.TestCase):
         self.assertFalse(any(item['field'] == 'bot_version' for item in plan['proposed_changes']))
         self.assertTrue(any(item['field'] == 'bot_version' for item in plan['optional_unresolved']))
 
+    def test_suspicious_test_record_plan_reports_t1_without_writing(self):
+        self.write_jsonl('trading/trade_analytics.jsonl', [
+            {
+                'timestamp': '2026-07-08T01:00:00Z',
+                'event_type': 'TRADE_OPEN',
+                'trade_id': 't1',
+                'symbol': 'ETHUSDT',
+                'side': 'LONG',
+                'status': 'OPEN',
+                'entry_price': 10,
+            }
+        ])
+
+        plan = repair_data_quality.build_suspicious_test_record_plan(self.project, trade_id='t1')
+
+        self.assertEqual('suspicious-test-record', plan['plan'])
+        self.assertEqual('suspicious_test_record_without_state_evidence', plan['classification'])
+        self.assertEqual(1, plan['match_count'])
+        self.assertFalse(plan['write_performed'])
+
 
 if __name__ == '__main__':
     unittest.main()

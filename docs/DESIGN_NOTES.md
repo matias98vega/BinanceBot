@@ -364,6 +364,8 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Separacion de warnings:** el auditor distingue `warnings operativos recientes`, `warnings legacy/historicos` y `warnings conocidos aceptados`. Los warnings operativos representan posibles problemas actuales de recoleccion o estado runtime. Los legacy/historicos agrupan registros clasificados por version antigua (`legacy-pre-history`, `v1.0-alpha`) o timestamps historicos. Los conocidos aceptados cubren backfills/imports/recoveries explicitos, donde el dato puede ser incompleto por origen pero no debe ensuciar el diagnostico operativo diario.
 
+**Trades abiertos y parciales:** un `TRADE_OPEN` sin cierre no es warning operativo si existe evidencia actual en `trading/state.json`, `trading/bot_state.json` o `data/history/futures_reconciliation_status.json` de que la posicion sigue gestionada. Se reporta como `active_open_trade` informativo. Los cierres `:partial` con `trade_id` base relacionado se clasifican como `partial_close_with_related_base` en warnings conocidos aceptados. IDs sin evidencia runtime, especialmente scaffolds como `t1`, siguen como warning operativo `suspicious_test_record`.
+
 **Ventajas:** permite auditar calidad antes de usar los datos para Analytics avanzado, PnL ajustado o aprendizaje futuro sin tocar estrategia ni estado operativo.
 
 ## Data Quality Repair Plan
@@ -379,5 +381,7 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 **Timestamps y gaps:** `trade_analytics.jsonl` puede contener entradas recuperadas/importadas con `entry_time` historico escritas en append durante una corrida posterior. Eso explica algunos out-of-order/gaps sin implicar automaticamente bug actual. El auditor no los silencia: los reporta como warnings y la revision debe distinguir import/recovery historico de escritura normal fuera de orden.
 
 **Higiene dry-run:** `repair_data_quality.py --plan data-hygiene-backfill` revisa `trading/trade_analytics.jsonl` y propone, sin escribir, backfills simples de metadata si la fuente es verificable en el mismo registro o por `version_history`. Puede sugerir `market.regime` desde `regime`/`market_regime`, `capital.position_final` solo desde campos escalares claros (`position_final`, `capital_used`, `notional`) y `bot_version` inferible por timestamp. Los casos sin fuente confiable quedan como `optional_unresolved`; no se inventan valores ni se reescribe historial.
+
+**Inspeccion de registros sospechosos:** `repair_data_quality.py --plan suspicious-test-record --trade-id t1` genera un reporte dry-run de evidencia para IDs que parecen basura de test/scaffold. No borra, no reordena y no habilita escritura; cualquier limpieza futura requiere plan explicito con backup y confirmacion.
 
 **Migracion futura:** una futura herramienta `trading/repair_data_quality.py` deberia ser `--dry-run` por defecto, crear backup automatico antes de modificar, escribir reporte JSON/Markdown de cambios, reparar un solo tipo de problema por ejecucion, requerir confirmacion explicita para escribir, registrar checksums antes/despues y nunca alterar datos sin trazabilidad. Los archivos candidatos a backup obligatorio son `data/history/trades.jsonl`, `data/history/features.jsonl`, `trading/trade_analytics.jsonl`, `data/history/timeline.jsonl` y cualquier estado runtime relacionado.

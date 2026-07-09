@@ -346,8 +346,130 @@ class AuditDataQualityTests(unittest.TestCase):
 
         self.assertFalse(any('short_WLDUSDT_1782763085:partial' in item for item in report.errors))
         self.assertTrue(any('cierre parcial sin apertura exacta' in item for item in report.warnings))
+        self.assertTrue(any('partial_close_with_related_base' in item for item in report.accepted_warnings))
+        self.assertFalse(any('short_WLDUSDT_1782763085:partial' in item for item in report.operational_warnings))
         self.assertIn('Posibles falsos positivos', text)
         self.assertIn('short_WLDUSDT_1782763085:partial', text)
+
+    def test_open_trade_present_in_state_is_active_info_not_operational(self):
+        self.valid_bot_state()
+        self.write_json('trading/state.json', {
+            'positions': [
+                {'trade_id': 'long_WLDUSDT_1783549149', 'symbol': 'WLDUSDT', 'side': 'LONG', 'quantity': 2.0}
+            ]
+        })
+        self.write_jsonl('trading/decision_snapshots.jsonl', [{'timestamp': '2026-07-08T01:00:00Z'}])
+        self.write_jsonl('trading/trade_analytics.jsonl', [
+            {
+                'timestamp': '2026-07-08T01:00:00Z',
+                'event_type': 'TRADE_OPEN',
+                'trade_id': 'long_WLDUSDT_1783549149',
+                'symbol': 'WLDUSDT',
+                'side': 'LONG',
+                'status': 'OPEN',
+                'entry_price': 1.2,
+            },
+        ])
+
+        report = audit_data_quality.audit_project(self.project)
+
+        self.assertTrue(any('active_open_trade trade_id=long_WLDUSDT_1783549149' in item for item in report.accepted_warnings))
+        self.assertFalse(any('long_WLDUSDT_1783549149' in item for item in report.operational_warnings))
+
+    def test_open_trade_present_in_futures_reconciliation_is_active_info(self):
+        self.valid_bot_state()
+        self.write_json('data/history/futures_reconciliation_status.json', {
+            'summary': {'aligned': True, 'status': 'ALINEADO'},
+            'managed_positions': [
+                {'symbol': 'CRCLUSDT', 'side': 'SHORT', 'managed_in_state': True}
+            ],
+        })
+        self.write_jsonl('trading/decision_snapshots.jsonl', [{'timestamp': '2026-07-08T01:00:00Z'}])
+        self.write_jsonl('trading/trade_analytics.jsonl', [
+            {
+                'timestamp': '2026-07-08T01:00:00Z',
+                'event_type': 'TRADE_OPEN',
+                'trade_id': 'short_CRCLUSDT_1783540416',
+                'symbol': 'CRCLUSDT',
+                'side': 'SHORT',
+                'status': 'OPEN',
+                'entry_price': 1.2,
+            },
+        ])
+
+        report = audit_data_quality.audit_project(self.project)
+
+        self.assertTrue(any('active_open_trade trade_id=short_CRCLUSDT_1783540416' in item for item in report.accepted_warnings))
+        self.assertFalse(any('short_CRCLUSDT_1783540416' in item for item in report.operational_warnings))
+
+    def test_open_trade_without_current_evidence_stays_operational_warning(self):
+        self.valid_bot_state()
+        self.write_jsonl('trading/decision_snapshots.jsonl', [{'timestamp': '2026-07-08T01:00:00Z'}])
+        self.write_jsonl('trading/trade_analytics.jsonl', [
+            {
+                'timestamp': '2026-07-08T01:00:00Z',
+                'event_type': 'TRADE_OPEN',
+                'trade_id': 'long_MISSING_1783549149',
+                'symbol': 'MISSING',
+                'side': 'LONG',
+                'status': 'OPEN',
+                'entry_price': 1.2,
+            },
+        ])
+
+        report = audit_data_quality.audit_project(self.project)
+
+        self.assertTrue(any('trade abierto sin cierre trade_id=long_MISSING_1783549149' in item for item in report.operational_warnings))
+
+    def test_t1_without_current_evidence_is_suspicious_test_record(self):
+        self.valid_bot_state()
+        self.write_jsonl('trading/decision_snapshots.jsonl', [{'timestamp': '2026-07-08T01:00:00Z'}])
+        self.write_jsonl('trading/trade_analytics.jsonl', [
+            {
+                'timestamp': '2026-07-08T01:00:00Z',
+                'event_type': 'TRADE_OPEN',
+                'trade_id': 't1',
+                'symbol': 'ETHUSDT',
+                'side': 'LONG',
+                'status': 'OPEN',
+                'entry_price': 1.2,
+            },
+        ])
+
+        report = audit_data_quality.audit_project(self.project)
+
+        self.assertTrue(any('suspicious_test_record' in item and 'trade_id=t1' in item for item in report.operational_warnings))
+
+    def test_historical_snapshot_timestamp_is_legacy_even_when_file_is_current(self):
+        self.valid_bot_state()
+        self.write_jsonl('trading/decision_snapshots.jsonl', [{'timestamp': '2026-07-08T01:00:00Z'}])
+        self.write_jsonl('trading/trade_analytics.jsonl', [])
+        self.write_jsonl('data/history/snapshots.jsonl', [
+            {'timestamp': '2026-07-08T01:00:00Z', 'bot_version': 'v1.1-observability-hardening'},
+            {'timestamp': '2026-06-30T12:00:00Z'},
+        ])
+
+        report = audit_data_quality.audit_project(self.project)
+
+        self.assertTrue(any('timestamp fuera de orden' in item and '2026-06-30T12:00:00Z' in item for item in report.legacy_warnings))
+        self.assertFalse(any('timestamp fuera de orden' in item and '2026-06-30T12:00:00Z' in item for item in report.operational_warnings))
+
+    def test_recent_gap_with_recovered_metadata_is_accepted_warning(self):
+        self.valid_bot_state()
+        self.write_jsonl('trading/decision_snapshots.jsonl', [
+            {'timestamp': '2026-07-08T01:00:00Z', 'bot_version': 'v1.1-observability-hardening'},
+            {
+                'timestamp': '2026-07-08T12:00:00Z',
+                'bot_version': 'v1.1-observability-hardening',
+                'source': 'recovered_position_import',
+            },
+        ])
+        self.write_jsonl('trading/trade_analytics.jsonl', [])
+
+        report = audit_data_quality.audit_project(self.project)
+
+        self.assertTrue(any('gap grande' in item for item in report.accepted_warnings))
+        self.assertFalse(any('gap grande' in item for item in report.operational_warnings))
 
     def test_feature_store_validations_and_trade_relation(self):
         self.valid_bot_state()

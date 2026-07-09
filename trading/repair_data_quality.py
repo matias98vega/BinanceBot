@@ -26,6 +26,7 @@ REPAIRABLE_ISSUES = {
     'trade_close_without_open': 'Investigate total trade close records without a matching open record',
     'trade_open_backfill': 'Backfill a missing history TRADE_OPEN from an exact trade_analytics OPEN',
     'data_hygiene_backfill': 'Dry-run suggestions for simple missing metadata fields',
+    'suspicious_test_record': 'Inspect suspicious scaffold/test trade ids without modifying history',
 }
 VERSION_BACKFILL_FILES = (
     ('jsonl', 'trading/trade_analytics.jsonl'),
@@ -790,11 +791,77 @@ def build_data_hygiene_backfill_plan(project_dir=PROJECT_DIR):
     }
 
 
+def build_suspicious_test_record_plan(project_dir=PROJECT_DIR, trade_id='t1', max_examples=50):
+    matches = []
+    total_matches = 0
+    for kind, relpath in TRADE_INVESTIGATION_FILES:
+        path = os.path.join(project_dir, *relpath.split('/'))
+        if kind == 'jsonl':
+            for line, _raw, record in _read_jsonl_lines(path):
+                if not isinstance(record, dict):
+                    continue
+                public = _public_fields(record)
+                text = json.dumps(public, ensure_ascii=False)
+                if record.get('trade_id') == trade_id or trade_id in text:
+                    total_matches += 1
+                    if len(matches) < max_examples:
+                        matches.append({
+                            'path': relpath,
+                            'line': line,
+                            'record': public,
+                        })
+        elif os.path.exists(path):
+            with open(path, encoding='utf-8') as f:
+                try:
+                    data = json.load(f)
+                except Exception:
+                    data = None
+            public = _public_fields(data) if isinstance(data, dict) else {}
+            raw_text = json.dumps(data, ensure_ascii=False) if data is not None else ''
+            if trade_id in raw_text:
+                total_matches += 1
+                if len(matches) < max_examples:
+                    matches.append({
+                        'path': relpath,
+                        'line': None,
+                        'record': public or {'contains_trade_id': True},
+                    })
+
+    has_state_evidence = any(
+        item.get('path') in {'trading/bot_state.json', 'data/history/futures_reconciliation_status.json'}
+        for item in matches
+    )
+    classification = 'suspicious_test_record_without_state_evidence'
+    if has_state_evidence:
+        classification = 'record_has_state_evidence_requires_manual_review'
+    elif total_matches == 0:
+        classification = 'not_found'
+
+    return {
+        'schema_version': REPAIR_SCHEMA_VERSION,
+        'generated_at': _now_iso(),
+        'mode': 'dry_run',
+        'plan': 'suspicious-test-record',
+        'trade_id': trade_id,
+        'classification': classification,
+        'matches': matches,
+        'match_count': total_matches,
+        'sample_count': len(matches),
+        'sample_truncated': total_matches > len(matches),
+        'write_performed': False,
+        'notes': [
+            'No historical file was modified.',
+            'This plan only inspects evidence for suspicious scaffold/test records.',
+            'Any cleanup would require a separate explicit repair plan with backup and confirmation.',
+        ],
+    }
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Build a dry-run data repair plan.')
     parser.add_argument('--project-dir', default=PROJECT_DIR)
     parser.add_argument('--dry-run', action='store_true', default=True)
-    parser.add_argument('--plan', choices=('summary', 'version-backfill', 'trade-gap', 'trade-open-backfill', 'data-hygiene-backfill'), default='summary')
+    parser.add_argument('--plan', choices=('summary', 'version-backfill', 'trade-gap', 'trade-open-backfill', 'data-hygiene-backfill', 'suspicious-test-record'), default='summary')
     parser.add_argument('--trade-id', default='short_WLDUSDT_1782763085')
     parser.add_argument('--confirm-trade-id', default=None)
     parser.add_argument('--write', action='store_true', help='Reserved for future use; currently rejected.')
@@ -818,6 +885,8 @@ def main(argv=None):
         plan = build_version_backfill_plan(args.project_dir)
     elif args.plan == 'data-hygiene-backfill':
         plan = build_data_hygiene_backfill_plan(args.project_dir)
+    elif args.plan == 'suspicious-test-record':
+        plan = build_suspicious_test_record_plan(args.project_dir, trade_id=args.trade_id)
     elif args.plan == 'trade-gap':
         plan = build_trade_gap_plan(args.project_dir, trade_id=args.trade_id)
     elif args.plan == 'trade-open-backfill':
