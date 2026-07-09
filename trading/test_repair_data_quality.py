@@ -72,6 +72,31 @@ class RepairDataQualityTests(unittest.TestCase):
     def test_apply_mode_is_rejected(self):
         self.assertEqual(2, repair_data_quality.main(['--project-dir', self.project, '--apply']))
 
+    def test_suspicious_test_record_plan_reports_fields_and_recommendation(self):
+        self.write_jsonl('data/history/trades.jsonl', [
+            {
+                'timestamp': '2026-07-08T12:00:00Z',
+                'event_type': 'TRADE_OPEN',
+                'trade_id': 't1',
+                'symbol': 'ETHUSDT',
+                'side': 'LONG',
+                'status': 'OPEN',
+                'entry_price': 10,
+            }
+        ])
+
+        plan = repair_data_quality.build_suspicious_test_record_plan(self.project, trade_id='t1')
+
+        self.assertEqual('suspicious-test-record', plan['plan'])
+        self.assertEqual(1, plan['total_occurrences'])
+        self.assertEqual('suspicious_test_record_remove_with_backup', plan['recommendation'])
+        self.assertFalse(plan['write_performed'])
+        self.assertEqual('data/history/trades.jsonl', plan['matches'][0]['path'])
+        self.assertEqual(1, plan['matches'][0]['line'])
+        self.assertIn('trade_id', plan['matches'][0]['fields_present'])
+        self.assertEqual('TRADE_OPEN', plan['matches'][0]['event_type'])
+        self.assertEqual('OPEN', plan['matches'][0]['status'])
+
     def test_cli_outputs_json_plan(self):
         with patch('builtins.print') as mocked_print:
             code = repair_data_quality.main(['--project-dir', self.project])

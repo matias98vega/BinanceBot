@@ -84,7 +84,9 @@ class AuditReport:
 
     def record_warning(self, path, message, record):
         version = record.get('_audit_version') if isinstance(record, dict) else None
-        if _is_accepted_warning_record(record):
+        if isinstance(record, dict) and record.get('_audit_force_operational'):
+            self.warning(path, message)
+        elif _is_accepted_warning_record(record, message):
             self.accepted_warning(path, message)
         elif _is_legacy_record(record):
             self.legacy_warning(path, message)
@@ -225,12 +227,39 @@ def _validate_timestamp(report, path, record, previous_dt=None, previous_record=
         report.error(path, f'timestamp futuro: {value}')
     if previous_dt and dt < previous_dt:
         prev_value = _timestamp_value(previous_record) if isinstance(previous_record, dict) else previous_dt.isoformat()
-        report.record_warning(path, f'timestamp fuera de orden: previous={prev_value} current={value} {_record_context(record)}', record)
+        report.record_warning(path, _timestamp_warning_message('timestamp fuera de orden', prev_value, value, record, previous_record), record)
     if previous_dt and (dt - previous_dt).total_seconds() > MAX_APPEND_GAP_SECONDS:
         prev_value = _timestamp_value(previous_record) if isinstance(previous_record, dict) else previous_dt.isoformat()
         gap_hours = round((dt - previous_dt).total_seconds() / 3600, 2)
-        report.record_warning(path, f'gap grande entre registros: {gap_hours}h previous={prev_value} current={value} {_record_context(record)}', record)
+        report.record_warning(path, _timestamp_warning_message(f'gap grande entre registros: {gap_hours}h', prev_value, value, record, previous_record), record)
     return dt
+
+
+def _timestamp_warning_message(prefix, previous, current, record, previous_record=None):
+    if _is_market_snapshot(record) and not _has_backfill_metadata(record) and not _is_legacy_record(record):
+        prefix = f'stale_snapshot_timestamp_generated_recently {prefix}'
+        record['_audit_force_operational'] = True
+    parts = [
+        f'{prefix}: previous={previous}',
+        f'current={current}',
+        _record_context(record),
+    ]
+    if isinstance(previous_record, dict):
+        previous_trade = previous_record.get('trade_id') or _get_nested(previous_record, 'identification.trade_id')
+        current_trade = record.get('trade_id') or _get_nested(record, 'identification.trade_id')
+        if previous_trade or current_trade:
+            parts.append(f'previous_trade_id={previous_trade} current_trade_id={current_trade}')
+    source = record.get('source') or record.get('module') or _get_nested(record, 'metadata.source')
+    if source:
+        parts.append(f'source={source}')
+    metadata_flags = _backfill_metadata_flags(record)
+    if metadata_flags:
+        parts.append(f'metadata={",".join(metadata_flags)}')
+    if record.get('_audit_related_trade_closed') is not None:
+        parts.append(f'whether_trade_closed_in_history={bool(record.get("_audit_related_trade_closed"))}')
+    if record.get('_audit_active_runtime_evidence') is not None:
+        parts.append(f'active_runtime_evidence={record.get("_audit_active_runtime_evidence")}')
+    return ' '.join(part for part in parts if part)
 
 
 def _is_number(value, positive=False, allow_zero=True):
@@ -291,11 +320,49 @@ def _is_legacy_record(record):
     return classified.get('version') in {'legacy-pre-history', 'v1.0-alpha'}
 
 
-def _is_accepted_warning_record(record):
+def _backfill_metadata_flags(record):
+    if not isinstance(record, dict):
+        return []
+    flags = []
+    text = ' '.join(str(record.get(key) or '') for key in ('source', 'description', 'reason', 'event_type')).lower()
+    metadata = record.get('metadata') if isinstance(record.get('metadata'), dict) else {}
+    text = f'{text} ' + ' '.join(str(value or '') for value in metadata.values()).lower()
+    for token in ('backfill', 'backfilled', 'imported', 'recovered', 'synthetic'):
+        if token in text:
+            flags.append(token)
+    for key in ('backfilled', 'imported', 'recovered', 'synthetic'):
+        if record.get(key) is True or metadata.get(key) is True:
+            flags.append(key)
+    return sorted(set(flags))
+
+
+def _has_backfill_metadata(record):
+    return bool(_backfill_metadata_flags(record))
+
+
+def _is_market_snapshot(record):
+    return isinstance(record, dict) and str(record.get('event_type') or '').upper() == 'MARKET_SNAPSHOT'
+
+
+def _record_trade_id(record):
+    if not isinstance(record, dict):
+        return None
+    return record.get('trade_id') or _get_nested(record, 'identification.trade_id')
+
+
+def _is_accepted_warning_record(record, message=''):
     if not isinstance(record, dict):
         return False
-    text = ' '.join(str(record.get(key) or '') for key in ('source', 'description', 'reason', 'event_type')).lower()
-    return any(token in text for token in ('backfill', 'backfilled', 'imported', 'recovered'))
+    if _has_backfill_metadata(record):
+        return True
+    status = str(record.get('status') or '').upper()
+    event_type = str(record.get('event_type') or '').upper()
+    if ('timestamp fuera de orden' in message or 'gap grande entre registros' in message):
+        if status == 'CLOSED' or event_type == 'TRADE_CLOSE':
+            return True
+        if record.get('_audit_related_trade_closed') is True and not record.get('_audit_active_runtime_evidence'):
+            return True
+    return False
 
 
 def _is_recovery_feature_record(record):
@@ -416,7 +483,7 @@ def _read_json(path, report, required=False):
         return None
 
 
-def _read_jsonl(path, report, required=False):
+def _read_jsonl(path, report, required=False, closed_trade_ids=None, active_context=None):
     records = []
     if not os.path.exists(path):
         if required:
@@ -445,6 +512,11 @@ def _read_jsonl(path, report, required=False):
                     continue
                 record['_audit_line'] = lineno
                 record['_audit_version'] = report.record_version(record)
+                trade_id = _record_trade_id(record)
+                if closed_trade_ids is not None and trade_id:
+                    record['_audit_related_trade_closed'] = trade_id in closed_trade_ids or _base_trade_id(trade_id) in closed_trade_ids
+                if active_context is not None:
+                    record['_audit_active_runtime_evidence'] = active_context.evidence_for_open_trade(record) or False
                 current_dt = _validate_timestamp(
                     report,
                     path,
@@ -703,6 +775,20 @@ def _collect_trade_ids(records):
     return {record.get('trade_id') for record in records if isinstance(record, dict) and record.get('trade_id')}
 
 
+def _collect_closed_trade_ids(records):
+    closed = set()
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        trade_id = record.get('trade_id')
+        status = str(record.get('status') or '').upper()
+        event_type = str(record.get('event_type') or '').upper()
+        if trade_id and (status == 'CLOSED' or event_type == 'TRADE_CLOSE'):
+            closed.add(str(trade_id))
+            closed.add(_base_trade_id(trade_id))
+    return closed
+
+
 def audit_project(project_dir=PROJECT_DIR):
     report = AuditReport()
     trading_dir = _project_path(project_dir, 'trading')
@@ -717,10 +803,22 @@ def audit_project(project_dir=PROJECT_DIR):
 
     history_jsonl_paths = sorted(glob.glob(_project_path(history_dir, '*.jsonl')))
     history_records = {}
+    trades_path = _project_path(history_dir, 'trades.jsonl')
+    trades_history = []
+    if trades_path in history_jsonl_paths:
+        trades_history = _read_jsonl(trades_path, report, active_context=active_context)
+        history_records[trades_path] = trades_history
+    closed_trade_ids = _collect_closed_trade_ids(trade_analytics + trades_history)
     for path in history_jsonl_paths:
-        history_records[path] = _read_jsonl(path, report)
+        if path == trades_path:
+            continue
+        history_records[path] = _read_jsonl(
+            path,
+            report,
+            closed_trade_ids=closed_trade_ids,
+            active_context=active_context,
+        )
 
-    trades_history = history_records.get(_project_path(history_dir, 'trades.jsonl'), [])
     all_trade_records = trade_analytics + trades_history
     trade_ids = _collect_trade_ids(all_trade_records)
     if trade_analytics:

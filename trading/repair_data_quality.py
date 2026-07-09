@@ -175,6 +175,14 @@ def _public_fields(record):
     return {key: record.get(key) for key in keys if record.get(key) not in (None, '')}
 
 
+def _mentions_trade_id(value, trade_id):
+    if isinstance(value, dict):
+        return any(_mentions_trade_id(item, trade_id) for item in value.values())
+    if isinstance(value, list):
+        return any(_mentions_trade_id(item, trade_id) for item in value)
+    return str(value or '') == str(trade_id)
+
+
 def _to_float(value):
     if value in (None, ''):
         return None
@@ -794,6 +802,7 @@ def build_data_hygiene_backfill_plan(project_dir=PROJECT_DIR):
 def build_suspicious_test_record_plan(project_dir=PROJECT_DIR, trade_id='t1', max_examples=50):
     matches = []
     total_matches = 0
+    expected_trade_fields = ('event_type', 'trade_id', 'symbol', 'side', 'status', 'entry_price')
     for kind, relpath in TRADE_INVESTIGATION_FILES:
         path = os.path.join(project_dir, *relpath.split('/'))
         if kind == 'jsonl':
@@ -801,14 +810,20 @@ def build_suspicious_test_record_plan(project_dir=PROJECT_DIR, trade_id='t1', ma
                 if not isinstance(record, dict):
                     continue
                 public = _public_fields(record)
-                text = json.dumps(public, ensure_ascii=False)
-                if record.get('trade_id') == trade_id or trade_id in text:
+                if _mentions_trade_id(public, trade_id):
                     total_matches += 1
                     if len(matches) < max_examples:
+                        fields_present = sorted(key for key, value in public.items() if value not in (None, ''))
+                        fields_missing = [field for field in expected_trade_fields if public.get(field) in (None, '')]
                         matches.append({
                             'path': relpath,
                             'line': line,
                             'record': public,
+                            'event_type': public.get('event_type'),
+                            'status': public.get('status'),
+                            'fields_present': fields_present,
+                            'fields_missing': fields_missing,
+                            'valid_json': True,
                         })
         elif os.path.exists(path):
             with open(path, encoding='utf-8') as f:
@@ -817,14 +832,18 @@ def build_suspicious_test_record_plan(project_dir=PROJECT_DIR, trade_id='t1', ma
                 except Exception:
                     data = None
             public = _public_fields(data) if isinstance(data, dict) else {}
-            raw_text = json.dumps(data, ensure_ascii=False) if data is not None else ''
-            if trade_id in raw_text:
+            if _mentions_trade_id(data, trade_id):
                 total_matches += 1
                 if len(matches) < max_examples:
                     matches.append({
                         'path': relpath,
                         'line': None,
                         'record': public or {'contains_trade_id': True},
+                        'event_type': public.get('event_type'),
+                        'status': public.get('status'),
+                        'fields_present': sorted(public.keys()),
+                        'fields_missing': [],
+                        'valid_json': data is not None,
                     })
 
     has_state_evidence = any(
@@ -832,10 +851,13 @@ def build_suspicious_test_record_plan(project_dir=PROJECT_DIR, trade_id='t1', ma
         for item in matches
     )
     classification = 'suspicious_test_record_without_state_evidence'
+    recommendation = 'suspicious_test_record_remove_with_backup'
     if has_state_evidence:
         classification = 'record_has_state_evidence_requires_manual_review'
+        recommendation = 'unresolved_manual_review'
     elif total_matches == 0:
         classification = 'not_found'
+        recommendation = 'keep_known_accepted'
 
     return {
         'schema_version': REPAIR_SCHEMA_VERSION,
@@ -844,10 +866,13 @@ def build_suspicious_test_record_plan(project_dir=PROJECT_DIR, trade_id='t1', ma
         'plan': 'suspicious-test-record',
         'trade_id': trade_id,
         'classification': classification,
+        'recommendation': recommendation,
         'matches': matches,
         'match_count': total_matches,
+        'total_occurrences': total_matches,
         'sample_count': len(matches),
         'sample_truncated': total_matches > len(matches),
+        'runtime_evidence': has_state_evidence,
         'write_performed': False,
         'notes': [
             'No historical file was modified.',

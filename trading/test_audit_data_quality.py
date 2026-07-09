@@ -454,6 +454,198 @@ class AuditDataQualityTests(unittest.TestCase):
         self.assertTrue(any('timestamp fuera de orden' in item and '2026-06-30T12:00:00Z' in item for item in report.legacy_warnings))
         self.assertFalse(any('timestamp fuera de orden' in item and '2026-06-30T12:00:00Z' in item for item in report.operational_warnings))
 
+    def test_market_snapshot_old_timestamp_with_backfill_metadata_is_accepted(self):
+        self.valid_bot_state()
+        self.write_jsonl('trading/decision_snapshots.jsonl', [{'timestamp': '2026-07-08T01:00:00Z'}])
+        self.write_jsonl('trading/trade_analytics.jsonl', [])
+        self.write_jsonl('data/history/snapshots.jsonl', [
+            {'timestamp': '2026-07-08T01:00:00Z', 'event_type': 'MARKET_SNAPSHOT', 'bot_version': 'v1.1-observability-hardening'},
+            {
+                'timestamp': '2026-06-30T12:00:00Z',
+                'event_type': 'MARKET_SNAPSHOT',
+                'bot_version': 'v1.1-observability-hardening',
+                'source': 'historical_backfill',
+                'metadata': {'backfilled': True},
+            },
+        ])
+
+        report = audit_data_quality.audit_project(self.project)
+
+        self.assertTrue(any('timestamp fuera de orden' in item and 'metadata=' in item for item in report.accepted_warnings))
+        self.assertFalse(any('stale_snapshot_timestamp_generated_recently' in item for item in report.operational_warnings))
+
+    def test_market_snapshot_old_timestamp_without_metadata_is_operational(self):
+        self.valid_bot_state()
+        self.write_jsonl('trading/decision_snapshots.jsonl', [{'timestamp': '2026-07-08T01:00:00Z'}])
+        self.write_jsonl('trading/trade_analytics.jsonl', [])
+        self.write_jsonl('data/history/snapshots.jsonl', [
+            {'timestamp': '2026-07-08T01:00:00Z', 'event_type': 'MARKET_SNAPSHOT', 'bot_version': 'v1.1-observability-hardening'},
+            {'timestamp': '2026-06-30T12:00:00Z', 'event_type': 'MARKET_SNAPSHOT', 'bot_version': 'v1.1-observability-hardening'},
+        ])
+
+        report = audit_data_quality.audit_project(self.project)
+
+        self.assertTrue(any('stale_snapshot_timestamp_generated_recently' in item for item in report.operational_warnings))
+
+    def test_closed_trade_analytics_ordering_drift_is_accepted(self):
+        self.valid_bot_state()
+        self.write_jsonl('trading/decision_snapshots.jsonl', [{'timestamp': '2026-07-08T01:00:00Z'}])
+        self.write_jsonl('trading/trade_analytics.jsonl', [
+            {
+                'timestamp': '2026-07-08T12:00:00Z',
+                'trade_id': 'short_QQQUSDT_1',
+                'symbol': 'QQQUSDT',
+                'side': 'SHORT',
+                'status': 'CLOSED',
+                'entry_price': 10,
+                'exit_price': 9,
+                'pnl_usdt': 1,
+            },
+            {
+                'timestamp': '2026-07-08T02:00:00Z',
+                'trade_id': 'short_EWYUSDT_1',
+                'symbol': 'EWYUSDT',
+                'side': 'SHORT',
+                'status': 'CLOSED',
+                'entry_price': 10,
+                'exit_price': 9,
+                'pnl_usdt': 1,
+            },
+        ])
+
+        report = audit_data_quality.audit_project(self.project)
+
+        self.assertTrue(any('timestamp fuera de orden' in item for item in report.accepted_warnings))
+        self.assertFalse(any('timestamp fuera de orden' in item for item in report.operational_warnings))
+
+    def test_open_trade_analytics_ordering_drift_stays_operational(self):
+        self.valid_bot_state()
+        self.write_json('trading/state.json', {
+            'positions': [{'id': 'short_ACTIVE_1', 'symbol': 'ACTIVEUSDT', 'direction': 'SHORT', 'status': 'OPEN'}]
+        })
+        self.write_jsonl('trading/decision_snapshots.jsonl', [{'timestamp': '2026-07-08T01:00:00Z'}])
+        self.write_jsonl('trading/trade_analytics.jsonl', [
+            {
+                'timestamp': '2026-07-08T12:00:00Z',
+                'trade_id': 'short_PREVIOUS_1',
+                'symbol': 'PREVIOUSUSDT',
+                'side': 'SHORT',
+                'status': 'CLOSED',
+                'entry_price': 10,
+                'exit_price': 9,
+                'pnl_usdt': 1,
+            },
+            {
+                'timestamp': '2026-07-08T02:00:00Z',
+                'trade_id': 'short_ACTIVE_1',
+                'symbol': 'ACTIVEUSDT',
+                'side': 'SHORT',
+                'status': 'OPEN',
+                'entry_price': 10,
+            },
+        ])
+
+        report = audit_data_quality.audit_project(self.project)
+
+        self.assertTrue(any('timestamp fuera de orden' in item for item in report.operational_warnings))
+
+    def test_feature_gap_for_closed_trade_is_accepted(self):
+        self.valid_bot_state()
+        self.write_jsonl('trading/decision_snapshots.jsonl', [{'timestamp': '2026-07-08T01:00:00Z'}])
+        self.write_jsonl('trading/trade_analytics.jsonl', [])
+        self.write_jsonl('data/history/trades.jsonl', [
+            {
+                'timestamp': '2026-07-08T00:00:00Z',
+                'event_type': 'TRADE_OPEN',
+                'trade_id': 'short_QQQUSDT_1783515416',
+                'symbol': 'QQQUSDT',
+                'side': 'SHORT',
+                'status': 'OPEN',
+                'entry_price': 10,
+            },
+            {
+                'timestamp': '2026-07-08T01:00:00Z',
+                'event_type': 'TRADE_CLOSE',
+                'trade_id': 'short_QQQUSDT_1783515416',
+                'symbol': 'QQQUSDT',
+                'side': 'SHORT',
+                'status': 'CLOSED',
+                'exit_price': 9,
+                'pnl_usdt': 1,
+            },
+        ])
+        self.write_jsonl('data/history/features.jsonl', [
+            {
+                'timestamp': '2026-07-08T00:00:00Z',
+                'identification': {'trade_id': 'short_PREVIOUS_1', 'symbol': 'PREVIOUSUSDT'},
+                'market': {'regime': 'bear', 'btc_price': 1, 'btc_change_4h': 1},
+                'scoring': {'score_total': 90},
+                'capital': {'position_final': 10},
+                'symbol_indicators': {'entry_price': 10},
+            },
+            {
+                'timestamp': '2026-07-08T10:37:00Z',
+                'identification': {'trade_id': 'short_QQQUSDT_1783515416', 'symbol': 'QQQUSDT'},
+                'market': {'regime': 'bear', 'btc_price': 1, 'btc_change_4h': 1},
+                'scoring': {'score_total': 90},
+                'capital': {'position_final': 10},
+                'symbol_indicators': {'entry_price': 10},
+            },
+        ])
+
+        report = audit_data_quality.audit_project(self.project)
+
+        self.assertTrue(any('gap grande' in item and 'whether_trade_closed_in_history=True' in item for item in report.accepted_warnings))
+        self.assertFalse(any('gap grande' in item for item in report.operational_warnings))
+
+    def test_feature_gap_without_closed_trade_stays_operational(self):
+        self.valid_bot_state()
+        self.write_jsonl('trading/decision_snapshots.jsonl', [{'timestamp': '2026-07-08T01:00:00Z'}])
+        self.write_jsonl('trading/trade_analytics.jsonl', [])
+        self.write_jsonl('data/history/features.jsonl', [
+            {
+                'timestamp': '2026-07-08T00:00:00Z',
+                'identification': {'trade_id': 'short_PREVIOUS_1', 'symbol': 'PREVIOUSUSDT'},
+                'market': {'regime': 'bear', 'btc_price': 1, 'btc_change_4h': 1},
+                'scoring': {'score_total': 90},
+                'capital': {'position_final': 10},
+                'symbol_indicators': {'entry_price': 10},
+            },
+            {
+                'timestamp': '2026-07-08T10:37:00Z',
+                'identification': {'trade_id': 'short_QQQUSDT_1783515416', 'symbol': 'QQQUSDT'},
+                'market': {'regime': 'bear', 'btc_price': 1, 'btc_change_4h': 1},
+                'scoring': {'score_total': 90},
+                'capital': {'position_final': 10},
+                'symbol_indicators': {'entry_price': 10},
+            },
+        ])
+
+        report = audit_data_quality.audit_project(self.project)
+
+        self.assertTrue(any('gap grande' in item for item in report.operational_warnings))
+
+    def test_historical_feature_missing_fields_are_legacy_not_operational(self):
+        self.valid_bot_state()
+        self.write_jsonl('trading/decision_snapshots.jsonl', [{'timestamp': '2026-07-08T01:00:00Z'}])
+        self.write_jsonl('trading/trade_analytics.jsonl', [])
+        self.write_jsonl('data/history/features.jsonl', [
+            {
+                'timestamp': '2026-06-30T12:00:00Z',
+                'identification': {'trade_id': 'legacy_feature', 'symbol': 'ETHUSDT'},
+                'market': {'btc_price': 1, 'btc_change_4h': 1},
+                'scoring': {'score_total': 90},
+                'capital': {},
+                'symbol_indicators': {'entry_price': 10},
+            },
+        ])
+
+        report = audit_data_quality.audit_project(self.project)
+
+        self.assertTrue(any('market.regime faltante' in item for item in report.legacy_warnings))
+        self.assertTrue(any('capital.position_final faltante' in item for item in report.legacy_warnings))
+        self.assertFalse(any('market.regime faltante' in item for item in report.operational_warnings))
+
     def test_recent_gap_with_recovered_metadata_is_accepted_warning(self):
         self.valid_bot_state()
         self.write_jsonl('trading/decision_snapshots.jsonl', [
