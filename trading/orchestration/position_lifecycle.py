@@ -12,6 +12,181 @@ import shorts
 import utils
 
 
+def _state_contains_position(state, pos):
+    trade_id = str(pos.get('id') or pos.get('trade_id') or '')
+    symbol = str(pos.get('symbol') or '').upper()
+    direction = str(pos.get('direction') or '').lower()
+    for current in state.get('positions', []) if isinstance(state, dict) else []:
+        current_id = str(current.get('id') or current.get('trade_id') or '')
+        current_symbol = str(current.get('symbol') or '').upper()
+        current_direction = str(current.get('direction') or '').lower()
+        if trade_id and current_id == trade_id:
+            return True
+        if symbol and current_symbol == symbol and (not direction or current_direction == direction):
+            return True
+    return False
+
+
+def _first_futures_position(positions, symbol):
+    if isinstance(positions, dict):
+        positions = [positions]
+    for item in positions or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get('symbol') or '').upper() == str(symbol).upper():
+            return item
+    return {}
+
+
+def _futures_position_amount(binance, symbol):
+    if hasattr(binance, 'futures_position_risk'):
+        positions = binance.futures_position_risk({'symbol': symbol})
+    else:
+        positions = binance.fut_signed('GET', '/fapi/v2/positionRisk', {'symbol': symbol})
+    item = _first_futures_position(positions, symbol)
+    return float(item.get('positionAmt') or 0), item
+
+
+def _futures_open_orders(binance, symbol):
+    if hasattr(binance, 'futures_open_orders'):
+        orders = binance.futures_open_orders({'symbol': symbol})
+    else:
+        orders = binance.fut_signed('GET', '/fapi/v1/openOrders', {'symbol': symbol})
+    return orders if isinstance(orders, list) else []
+
+
+def _spot_free_balance(binance, symbol):
+    account = binance.get_spot_account()
+    asset = str(symbol).replace('USDT', '')
+    balances = account.get('balances', []) if isinstance(account, dict) else []
+    return next((float(item.get('free') or 0) for item in balances if item.get('asset') == asset), 0.0)
+
+
+def _spot_open_orders(binance, symbol):
+    if hasattr(binance, 'spot_open_orders'):
+        orders = binance.spot_open_orders({'symbol': symbol})
+    else:
+        orders = binance.spot_signed('GET', '/api/v3/openOrders', {'symbol': symbol})
+    return orders if isinstance(orders, list) else []
+
+
+def _error_details(error):
+    try:
+        details = utils.extract_http_error_details(error)
+    except Exception:
+        details = {'error': str(error)}
+    details.setdefault('error', str(error))
+    return details
+
+
+def _partial_failure_message(direction, symbol, resolution):
+    if resolution == 'position_already_closed':
+        return f'Parcial {direction} {symbol} fallo, pero la posicion ya figura cerrada / sin exposicion. Sin accion requerida.'
+    if resolution == 'still_open_protected':
+        return f'Parcial {direction} {symbol} fallo, pero la posicion sigue abierta con proteccion. Sin accion critica requerida.'
+    if resolution == 'still_open_unprotected':
+        return f'Parcial {direction} {symbol} fallo y la posicion sigue abierta sin proteccion.'
+    return f'Parcial {direction or "UNKNOWN"} {symbol} fallo y no se pudo verificar estado real.'
+
+
+def classify_partial_failure_after_exchange_check(pos, state, binance, error, side=None, attempted_quantity=None, order_type='MARKET'):
+    symbol = pos.get('symbol')
+    direction = str(side or pos.get('direction') or '').upper()
+    trade_id = pos.get('id') or pos.get('trade_id')
+    state_quantity = pos.get('quantity')
+    details = {
+        'symbol': symbol,
+        'side': direction,
+        'trade_id': trade_id,
+        'attempted_quantity': attempted_quantity,
+        'state_quantity': state_quantity,
+        'order_type': order_type,
+        'timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+        'error': _error_details(error),
+        'in_state_after_check': _state_contains_position(state, pos),
+    }
+
+    try:
+        if direction == 'SHORT':
+            position_amt, position = _futures_position_amount(binance, symbol)
+            orders = _futures_open_orders(binance, symbol)
+            details.update({
+                'position_amt_after_check': position_amt,
+                'open_orders_count_after_check': len(orders),
+                'position_after_check': position,
+                'reduce_only_orders_after_check': sum(1 for order in orders if str(order.get('reduceOnly')).lower() == 'true'),
+            })
+            if abs(position_amt) <= 1e-12:
+                resolution = 'position_already_closed'
+                severity = 'INFO'
+                event = 'partial_failed_but_position_closed'
+            elif orders:
+                resolution = 'still_open_protected'
+                severity = 'INFO'
+                event = 'partial_failed_but_position_still_protected'
+            else:
+                resolution = 'still_open_unprotected'
+                severity = 'ERROR'
+                event = 'partial_failed_position_unprotected'
+        else:
+            free_balance = _spot_free_balance(binance, symbol)
+            orders = _spot_open_orders(binance, symbol)
+            state_qty = float(state_quantity or 0)
+            details.update({
+                'spot_free_balance_after_check': free_balance,
+                'open_orders_count_after_check': len(orders),
+            })
+            if free_balance + 1e-12 < state_qty and not details['in_state_after_check']:
+                resolution = 'position_already_closed'
+                severity = 'INFO'
+                event = 'partial_failed_but_position_closed'
+            elif orders:
+                resolution = 'still_open_protected'
+                severity = 'INFO'
+                event = 'partial_failed_but_position_still_protected'
+            else:
+                resolution = 'still_open_unprotected'
+                severity = 'ERROR'
+                event = 'partial_failed_position_unprotected'
+    except Exception as check_error:
+        details.update({
+            'exchange_check_error': _error_details(check_error),
+            'position_amt_after_check': None,
+            'open_orders_count_after_check': None,
+        })
+        resolution = 'state_unknown'
+        severity = 'WARNING'
+        event = 'partial_failed_state_unknown'
+
+    message = _partial_failure_message(direction, symbol, resolution)
+    details['resolution'] = resolution
+    details['severity'] = severity
+    return {
+        'resolution': resolution,
+        'severity': severity,
+        'event': event,
+        'message': message,
+        'details': details,
+        'risk_alert': resolution in {'still_open_unprotected', 'state_unknown'},
+    }
+
+
+def _record_partial_failure_classification(result):
+    details = result.get('details') or {}
+    try:
+        decision_timeline.record_order_event(
+            'PARTIAL_CLOSE_FAILED',
+            details.get('symbol'),
+            details.get('side'),
+            result.get('message'),
+            level=result.get('severity', 'WARNING'),
+            details=details,
+            related_trade_id=details.get('trade_id'),
+        )
+    except Exception:
+        pass
+
+
 def recolocar_oco_long(pos, sym, qty_total, step, price, tp, entry, binance, out_fn):
     import urllib.error as _ue
     try:
@@ -207,7 +382,19 @@ def check_partial_long(pos, state, binance, out_fn, analytics, recolocar_oco_lon
             })
         except _ue.HTTPError as e:
             err = utils._binance_error_msg(e)
-            out_fn(f'⚠️ Parcial LONG {sym}: venta fallida ({err})')
+            classification = classify_partial_failure_after_exchange_check(
+                pos,
+                state,
+                binance,
+                e,
+                side='LONG',
+                attempted_quantity=qty_half_real,
+                order_type='MARKET',
+            )
+            _record_partial_failure_classification(classification)
+            out_fn(f"WARNING: {classification['message']} Error: {err}")
+            if classification.get('risk_alert'):
+                utils.send_alert(f"{classification['message']} Error: {err}")
             if oco_cancelled:
                 recolocar_oco_long_fn(pos, sym, qty_half_real + qty_rest_real, step, price, tp, entry)
             return
@@ -401,4 +588,16 @@ def check_partial_short(pos, state, binance, out_fn, analytics):
             out_fn(f'⚠️ Futures residual check {sym} falló: {residual_error}')
 
     except Exception as e:
-        out_fn(f'⚠️ Parcial SHORT {sym} falló: {e}')
+        classification = classify_partial_failure_after_exchange_check(
+            pos,
+            state,
+            binance,
+            e,
+            side='SHORT',
+            attempted_quantity=locals().get('qty_half'),
+            order_type='MARKET',
+        )
+        _record_partial_failure_classification(classification)
+        out_fn(f"WARNING: {classification['message']} Error: {e}")
+        if classification.get('risk_alert'):
+            utils.send_alert(f"{classification['message']} Error: {e}")

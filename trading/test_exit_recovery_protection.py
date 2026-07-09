@@ -848,6 +848,174 @@ class ExitRecoveryProtectionTests(unittest.TestCase):
         self.assertEqual(critical_level, 'CRITICAL')
         self.assertIn('no hay fallback activo', critical_msg)
 
+    def test_partial_short_failure_closed_on_exchange_is_info(self):
+        err = _http_error('{"code":-2011,"msg":"Unknown order sent."}')
+        client = Mock()
+        client.futures_position_risk.return_value = [{'symbol': 'SAMSUNGUSDT', 'positionAmt': '0.00'}]
+        client.futures_open_orders.return_value = []
+        pos = {
+            'id': 'short_SAMSUNGUSDT_1783558607',
+            'symbol': 'SAMSUNGUSDT',
+            'direction': 'short',
+            'quantity': 0.12,
+        }
+
+        result = position_lifecycle.classify_partial_failure_after_exchange_check(
+            pos,
+            {'positions': []},
+            client,
+            err,
+            side='SHORT',
+            attempted_quantity=0.06,
+        )
+
+        self.assertEqual(result['resolution'], 'position_already_closed')
+        self.assertEqual(result['severity'], 'INFO')
+        self.assertFalse(result['risk_alert'])
+        self.assertEqual(result['details']['position_amt_after_check'], 0.0)
+        self.assertEqual(result['details']['open_orders_count_after_check'], 0)
+        self.assertEqual(result['details']['error']['code'], -2011)
+        self.assertIn('sin exposicion', result['message'])
+
+    def test_partial_short_failure_open_protected_is_not_risk_alert(self):
+        err = _http_error('{"code":-2010,"msg":"Bad request"}')
+        client = Mock()
+        client.futures_position_risk.return_value = [{'symbol': 'NEARUSDT', 'positionAmt': '-2.0'}]
+        client.futures_open_orders.return_value = [{'orderId': 10, 'reduceOnly': True}]
+        pos = {'id': 'short_NEARUSDT_1', 'symbol': 'NEARUSDT', 'direction': 'short', 'quantity': 2.0}
+
+        result = position_lifecycle.classify_partial_failure_after_exchange_check(
+            pos,
+            {'positions': [pos]},
+            client,
+            err,
+            side='SHORT',
+            attempted_quantity=1.0,
+        )
+
+        self.assertEqual(result['resolution'], 'still_open_protected')
+        self.assertEqual(result['severity'], 'INFO')
+        self.assertFalse(result['risk_alert'])
+        self.assertEqual(result['details']['open_orders_count_after_check'], 1)
+
+    def test_partial_short_failure_open_unprotected_is_risk_alert(self):
+        err = _http_error('{"code":-2010,"msg":"Bad request"}')
+        client = Mock()
+        client.futures_position_risk.return_value = [{'symbol': 'NEARUSDT', 'positionAmt': '-2.0'}]
+        client.futures_open_orders.return_value = []
+        pos = {'id': 'short_NEARUSDT_1', 'symbol': 'NEARUSDT', 'direction': 'short', 'quantity': 2.0}
+
+        result = position_lifecycle.classify_partial_failure_after_exchange_check(
+            pos,
+            {'positions': [pos]},
+            client,
+            err,
+            side='SHORT',
+            attempted_quantity=1.0,
+        )
+
+        self.assertEqual(result['resolution'], 'still_open_unprotected')
+        self.assertEqual(result['severity'], 'ERROR')
+        self.assertTrue(result['risk_alert'])
+        self.assertIn('sin proteccion', result['message'])
+
+    def test_partial_long_failure_closed_on_exchange_is_info(self):
+        err = _http_error('{"code":-2010,"msg":"Bad request"}')
+        client = Mock()
+        client.get_spot_account.return_value = {
+            'balances': [{'asset': 'ETH', 'free': '0.0', 'locked': '0'}],
+        }
+        client.spot_open_orders.return_value = []
+        pos = {'id': 'long_ETHUSDT_1', 'symbol': 'ETHUSDT', 'direction': 'long', 'quantity': 0.5}
+
+        result = position_lifecycle.classify_partial_failure_after_exchange_check(
+            pos,
+            {'positions': []},
+            client,
+            err,
+            side='LONG',
+            attempted_quantity=0.25,
+        )
+
+        self.assertEqual(result['resolution'], 'position_already_closed')
+        self.assertEqual(result['severity'], 'INFO')
+        self.assertFalse(result['risk_alert'])
+        self.assertEqual(result['details']['spot_free_balance_after_check'], 0.0)
+
+    def test_partial_failure_unknown_when_exchange_check_fails(self):
+        err = _http_error('{"code":-2010,"msg":"Bad request"}')
+        client = Mock()
+        client.futures_position_risk.side_effect = RuntimeError('position risk unavailable')
+        pos = {'id': 'short_NEARUSDT_1', 'symbol': 'NEARUSDT', 'direction': 'short', 'quantity': 2.0}
+
+        result = position_lifecycle.classify_partial_failure_after_exchange_check(
+            pos,
+            {'positions': [pos]},
+            client,
+            err,
+            side='SHORT',
+            attempted_quantity=1.0,
+        )
+
+        self.assertEqual(result['resolution'], 'state_unknown')
+        self.assertEqual(result['severity'], 'WARNING')
+        self.assertTrue(result['risk_alert'])
+        self.assertIn('exchange_check_error', result['details'])
+
+    def test_partial_short_failure_integration_samsung_closed_does_not_alert(self):
+        err = _http_error('{"code":-2010,"msg":"Bad request"}')
+        client = Mock()
+        client.get_fut_price.return_value = 9.0
+        client.get_futures_filters.return_value = {'step_size': 0.01, 'tick_size': 0.01, 'min_qty': 0.01}
+        client.fut_signed.side_effect = err
+        client.futures_position_risk.return_value = [{'symbol': 'SAMSUNGUSDT', 'positionAmt': '0.00'}]
+        client.futures_open_orders.return_value = []
+        pos = {
+            'id': 'short_SAMSUNGUSDT_1783558607',
+            'symbol': 'SAMSUNGUSDT',
+            'direction': 'short',
+            'entry_price': 10.0,
+            'tp': 8.0,
+            'sl': 11.0,
+            'quantity': 0.12,
+        }
+        output = []
+
+        with patch('utils.send_alert') as send_alert, \
+             patch('decision_timeline.record_order_event') as timeline:
+            position_lifecycle.check_partial_short(pos, {'positions': []}, client, output.append, Mock())
+
+        send_alert.assert_not_called()
+        timeline.assert_called_once()
+        self.assertEqual(timeline.call_args.args[0], 'PARTIAL_CLOSE_FAILED')
+        self.assertEqual(timeline.call_args.kwargs['details']['resolution'], 'position_already_closed')
+        self.assertTrue(any('sin exposicion' in line for line in output))
+
+    def test_partial_short_failure_integration_unprotected_alerts(self):
+        err = _http_error('{"code":-2010,"msg":"Bad request"}')
+        client = Mock()
+        client.get_fut_price.return_value = 9.0
+        client.get_futures_filters.return_value = {'step_size': 0.01, 'tick_size': 0.01, 'min_qty': 0.01}
+        client.fut_signed.side_effect = err
+        client.futures_position_risk.return_value = [{'symbol': 'NEARUSDT', 'positionAmt': '-2.0'}]
+        client.futures_open_orders.return_value = []
+        pos = {
+            'id': 'short_NEARUSDT_1',
+            'symbol': 'NEARUSDT',
+            'direction': 'short',
+            'entry_price': 10.0,
+            'tp': 8.0,
+            'sl': 11.0,
+            'quantity': 2.0,
+        }
+
+        with patch('utils.send_alert') as send_alert, \
+             patch('decision_timeline.record_order_event'):
+            position_lifecycle.check_partial_short(pos, {'positions': [pos]}, client, lambda _msg: None, Mock())
+
+        send_alert.assert_called_once()
+        self.assertIn('sin proteccion', send_alert.call_args.args[0])
+
 
 if __name__ == '__main__':
     unittest.main()

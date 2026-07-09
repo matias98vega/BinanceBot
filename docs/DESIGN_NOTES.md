@@ -358,6 +358,14 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Mejora futura:** agregar una segunda capa opcional de recovery con aprobacion persistente, reporte post-cierre y reconciliacion automatica del estado una vez confirmado `positionAmt=0`.
 
+## Clasificacion de Fallos de Parciales
+
+**Problema:** un cierre parcial Futures puede fallar con HTTP 400 aunque, al verificar inmediatamente contra Binance, la posicion ya haya quedado cerrada por TP/SL/trailing o por una orden previa. Alertar ese caso como riesgo operativo genera ruido porque no queda exposicion abierta.
+
+**Decision actual:** `position_lifecycle.py` clasifica el fallo despues de consultar el estado real. Para SHORT reconsulta `futures_position_risk(symbol)` y `futures_open_orders(symbol)`; para LONG reconsulta balance Spot y open orders. Si la posicion ya no existe, el evento queda como `position_already_closed` con severidad `INFO`. Si sigue abierta con ordenes, queda como `still_open_protected`. Solo se alerta como riesgo cuando sigue abierta sin proteccion o cuando no se pudo verificar el estado real.
+
+**Observabilidad:** cada caso registra `PARTIAL_CLOSE_FAILED` en Timeline con `resolution`, detalle HTTP de Binance, cantidad intentada, cantidad en state, `position_amt_after_check` y cantidad de open orders. Esto no cambia la logica de trading ni recalcula PnL; solo evita alertas operativas falsas cuando el exchange confirma que no hay riesgo pendiente.
+
 ## Auditoria Local de Datos
 
 **Problema:** los historicos JSON/JSONL pueden degradarse con campos faltantes, lineas corruptas, timestamps invalidos o relaciones incompletas entre trades, features, timeline, rebalance y ledger.
