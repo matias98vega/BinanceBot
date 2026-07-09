@@ -52,10 +52,16 @@ REBALANCE_ALIGNMENT_TOLERANCE_USDT = _env_float('REBALANCE_ALIGNMENT_TOLERANCE_U
 _LAST_FUTURES_CAPITAL_DETAILS = {}
 
 
-def _rebalance_log(message):
+def _rebalance_log(message, level=None):
     line = f'REBALANCE {message}'
     try:
-        logging.warning(line)
+        log_level = (level or 'WARNING').upper()
+        if log_level == 'ERROR':
+            logging.error(line)
+        elif log_level == 'INFO':
+            logging.info(line)
+        else:
+            logging.warning(line)
     except Exception:
         pass
     try:
@@ -232,7 +238,8 @@ def _record_rebalance_pending_check(direction, amount, pending_reason, blocked_r
     if isinstance(context, dict):
         payload.update({key: _safe_float(value) if isinstance(value, (int, float)) else value for key, value in context.items()})
     _write_rebalance_status(payload)
-    logging.warning(
+    log_fn = logging.warning if blocked_reason or str(status or '').upper() == 'BLOCKED' else logging.info
+    log_fn(
         'REBALANCE PENDING CHECK status=%s direction=%s amount=%s attempts=%s pending_reason=%s blocked_reason=%s context=%s',
         status, _direction_arrow(effective_direction), effective_amount, attempts, pending_reason, blocked_reason, context or {},
     )
@@ -267,7 +274,7 @@ def _record_rebalance_pending_check(direction, amount, pending_reason, blocked_r
 
 
 def _record_rebalance_attempt(direction, amount, attempt, context=None):
-    logging.warning(
+    logging.info(
         'REBALANCE ATTEMPT direction=%s amount=%s attempt=%s context=%s',
         _direction_arrow(direction), amount, attempt, context or {},
     )
@@ -373,7 +380,8 @@ def reconcile_rebalance_status_if_aligned(spot_actual, fut_actual, target_spot, 
     diff_spot = abs(float(spot_actual or 0) - float(target_spot or 0))
     diff_fut = abs(float(fut_actual or 0) - float(target_fut or 0))
     aligned = diff_spot <= tol and diff_fut <= tol
-    logging.warning(
+    log_fn = logging.info if aligned else logging.warning
+    log_fn(
         'REBALANCE RECONCILE CHECK target_spot=%s target_futures=%s real_spot=%s real_futures=%s diff_spot=%s diff_futures=%s tolerance=%s aligned=%s',
         target_spot, target_fut, spot_actual, fut_actual, diff_spot, diff_fut, tol, aligned,
     )
@@ -423,7 +431,7 @@ def reconcile_rebalance_status_if_aligned(spot_actual, fut_actual, target_spot, 
         'target_futures': _safe_float(target_fut),
     }
     _write_rebalance_status(resolved)
-    logging.warning(
+    logging.info(
         'REBALANCE RECONCILED reason=capital_already_aligned target_spot=%s target_futures=%s real_spot=%s real_futures=%s diff_spot=%s diff_futures=%s tolerance=%s',
         target_spot, target_fut, spot_actual, fut_actual, diff_spot, diff_fut, tol,
     )
@@ -514,7 +522,7 @@ def _transfer_with_recovery(direction, calculated_amount, context=None):
         return False, None, {'attempts': 0, 'final_amount': 0.0, 'buffer_applied': buffer}
     transfer_type = _transfer_type(direction)
     payload = {'type': transfer_type, 'asset': 'USDT', 'amount': str(attempt_1)}
-    logging.warning(
+    logging.info(
         'REBALANCE TRANSFER attempt=1 direction=%s calculated_amount=%s buffer=%s attempt_1=%s',
         _direction_arrow(direction), calculated_amount, buffer, attempt_1,
     )
@@ -522,7 +530,7 @@ def _transfer_with_recovery(direction, calculated_amount, context=None):
     try:
         BINANCE.spot_signed('POST', '/sapi/v1/asset/transfer', payload)
         clear_rebalance_status()
-        logging.warning(
+        logging.info(
             'REBALANCE TRANSFER result=success direction=%s calculated_amount=%s buffer=%s attempt_1=%s final_amount=%s',
             _direction_arrow(direction), calculated_amount, buffer, attempt_1, attempt_1,
         )
@@ -556,7 +564,7 @@ def _transfer_with_recovery(direction, calculated_amount, context=None):
             return False, _format_transfer_error(direction, first_details, exc), {'attempts': 1, 'final_amount': attempt_1, 'buffer_applied': buffer, 'status': first_status}
 
         payload_2 = {'type': transfer_type, 'asset': 'USDT', 'amount': str(attempt_2)}
-        logging.warning(
+        logging.info(
             'REBALANCE TRANSFER attempt=2 direction=%s calculated_amount=%s buffer=%s attempt_1=%s attempt_2=%s',
             _direction_arrow(direction), calculated_amount, buffer, attempt_1, attempt_2,
         )
@@ -571,7 +579,7 @@ def _transfer_with_recovery(direction, calculated_amount, context=None):
                 'buffer_applied': buffer,
             })
             _record_rebalance_recovered(direction, calculated_amount, attempt_2, buffer, 2)
-            logging.warning(
+            logging.info(
                 'REBALANCE TRANSFER result=recovered direction=%s calculated_amount=%s buffer=%s attempt_1=%s attempt_2=%s final_amount=%s',
                 _direction_arrow(direction), calculated_amount, buffer, attempt_1, attempt_2, attempt_2,
             )
@@ -801,7 +809,8 @@ def rebalance(state, btc_ctx=None):
         f'CHECK: regime={trend} total={total_capital:.2f} spot_free={spot_free:.2f} '
         f'spot_actual={spot_actual:.2f} fut_actual={fut_actual:.2f} fut_free={fut_free:.2f} '
         f'target_spot={target_spot:.2f} target_fut={target_fut:.2f} '
-        f'diff_spot={diff_spot:.2f} diff_fut={diff_fut:.2f}'
+        f'diff_spot={diff_spot:.2f} diff_fut={diff_fut:.2f}',
+        level='INFO',
     )
     reconcile_rebalance_status_if_aligned(
         spot_actual=spot_actual,
@@ -813,7 +822,8 @@ def rebalance(state, btc_ctx=None):
     if abs(diff_fut) < REBALANCE_MIN_USDT:
         _rebalance_log(
             f'SKIP: reason=balances aligned regime={trend} spot_actual={spot_actual:.2f} '
-            f'fut_actual={fut_actual:.2f} diff_fut={diff_fut:.2f}'
+            f'fut_actual={fut_actual:.2f} diff_fut={diff_fut:.2f}',
+            level='INFO',
         )
         return False, f'Balances ya alineados ({trend}): spot=${spot_actual:.2f} fut=${fut_actual:.2f}'
 
@@ -829,7 +839,8 @@ def rebalance(state, btc_ctx=None):
         calculated_amount = _transferable_amount(diff_fut, spot_free)
         _rebalance_log(
             f'CHECK: direction=Spot->Futures calculated_amount={calculated_amount:.2f} '
-            f'buffer={_transfer_buffer():.2f}'
+            f'buffer={_transfer_buffer():.2f}',
+            level='INFO',
         )
         try:
             capped_amount = capital_manager.cap_transfer_amount('FUTURES', fut_actual, calculated_amount)
@@ -861,7 +872,8 @@ def rebalance(state, btc_ctx=None):
         amount = _apply_transfer_buffer(calculated_amount)
         _rebalance_log(
             f'CHECK: direction=Spot->Futures calculated_amount={calculated_amount:.2f} '
-            f'buffer={_transfer_buffer():.2f} final_amount={amount:.2f}'
+            f'buffer={_transfer_buffer():.2f} final_amount={amount:.2f}',
+            level='INFO',
         )
         if amount < REBALANCE_MIN_USDT:
             if trend_flipped and longs_open:
@@ -906,7 +918,7 @@ def rebalance(state, btc_ctx=None):
             return False, f'No se puede reducir spot: hay {len(longs_open)} long(s) activo(s)'
 
         try:
-            _rebalance_log(f'TRANSFER: {amount:.2f} Spot -> Futures')
+            _rebalance_log(f'TRANSFER: {amount:.2f} Spot -> Futures', level='INFO')
             transfer_ok, transfer_result, transfer_meta = _transfer_with_recovery('SPOT_TO_FUTURES', amount, context={
                 'spot_real': _safe_float(spot_actual),
                 'futures_real': _safe_float(fut_actual),
@@ -934,7 +946,8 @@ def rebalance(state, btc_ctx=None):
         calculated_amount = _transferable_amount(-diff_fut, fut_free)
         _rebalance_log(
             f'CHECK: direction=Futures->Spot calculated_amount={calculated_amount:.2f} '
-            f'buffer={_transfer_buffer():.2f}'
+            f'buffer={_transfer_buffer():.2f}',
+            level='INFO',
         )
         try:
             capped_amount = capital_manager.cap_transfer_amount('SPOT', spot_actual, calculated_amount)
@@ -966,7 +979,8 @@ def rebalance(state, btc_ctx=None):
         amount = _apply_transfer_buffer(calculated_amount)
         _rebalance_log(
             f'CHECK: direction=Futures->Spot calculated_amount={calculated_amount:.2f} '
-            f'buffer={_transfer_buffer():.2f} final_amount={amount:.2f}'
+            f'buffer={_transfer_buffer():.2f} final_amount={amount:.2f}',
+            level='INFO',
         )
         if amount < REBALANCE_MIN_USDT:
             if trend_flipped and shorts_open:
@@ -1044,7 +1058,7 @@ def rebalance(state, btc_ctx=None):
             )
 
         try:
-            _rebalance_log(f'TRANSFER: {amount:.2f} Futures -> Spot')
+            _rebalance_log(f'TRANSFER: {amount:.2f} Futures -> Spot', level='INFO')
             transfer_ok, transfer_result, transfer_meta = _transfer_with_recovery('FUTURES_TO_SPOT', amount, context={
                 'spot_real': _safe_float(spot_actual),
                 'futures_real': _safe_float(fut_actual),

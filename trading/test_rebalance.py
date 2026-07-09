@@ -105,6 +105,25 @@ class RebalanceDiagnosticsTests(unittest.TestCase):
         with open(self.status_file, encoding='utf-8') as f:
             return json.load(f)
 
+    def test_rebalance_log_can_emit_info_for_benign_messages(self):
+        with patch.object(rebalance.logging, 'info') as info_log, \
+             patch.object(rebalance.logging, 'warning') as warning_log, \
+             patch.object(rebalance.decision_timeline, 'record_rebalance_event'):
+            rebalance._rebalance_log('SKIP: reason=balances aligned', level='INFO')
+
+        info_log.assert_called_once()
+        warning_log.assert_not_called()
+        self.assertIn('REBALANCE SKIP: reason=balances aligned', info_log.call_args.args[0])
+
+    def test_rebalance_log_defaults_to_warning_for_unclassified_messages(self):
+        with patch.object(rebalance.logging, 'warning') as warning_log, \
+             patch.object(rebalance.logging, 'info') as info_log, \
+             patch.object(rebalance.decision_timeline, 'record_rebalance_event'):
+            rebalance._rebalance_log('SKIP: reason=active shorts')
+
+        warning_log.assert_called_once()
+        info_log.assert_not_called()
+
     def test_persists_rebalance_failure_details(self):
         with patch.object(rebalance.decision_timeline, 'record_rebalance_event') as timeline:
             status, details = rebalance._record_rebalance_failure(
@@ -265,6 +284,15 @@ class RebalanceDiagnosticsTests(unittest.TestCase):
         self.assertEqual(timeline.call_args_list[0].kwargs['details']['amount'], 22.16)
         self.assertEqual(timeline.call_args_list[0].kwargs['details']['target_spot'], 49.26)
 
+    def test_rebalance_attempt_logs_info_not_warning(self):
+        with patch.object(rebalance.logging, 'info') as info_log, \
+             patch.object(rebalance.logging, 'warning') as warning_log, \
+             patch.object(rebalance.decision_timeline, 'record_rebalance_event'):
+            rebalance._record_rebalance_attempt('FUTURES_TO_SPOT', 22.16, 1, context={})
+
+        self.assertTrue(any('REBALANCE ATTEMPT' in call.args[0] for call in info_log.call_args_list))
+        self.assertFalse(any('REBALANCE ATTEMPT' in call.args[0] for call in warning_log.call_args_list))
+
     def test_telegram_capital_shows_pending_without_attempt_reason(self):
         metrics = {
             'total_real': 54.0,
@@ -406,6 +434,23 @@ class RebalanceDiagnosticsTests(unittest.TestCase):
         self.assertEqual(fake.calls[0][2]['amount'], '26.84')
         self.assertFalse(self.read_status()['pending'])
 
+    def test_transfer_success_logs_info_not_warning(self):
+        fake = FakeBinance([{'tranId': 1}])
+        with patch.object(rebalance, 'BINANCE', fake), \
+             patch.object(rebalance, 'REBALANCE_TRANSFER_BUFFER_USDT', 0.10), \
+             patch.object(rebalance.decision_timeline, 'record_rebalance_event'), \
+             patch.object(rebalance.logging, 'info') as info_log, \
+             patch.object(rebalance.logging, 'warning') as warning_log:
+            ok, amount, meta = rebalance._transfer_with_recovery('SPOT_TO_FUTURES', 26.84)
+
+        self.assertTrue(ok)
+        info_messages = [call.args[0] for call in info_log.call_args_list]
+        warning_messages = [call.args[0] for call in warning_log.call_args_list]
+        self.assertTrue(any('REBALANCE TRANSFER attempt=1' in message for message in info_messages))
+        self.assertTrue(any('REBALANCE TRANSFER result=success' in message for message in info_messages))
+        self.assertFalse(any('REBALANCE TRANSFER attempt=1' in message for message in warning_messages))
+        self.assertFalse(any('REBALANCE TRANSFER result=success' in message for message in warning_messages))
+
     def test_transfer_recovers_on_minus_5013_second_attempt(self):
         fake = FakeBinance([
             http_error(body='{"code":-5013,"msg":"Asset transfer failed: insufficient balance"}'),
@@ -533,6 +578,34 @@ class RebalanceDiagnosticsTests(unittest.TestCase):
         self.assertIn('capital ya alineado', args[1])
         self.assertEqual(kwargs['details']['diff_futures'], 0.1)
         self.assertEqual(kwargs['details']['tolerance'], 0.2)
+
+    def test_reconcile_aligned_logs_info_not_warning(self):
+        with patch.object(rebalance.decision_timeline, 'record_rebalance_event'):
+            rebalance._record_rebalance_failure(
+                'SPOT_TO_FUTURES',
+                26.94,
+                http_error(body='{"code":-5013,"msg":"Asset transfer failed: insufficient balance"}'),
+                {},
+            )
+
+        with patch.object(rebalance.decision_timeline, 'record_rebalance_event'), \
+             patch.object(rebalance.logging, 'info') as info_log, \
+             patch.object(rebalance.logging, 'warning') as warning_log:
+            resolved = rebalance.reconcile_rebalance_status_if_aligned(
+                spot_actual=0.10,
+                fut_actual=53.91,
+                target_spot=0.0,
+                target_fut=54.01,
+                tolerance=0.20,
+            )
+
+        self.assertIsNotNone(resolved)
+        info_messages = [call.args[0] for call in info_log.call_args_list]
+        warning_messages = [call.args[0] for call in warning_log.call_args_list]
+        self.assertTrue(any('REBALANCE RECONCILE CHECK' in message for message in info_messages))
+        self.assertTrue(any('REBALANCE RECONCILED' in message for message in info_messages))
+        self.assertFalse(any('REBALANCE RECONCILE CHECK' in message for message in warning_messages))
+        self.assertFalse(any('REBALANCE RECONCILED' in message for message in warning_messages))
 
     def test_reconcile_keeps_pending_when_outside_tolerance(self):
         with patch.object(rebalance.decision_timeline, 'record_rebalance_event'):
