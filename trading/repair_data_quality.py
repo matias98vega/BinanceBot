@@ -1057,9 +1057,102 @@ def build_stale_market_snapshots_plan(project_dir=PROJECT_DIR, timestamp='2026-0
         'notes': [
             'No historical file was modified.',
             'This plan only inspects stale MARKET_SNAPSHOT records and nearby context.',
-            'Snapshot writes are intentionally not implemented in this iteration.',
+            'Use --write --confirm-timestamp <timestamp> to apply the audited cleanup with backup and report.',
         ],
     }
+
+
+def _is_removable_stale_market_snapshot(record, timestamp):
+    if not isinstance(record, dict):
+        return False, 'not_dict'
+    if str(record.get('event_type') or '').upper() != 'MARKET_SNAPSHOT':
+        return False, 'not_market_snapshot'
+    if record.get('timestamp') != timestamp:
+        return False, 'timestamp_mismatch'
+    if record.get('trade_id') or record.get('order_id'):
+        return False, 'has_trade_or_order_id'
+    blocked_event_types = {'TRADE_OPEN', 'TRADE_CLOSE', 'REBALANCE', 'LEDGER', 'RESIDUAL', 'RECOVERY'}
+    if str(record.get('event_type') or '').upper() in blocked_event_types:
+        return False, 'protected_event_type'
+    return True, 'removable_market_snapshot'
+
+
+def apply_stale_market_snapshots_cleanup(project_dir=PROJECT_DIR, timestamp='2026-06-30T12:00:00Z', confirm_timestamp=None):
+    generated_at = _now_iso()
+    relpath = 'data/history/snapshots.jsonl'
+    path = os.path.join(project_dir, *relpath.split('/'))
+    report = {
+        'schema_version': REPAIR_SCHEMA_VERSION,
+        'generated_at': generated_at,
+        'action': 'stale_market_snapshots_cleanup',
+        'target_timestamp': timestamp,
+        'files_scanned': [relpath],
+        'files_modified': [],
+        'occurrences_found': 0,
+        'occurrences_removed': 0,
+        'backup_paths': [],
+        'report_path': None,
+        'sample_removed_records': [],
+        'write_performed': False,
+        'safety_filters_applied': [
+            'path == data/history/snapshots.jsonl',
+            'valid JSONL object',
+            'event_type == MARKET_SNAPSHOT',
+            'timestamp == target_timestamp',
+            'no trade_id',
+            'no order_id',
+            'not TRADE_OPEN/TRADE_CLOSE/REBALANCE/LEDGER/RESIDUAL/RECOVERY',
+        ],
+        'skipped_records_count': 0,
+        'skipped_reasons': {},
+    }
+    if confirm_timestamp != timestamp:
+        report['error'] = 'confirmation_required'
+        report['message'] = '--confirm-timestamp must exactly match --timestamp.'
+        return report, 2
+    if not os.path.exists(path):
+        report = _write_json_report(project_dir, report)
+        return report, 0
+
+    kept_lines = []
+    removed_records = []
+    with open(path, encoding='utf-8') as f:
+        for line in f:
+            raw = line.rstrip('\n')
+            try:
+                record = json.loads(raw) if raw.strip() else None
+            except json.JSONDecodeError:
+                kept_lines.append(line)
+                report['skipped_records_count'] += 1
+                report['skipped_reasons']['invalid_json'] = report['skipped_reasons'].get('invalid_json', 0) + 1
+                continue
+            removable, reason = _is_removable_stale_market_snapshot(record, timestamp)
+            if removable:
+                report['occurrences_found'] += 1
+                report['occurrences_removed'] += 1
+                removed_records.append(record)
+                if len(report['sample_removed_records']) < 20:
+                    report['sample_removed_records'].append(_public_fields(record))
+                continue
+            if isinstance(record, dict) and record.get('timestamp') == timestamp:
+                report['skipped_records_count'] += 1
+                report['skipped_reasons'][reason] = report['skipped_reasons'].get(reason, 0) + 1
+            kept_lines.append(line)
+
+    if removed_records:
+        backups_dir = os.path.join(project_dir, 'data', 'history', 'backups')
+        os.makedirs(backups_dir, exist_ok=True)
+        backup_name = f'{_stamp()}_{_safe_relpath_fragment(relpath)}.bak'
+        backup_path = os.path.join(backups_dir, backup_name)
+        shutil.copy2(path, backup_path)
+        with open(path, 'w', encoding='utf-8', newline='') as f:
+            f.writelines(kept_lines)
+        report['files_modified'].append(relpath)
+        report['backup_paths'].append(os.path.relpath(backup_path, project_dir))
+        report['write_performed'] = True
+
+    report = _write_json_report(project_dir, report)
+    return report, 0
 
 
 def main(argv=None):
@@ -1070,11 +1163,12 @@ def main(argv=None):
     parser.add_argument('--trade-id', default='short_WLDUSDT_1782763085')
     parser.add_argument('--confirm-trade-id', default=None)
     parser.add_argument('--timestamp', default='2026-06-30T12:00:00Z')
+    parser.add_argument('--confirm-timestamp', default=None)
     parser.add_argument('--write', action='store_true', help='Reserved for future use; currently rejected.')
     parser.add_argument('--apply', action='store_true', help='Reserved for future use; currently rejected.')
     args = parser.parse_args(argv)
 
-    if (args.write or args.apply) and args.plan not in {'trade-open-backfill', 'suspicious-test-record'}:
+    if (args.write or args.apply) and args.plan not in {'trade-open-backfill', 'suspicious-test-record', 'stale-market-snapshots'}:
         print('ERROR: write mode is not implemented. This scaffold is dry-run only.', file=sys.stderr)
         return 2
 
@@ -1092,6 +1186,15 @@ def main(argv=None):
             args.project_dir,
             trade_id=args.trade_id,
             confirm_trade_id=args.confirm_trade_id,
+        )
+        print(json.dumps(plan, indent=2, sort_keys=True, ensure_ascii=False))
+        return code
+
+    if (args.write or args.apply) and args.plan == 'stale-market-snapshots':
+        plan, code = apply_stale_market_snapshots_cleanup(
+            args.project_dir,
+            timestamp=args.timestamp,
+            confirm_timestamp=args.confirm_timestamp,
         )
         print(json.dumps(plan, indent=2, sort_keys=True, ensure_ascii=False))
         return code

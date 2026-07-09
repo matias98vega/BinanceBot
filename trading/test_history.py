@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -144,6 +145,31 @@ class HistoryStoreTests(unittest.TestCase):
         self.assertEqual(snapshots[0]['event_type'], 'MARKET_SNAPSHOT')
         self.assertEqual(snapshots[0]['regime'], 'bear')
         self.assertEqual(snapshots[0]['capital']['futures'], 40)
+
+    def test_record_snapshot_uses_current_timestamp_and_preserves_source_timestamp(self):
+        with patch.object(history, '_now_iso', return_value='2026-07-09T18:24:11Z'):
+            record = self.store.record_snapshot(
+                market={'btc_trend': 'bearish'},
+                timestamp='2026-06-30T12:00:00Z',
+                details={'source': 'decision_snapshot', 'module': 'analytics'},
+            )
+
+        self.assertEqual('2026-07-09T18:24:11Z', record['timestamp'])
+        self.assertEqual('2026-06-30T12:00:00Z', record['source_timestamp'])
+        self.assertEqual('decision_snapshot', record['source'])
+        self.assertEqual('analytics', record['module'])
+
+    def test_record_snapshot_allows_backfill_timestamp_with_metadata(self):
+        with patch.object(history, '_now_iso', return_value='2026-07-09T18:24:11Z'):
+            record = self.store.record_snapshot(
+                market={'btc_trend': 'bearish'},
+                timestamp='2026-06-30T12:00:00Z',
+                details={'source': 'historical_backfill', 'metadata': {'synthetic': True}},
+            )
+
+        self.assertEqual('2026-06-30T12:00:00Z', record['timestamp'])
+        self.assertNotIn('source_timestamp', record)
+        self.assertEqual({'synthetic': True}, record['metadata'])
 
 
 if __name__ == '__main__':

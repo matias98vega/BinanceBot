@@ -380,6 +380,10 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Snapshots stale:** `repair_data_quality.py --plan stale-market-snapshots --timestamp 2026-06-30T12:00:00Z` es solo diagnostico. Agrupa ocurrencias por `bot_version` y `event_type`, muestra contexto anterior/posterior, metadata backfill/import/synthetic y recomendacion. No escribe ni corrige snapshots en esta iteracion.
 
+**Timestamp de `MARKET_SNAPSHOT`:** la causa real de snapshots stale fue que `AnalyticsLogger._record_history_open` y `DecisionSnapshotLogger._record_history_snapshot` pasaban timestamps de entrada/ciclo a `history.record_snapshot`, y `HistoryStore.record_snapshot` los usaba como `timestamp` principal del evento. El contrato queda corregido: snapshots normales usan `timestamp`/`recorded_at`/`generated_at` actuales y conservan el timestamp de mercado o entrada como `source_timestamp`. Solo backfills/imports/synthetic/recovered con metadata explicita pueden mantener un timestamp historico como timestamp principal.
+
+**Limpieza auditada de snapshots stale:** `repair_data_quality.py --plan stale-market-snapshots --timestamp <ts> --write --confirm-timestamp <ts>` elimina exclusivamente lineas JSONL validas de `data/history/snapshots.jsonl` con `event_type=MARKET_SNAPSHOT`, timestamp exacto, sin `trade_id` ni `order_id`. Crea backup y reporte obligatorio; no toca JSON corrupto, trades, rebalance, ledger, residuals ni recovery.
+
 **Trades abiertos y parciales:** un `TRADE_OPEN` sin cierre no es warning operativo si existe evidencia actual en `trading/state.json`, `trading/bot_state.json` o `data/history/futures_reconciliation_status.json` de que la posicion sigue gestionada. Se reporta como `active_open_trade` informativo. Los cierres `:partial` con `trade_id` base relacionado se clasifican como `partial_close_with_related_base` en warnings conocidos aceptados. IDs sin evidencia runtime, especialmente scaffolds como `t1`, siguen como warning operativo `suspicious_test_record`.
 
 **Ventajas:** permite auditar calidad antes de usar los datos para Analytics avanzado, PnL ajustado o aprendizaje futuro sin tocar estrategia ni estado operativo.

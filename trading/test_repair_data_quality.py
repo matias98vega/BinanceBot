@@ -183,6 +183,70 @@ class RepairDataQualityTests(unittest.TestCase):
         self.assertFalse(plan['write_performed'])
         self.assertIn('previous_context', plan['matches'][0])
 
+    def test_stale_market_snapshots_write_requires_confirmation(self):
+        self.write_jsonl('data/history/snapshots.jsonl', [
+            {'timestamp': '2026-06-30T12:00:00Z', 'event_type': 'MARKET_SNAPSHOT'},
+        ])
+
+        result, code = repair_data_quality.apply_stale_market_snapshots_cleanup(
+            self.project,
+            timestamp='2026-06-30T12:00:00Z',
+            confirm_timestamp=None,
+        )
+
+        self.assertEqual(2, code)
+        self.assertFalse(result['write_performed'])
+        with open(os.path.join(self.project, 'data', 'history', 'snapshots.jsonl'), encoding='utf-8') as f:
+            self.assertIn('2026-06-30T12:00:00Z', f.read())
+
+    def test_stale_market_snapshots_write_removes_only_safe_market_snapshots(self):
+        self.write_jsonl('data/history/snapshots.jsonl', [
+            {'timestamp': '2026-07-09T18:24:11Z', 'event_type': 'MARKET_SNAPSHOT', 'id': 'keep_before'},
+            {'timestamp': '2026-06-30T12:00:00Z', 'event_type': 'MARKET_SNAPSHOT', 'id': 'remove_me'},
+            {'timestamp': '2026-06-30T12:00:00Z', 'event_type': 'MARKET_SNAPSHOT', 'trade_id': 't1', 'id': 'keep_trade'},
+            {'timestamp': '2026-06-30T12:00:00Z', 'event_type': 'TRADE_OPEN', 'trade_id': 't2', 'id': 'keep_trade_open'},
+            {'timestamp': '2026-06-30T12:00:00Z', 'event_type': 'REBALANCE', 'id': 'keep_rebalance'},
+            {'timestamp': '2026-07-09T18:25:11Z', 'event_type': 'MARKET_SNAPSHOT', 'id': 'keep_after'},
+        ])
+
+        result, code = repair_data_quality.apply_stale_market_snapshots_cleanup(
+            self.project,
+            timestamp='2026-06-30T12:00:00Z',
+            confirm_timestamp='2026-06-30T12:00:00Z',
+        )
+
+        self.assertEqual(0, code)
+        self.assertTrue(result['write_performed'])
+        self.assertEqual(1, result['occurrences_removed'])
+        self.assertEqual(['data/history/snapshots.jsonl'], result['files_modified'])
+        self.assertTrue(result['backup_paths'])
+        self.assertTrue(os.path.exists(os.path.join(self.project, result['report_path'])))
+        self.assertIn('has_trade_or_order_id', result['skipped_reasons'])
+        self.assertIn('not_market_snapshot', result['skipped_reasons'])
+        with open(os.path.join(self.project, 'data', 'history', 'snapshots.jsonl'), encoding='utf-8') as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+        self.assertEqual(['keep_before', 'keep_trade', 'keep_trade_open', 'keep_rebalance', 'keep_after'], [row['id'] for row in rows])
+
+    def test_stale_market_snapshots_write_preserves_corrupt_jsonl(self):
+        path = os.path.join(self.project, 'data', 'history', 'snapshots.jsonl')
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write('{bad json}\n')
+            f.write(json.dumps({'timestamp': '2026-06-30T12:00:00Z', 'event_type': 'MARKET_SNAPSHOT'}) + '\n')
+
+        result, code = repair_data_quality.apply_stale_market_snapshots_cleanup(
+            self.project,
+            timestamp='2026-06-30T12:00:00Z',
+            confirm_timestamp='2026-06-30T12:00:00Z',
+        )
+
+        self.assertEqual(0, code)
+        self.assertTrue(result['write_performed'])
+        self.assertEqual(1, result['occurrences_removed'])
+        self.assertEqual(1, result['skipped_reasons']['invalid_json'])
+        with open(path, encoding='utf-8') as f:
+            self.assertEqual('{bad json}\n', f.read())
+
     def test_cli_outputs_json_plan(self):
         with patch('builtins.print') as mocked_print:
             code = repair_data_quality.main(['--project-dir', self.project])

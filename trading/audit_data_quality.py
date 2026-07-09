@@ -228,7 +228,11 @@ def _validate_timestamp(report, path, record, previous_dt=None, previous_record=
     if previous_dt and dt < previous_dt:
         prev_value = _timestamp_value(previous_record) if isinstance(previous_record, dict) else previous_dt.isoformat()
         report.record_warning(path, _timestamp_warning_message('timestamp fuera de orden', prev_value, value, record, previous_record), record)
-    if previous_dt and (dt - previous_dt).total_seconds() > MAX_APPEND_GAP_SECONDS:
+    source_timestamp = (
+        record.get('source_timestamp') or record.get('market_data_timestamp') or record.get('candle_timestamp')
+    ) if isinstance(record, dict) else None
+    source_timestamp_separated = bool(_is_market_snapshot(record) and source_timestamp and source_timestamp != value)
+    if previous_dt and (dt - previous_dt).total_seconds() > MAX_APPEND_GAP_SECONDS and not source_timestamp_separated:
         prev_value = _timestamp_value(previous_record) if isinstance(previous_record, dict) else previous_dt.isoformat()
         gap_hours = round((dt - previous_dt).total_seconds() / 3600, 2)
         report.record_warning(path, _timestamp_warning_message(f'gap grande entre registros: {gap_hours}h', prev_value, value, record, previous_record), record)
@@ -236,7 +240,12 @@ def _validate_timestamp(report, path, record, previous_dt=None, previous_record=
 
 
 def _timestamp_warning_message(prefix, previous, current, record, previous_record=None):
-    if _is_market_snapshot(record) and not _has_backfill_metadata(record) and not _is_legacy_record(record):
+    if (
+        'timestamp fuera de orden' in prefix
+        and _is_market_snapshot(record)
+        and not _has_backfill_metadata(record)
+        and not _is_legacy_record(record)
+    ):
         prefix = f'stale_snapshot_timestamp_generated_recently {prefix}'
         record['_audit_force_operational'] = True
     parts = [
@@ -252,6 +261,9 @@ def _timestamp_warning_message(prefix, previous, current, record, previous_recor
     source = record.get('source') or record.get('module') or _get_nested(record, 'metadata.source')
     if source:
         parts.append(f'source={source}')
+    source_timestamp = record.get('source_timestamp') or record.get('market_data_timestamp') or record.get('candle_timestamp')
+    if source_timestamp:
+        parts.append(f'source_timestamp={source_timestamp}')
     metadata_flags = _backfill_metadata_flags(record)
     if metadata_flags:
         parts.append(f'metadata={",".join(metadata_flags)}')

@@ -32,6 +32,22 @@ def _iso(value=None):
         return None
 
 
+def _metadata_flags(details):
+    if not isinstance(details, dict):
+        return []
+    metadata = details.get('metadata') if isinstance(details.get('metadata'), dict) else {}
+    text = ' '.join(str(details.get(key) or '') for key in ('source', 'module', 'reason', 'description')).lower()
+    text = f'{text} ' + ' '.join(str(value or '') for value in metadata.values()).lower()
+    flags = []
+    for token in ('backfill', 'backfilled', 'imported', 'recovered', 'synthetic'):
+        if token in text:
+            flags.append(token)
+    for key in ('backfilled', 'imported', 'recovered', 'synthetic'):
+        if details.get(key) is True or metadata.get(key) is True:
+            flags.append(key)
+    return sorted(set(flags))
+
+
 def _float_or_none(value):
     if value is None:
         return None
@@ -264,17 +280,33 @@ class HistoryStore:
     def record_snapshot(self, market=None, capital=None, exposure=None, positions=None,
                         max_positions=None, timestamp=None, details=None):
         market_payload = market or {}
+        details_payload = details or {}
+        source_timestamp = _iso(timestamp) if timestamp is not None else None
+        backfill_flags = _metadata_flags(details_payload)
+        now_iso = _now_iso()
+        event_timestamp = source_timestamp if backfill_flags else now_iso
         record = {
             'event_type': 'MARKET_SNAPSHOT',
-            'timestamp': _iso(timestamp),
+            'timestamp': event_timestamp,
+            'recorded_at': now_iso,
+            'generated_at': now_iso,
             'regime': normalise_regime(market_payload.get('regime') or market_payload.get('trend') or market_payload.get('btc_trend')),
             'market': market_payload,
             'capital': capital or {},
             'exposure': exposure or {},
             'positions': positions or {},
             'max_positions': max_positions or {},
-            'details': details or {},
+            'details': details_payload,
         }
+        if source_timestamp and source_timestamp != record['timestamp']:
+            record['source_timestamp'] = source_timestamp
+        if isinstance(details_payload, dict):
+            if details_payload.get('source'):
+                record['source'] = details_payload.get('source')
+            if details_payload.get('module'):
+                record['module'] = details_payload.get('module')
+            if isinstance(details_payload.get('metadata'), dict):
+                record['metadata'] = details_payload.get('metadata')
         version_history.attach_version_metadata(record)
         self._append(self.snapshots_file, record)
         decision_timeline.record_event(

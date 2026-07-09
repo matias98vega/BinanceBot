@@ -487,6 +487,31 @@ class AuditDataQualityTests(unittest.TestCase):
 
         self.assertTrue(any('stale_snapshot_timestamp_generated_recently' in item for item in report.operational_warnings))
 
+    def test_market_snapshot_current_timestamp_with_old_source_timestamp_is_not_operational(self):
+        self.valid_bot_state()
+        self.write_jsonl('trading/decision_snapshots.jsonl', [{'timestamp': '2026-07-08T01:00:00Z'}])
+        self.write_jsonl('trading/trade_analytics.jsonl', [])
+        self.write_jsonl('data/history/snapshots.jsonl', [
+            {
+                'timestamp': '2026-06-30T12:00:00Z',
+                'event_type': 'MARKET_SNAPSHOT',
+                'bot_version': 'v1.1-observability-hardening',
+                'metadata': {'synthetic': True},
+            },
+            {
+                'timestamp': '2026-07-09T18:24:11Z',
+                'source_timestamp': '2026-06-30T12:00:00Z',
+                'event_type': 'MARKET_SNAPSHOT',
+                'bot_version': 'v1.1-observability-hardening',
+                'source': 'decision_snapshot',
+                'module': 'analytics',
+            },
+        ])
+
+        report = audit_data_quality.audit_project(self.project)
+
+        self.assertFalse(any('stale_snapshot_timestamp_generated_recently' in item for item in report.operational_warnings))
+
     def test_closed_trade_analytics_ordering_drift_is_accepted(self):
         self.valid_bot_state()
         self.write_jsonl('trading/decision_snapshots.jsonl', [{'timestamp': '2026-07-08T01:00:00Z'}])
