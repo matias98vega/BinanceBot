@@ -2082,6 +2082,13 @@ def _dispatch_callback(data):
 
 
 def _telegram_request(token, method, params=None, timeout=20):
+    try:
+        from notification_guard import external_notifications_disabled, log_suppressed
+        if external_notifications_disabled():
+            log_suppressed(f'telegram_commands.{method}')
+            return {'ok': False, 'suppressed': True}
+    except Exception:
+        pass
     data = urllib.parse.urlencode(params or {}).encode('utf-8')
     req = urllib.request.Request(
         f'https://api.telegram.org/bot{token}/{method}',

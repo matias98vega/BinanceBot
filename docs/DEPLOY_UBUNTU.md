@@ -309,6 +309,7 @@ Checks:
 ```bash
 ./scripts/preflight.sh
 ./scripts/post_cycle.sh
+BINANCEBOT_TEST_MODE=true BINANCEBOT_DISABLE_EXTERNAL_NOTIFICATIONS=true .venv/bin/python -m unittest discover trading
 .venv/bin/python trading/analyze_trades.py
 .venv/bin/python trading/analyze_decisions.py
 ```

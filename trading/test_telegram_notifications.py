@@ -7,7 +7,10 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(__file__))
 
 import bot_state
+import notification_guard
 import telegram_alerts
+import telegram_commands
+import utils
 
 
 class TelegramNotificationConfigTests(unittest.TestCase):
@@ -22,6 +25,86 @@ class TelegramNotificationConfigTests(unittest.TestCase):
     @patch.dict(os.environ, {'TELEGRAM_NOTIFY_BLACKLIST': ''}, clear=False)
     def test_blacklist_default_disabled(self):
         self.assertFalse(telegram_alerts.notification_enabled('BLACKLIST', 'WARNING'))
+
+    @patch.dict(os.environ, {
+        'BINANCEBOT_TEST_MODE': 'true',
+        'BINANCEBOT_DISABLE_EXTERNAL_NOTIFICATIONS': 'true',
+        'TELEGRAM_ALERTS_ENABLED': 'true',
+        'TELEGRAM_BOT_TOKEN': 'real-token-from-env',
+        'TELEGRAM_CHAT_ID': 'real-chat',
+    }, clear=False)
+    def test_test_mode_suppresses_telegram_transport(self):
+        with patch.object(telegram_alerts, '_send_raw') as send_raw, \
+             self.assertLogs(level='INFO') as logs:
+            sent = telegram_alerts.send_telegram_alert('WARNING', 'BinanceBot', 'NEAR residual sin OCO')
+
+        self.assertFalse(sent)
+        send_raw.assert_not_called()
+        self.assertIn('external notification suppressed in test mode', '\n'.join(logs.output))
+
+    @patch.dict(os.environ, {
+        'BINANCEBOT_TEST_MODE': '',
+        'BINANCEBOT_DISABLE_EXTERNAL_NOTIFICATIONS': '',
+        'TELEGRAM_ALERTS_ENABLED': 'true',
+        'TELEGRAM_BOT_TOKEN': 'real-token-from-env',
+        'TELEGRAM_CHAT_ID': 'real-chat',
+    }, clear=False)
+    def test_unittest_argv_suppresses_telegram_transport(self):
+        with patch.object(notification_guard, 'argv_indicates_test', return_value=True), \
+             patch.object(telegram_alerts, '_send_raw') as send_raw:
+            sent = telegram_alerts.send_telegram_alert('WARNING', 'BinanceBot', 'NEAR residual sin OCO')
+
+        self.assertFalse(sent)
+        send_raw.assert_not_called()
+
+    @patch.dict(os.environ, {
+        'BINANCEBOT_TEST_MODE': '',
+        'BINANCEBOT_DISABLE_EXTERNAL_NOTIFICATIONS': '',
+        'TELEGRAM_ALERTS_ENABLED': 'true',
+        'TELEGRAM_BOT_TOKEN': 'mock-token',
+        'TELEGRAM_CHAT_ID': 'mock-chat',
+        'TELEGRAM_ALERT_COOLDOWN_SECONDS': '1',
+    }, clear=False)
+    def test_production_mode_uses_mocked_transport(self):
+        with patch.object(notification_guard, 'argv_indicates_test', return_value=False), \
+             patch.object(telegram_alerts, '_cooldown_suppressed', return_value=(False, 'fp')), \
+             patch.object(telegram_alerts, '_record_sent') as record_sent, \
+             patch.object(telegram_alerts, '_send_raw', return_value=True) as send_raw:
+            sent = telegram_alerts.send_telegram_alert('WARNING', 'BinanceBot', 'production alert')
+
+        self.assertTrue(sent)
+        send_raw.assert_called_once()
+        record_sent.assert_called_once()
+
+    @patch.dict(os.environ, {
+        'BINANCEBOT_TEST_MODE': 'true',
+        'BINANCEBOT_DISABLE_EXTERNAL_NOTIFICATIONS': 'true',
+        'TELEGRAM_ALERTS_ENABLED': 'true',
+        'TELEGRAM_BOT_TOKEN': 'real-token-from-env',
+        'TELEGRAM_CHAT_ID': 'real-chat',
+    }, clear=False)
+    def test_utils_send_alert_suppresses_all_external_transports_in_test_mode(self):
+        with patch('telegram_alerts.send_telegram_alert') as telegram_alert, \
+             patch('subprocess.run') as subprocess_run:
+            utils.send_alert('NEAR residual sin OCO')
+
+        telegram_alert.assert_not_called()
+        subprocess_run.assert_not_called()
+
+    @patch.dict(os.environ, {
+        'BINANCEBOT_TEST_MODE': 'true',
+        'BINANCEBOT_DISABLE_EXTERNAL_NOTIFICATIONS': 'true',
+    }, clear=False)
+    def test_telegram_commands_transport_is_suppressed_in_test_mode(self):
+        with patch('urllib.request.urlopen') as urlopen:
+            response = telegram_commands._telegram_request(
+                'real-token-from-env',
+                'sendMessage',
+                {'chat_id': 'real-chat', 'text': 'test'},
+            )
+
+        self.assertEqual({'ok': False, 'suppressed': True}, response)
+        urlopen.assert_not_called()
 
 
 class ObservableCapacityTests(unittest.TestCase):

@@ -82,6 +82,13 @@ def send_alert(msg):
     """Manda mensaje proactivo via Jarvis. Silencia errores para no crashear el bot."""
     import subprocess
     try:
+        from notification_guard import external_notifications_disabled, log_suppressed
+        if external_notifications_disabled():
+            log_suppressed('auto_loop.send_alert')
+            return
+    except Exception:
+        pass
+    try:
         subprocess.run([
             'openclaw', 'message', 'send',
             '--channel', 'jarvis',

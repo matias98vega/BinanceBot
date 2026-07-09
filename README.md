@@ -62,6 +62,7 @@ No versionar `.env`.
 python trading/setup_check.py
 python trading/preflight_check.py
 python trading/post_cycle_check.py --save-baseline
+BINANCEBOT_TEST_MODE=true BINANCEBOT_DISABLE_EXTERNAL_NOTIFICATIONS=true python -m unittest discover trading
 ```
 
 `setup_check.py` verifica Python, dependencias, `.env`, archivos, permisos, ping HTTPS a Binance y autenticacion de API. No abre operaciones.

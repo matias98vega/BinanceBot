@@ -614,6 +614,13 @@ def format_rebalance_alert(message):
 
 def send_alert(msg):
     try:
+        from notification_guard import external_notifications_disabled, log_suppressed
+        if external_notifications_disabled():
+            log_suppressed('utils.send_alert')
+            return
+    except Exception:
+        pass
+    try:
         from telegram_alerts import send_telegram_alert
         lower = str(msg).lower()
         level = 'INFO'

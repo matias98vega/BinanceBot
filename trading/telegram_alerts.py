@@ -9,6 +9,7 @@ import urllib.parse
 import urllib.request
 
 from config_loader import PROJECT_DIR, load_dotenv
+from notification_guard import external_notifications_disabled, log_suppressed
 
 
 ALERT_STATE_FILE = os.path.join(PROJECT_DIR, 'trading', 'telegram_alert_state.json')
@@ -179,6 +180,9 @@ def send_telegram_alert(level, title, message, notification_type=None):
     Returns True only when Telegram accepts the request. Never raises.
     """
     try:
+        if external_notifications_disabled():
+            log_suppressed('telegram')
+            return False
         enabled, token, chat_id, min_level, cooldown = _configured()
         level = str(level or 'INFO').upper()
         if level not in LEVELS:

@@ -730,7 +730,8 @@ class ExitRecoveryProtectionTests(unittest.TestCase):
             'min_notional': 10.0,
         })
 
-        with patch('telegram_alerts.send_telegram_alert') as telegram_alert, \
+        with patch('notification_guard.external_notifications_disabled', return_value=False), \
+             patch('telegram_alerts.send_telegram_alert') as telegram_alert, \
              patch('subprocess.run'):
             utils.send_alert(msg)
 
