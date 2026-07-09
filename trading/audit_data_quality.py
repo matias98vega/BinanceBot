@@ -794,8 +794,6 @@ def audit_project(project_dir=PROJECT_DIR):
     trading_dir = _project_path(project_dir, 'trading')
     history_dir = _project_path(project_dir, 'data', 'history')
 
-    trade_analytics = _read_jsonl(_project_path(trading_dir, 'trade_analytics.jsonl'), report, required=True)
-    decision_snapshots = _read_jsonl(_project_path(trading_dir, 'decision_snapshots.jsonl'), report, required=True)
     bot_state = _read_json(_project_path(trading_dir, 'bot_state.json'), report, required=True)
     state = _read_json(_project_path(trading_dir, 'state.json'), report)
     futures_reconciliation = _read_json(_project_path(history_dir, 'futures_reconciliation_status.json'), report)
@@ -808,6 +806,16 @@ def audit_project(project_dir=PROJECT_DIR):
     if trades_path in history_jsonl_paths:
         trades_history = _read_jsonl(trades_path, report, active_context=active_context)
         history_records[trades_path] = trades_history
+    closed_trade_ids = _collect_closed_trade_ids(trades_history)
+
+    trade_analytics = _read_jsonl(
+        _project_path(trading_dir, 'trade_analytics.jsonl'),
+        report,
+        required=True,
+        closed_trade_ids=closed_trade_ids,
+        active_context=active_context,
+    )
+    decision_snapshots = _read_jsonl(_project_path(trading_dir, 'decision_snapshots.jsonl'), report, required=True)
     closed_trade_ids = _collect_closed_trade_ids(trade_analytics + trades_history)
     for path in history_jsonl_paths:
         if path == trades_path:

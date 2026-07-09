@@ -181,8 +181,9 @@ class FuturesReconciliationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             trades = os.path.join(tmp, 'trades.jsonl')
             trade_id = 'short_CRCLUSDT_1783540416'
+            opened_at = futures_reconciliation._now_iso()
             self._write_trades(trades, [
-                {'event_type': 'TRADE_OPEN', 'trade_id': trade_id, 'symbol': 'CRCLUSDT', 'side': 'SHORT', 'status': 'OPEN', 'opened_at': '2026-07-08T12:00:00Z'},
+                {'event_type': 'TRADE_OPEN', 'trade_id': trade_id, 'symbol': 'CRCLUSDT', 'side': 'SHORT', 'status': 'OPEN', 'opened_at': opened_at},
             ])
 
             positions = futures_reconciliation.classify_positions(

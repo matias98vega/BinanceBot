@@ -97,6 +97,92 @@ class RepairDataQualityTests(unittest.TestCase):
         self.assertEqual('TRADE_OPEN', plan['matches'][0]['event_type'])
         self.assertEqual('OPEN', plan['matches'][0]['status'])
 
+    def test_suspicious_test_record_write_requires_confirmation(self):
+        self.write_jsonl('data/history/trades.jsonl', [
+            {'timestamp': '2026-07-08T12:00:00Z', 'event_type': 'TRADE_OPEN', 'trade_id': 't1'},
+        ])
+
+        result, code = repair_data_quality.apply_suspicious_test_record_cleanup(
+            self.project,
+            trade_id='t1',
+            confirm_trade_id=None,
+        )
+
+        self.assertEqual(2, code)
+        self.assertFalse(result['write_performed'])
+        with open(os.path.join(self.project, 'data', 'history', 'trades.jsonl'), encoding='utf-8') as f:
+            self.assertIn('"trade_id": "t1"', f.read())
+
+    def test_suspicious_test_record_write_removes_only_exact_t1_with_backup_and_report(self):
+        self.write_jsonl('data/history/trades.jsonl', [
+            {'timestamp': '2026-07-08T12:00:00Z', 'event_type': 'TRADE_OPEN', 'trade_id': 'keep_before'},
+            {'timestamp': '2026-07-08T12:01:00Z', 'event_type': 'TRADE_OPEN', 'trade_id': 't1', 'symbol': 'ADAUSDT'},
+            {'timestamp': '2026-07-08T12:02:00Z', 'event_type': 'TRADE_OPEN', 'trade_id': 't10'},
+            {'timestamp': '2026-07-08T12:03:00Z', 'event_type': 'TRADE_OPEN', 'trade_id': 'at1'},
+            {'timestamp': '2026-07-08T12:04:00Z', 'event_type': 'TRADE_OPEN', 'trade_id': 'test_t1'},
+            {'timestamp': '2026-07-08T12:05:00Z', 'event_type': 'TRADE_OPEN', 'trade_id': 'keep_after'},
+        ])
+        self.write_jsonl('trading/trade_analytics.jsonl', [
+            {'timestamp': '2026-07-08T12:01:00Z', 'event_type': 'TRADE_OPEN', 'trade_id': 't1'},
+        ])
+
+        result, code = repair_data_quality.apply_suspicious_test_record_cleanup(
+            self.project,
+            trade_id='t1',
+            confirm_trade_id='t1',
+        )
+
+        self.assertEqual(0, code)
+        self.assertTrue(result['write_performed'])
+        self.assertEqual(2, result['occurrences_removed'])
+        self.assertEqual(2, len(result['files_modified']))
+        self.assertTrue(result['backup_paths'])
+        self.assertTrue(os.path.exists(os.path.join(self.project, result['report_path'])))
+        with open(os.path.join(self.project, 'data', 'history', 'trades.jsonl'), encoding='utf-8') as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+        self.assertEqual(['keep_before', 't10', 'at1', 'test_t1', 'keep_after'], [row['trade_id'] for row in rows])
+
+    def test_suspicious_test_record_write_no_matches_still_reports(self):
+        self.write_jsonl('data/history/trades.jsonl', [
+            {'timestamp': '2026-07-08T12:00:00Z', 'event_type': 'TRADE_OPEN', 'trade_id': 'keep'},
+        ])
+
+        result, code = repair_data_quality.apply_suspicious_test_record_cleanup(
+            self.project,
+            trade_id='t1',
+            confirm_trade_id='t1',
+        )
+
+        self.assertEqual(0, code)
+        self.assertFalse(result['write_performed'])
+        self.assertEqual(0, result['occurrences_removed'])
+        self.assertTrue(os.path.exists(os.path.join(self.project, result['report_path'])))
+
+    def test_stale_market_snapshots_plan_groups_and_does_not_write(self):
+        self.write_jsonl('data/history/snapshots.jsonl', [
+            {'timestamp': '2026-07-08T12:00:00Z', 'event_type': 'MARKET_SNAPSHOT', 'bot_version': 'v1.1-observability-hardening'},
+            {'timestamp': '2026-06-30T12:00:00Z', 'event_type': 'MARKET_SNAPSHOT', 'bot_version': 'v1.1-observability-hardening'},
+            {
+                'timestamp': '2026-06-30T12:00:00Z',
+                'event_type': 'MARKET_SNAPSHOT',
+                'bot_version': 'v1.0-alpha',
+                'metadata': {'synthetic': True},
+            },
+        ])
+
+        plan = repair_data_quality.build_stale_market_snapshots_plan(
+            self.project,
+            timestamp='2026-06-30T12:00:00Z',
+        )
+
+        self.assertEqual('stale-market-snapshots', plan['plan'])
+        self.assertEqual(2, plan['total_occurrences'])
+        self.assertEqual(1, plan['by_bot_version']['v1.1-observability-hardening'])
+        self.assertEqual(1, plan['by_bot_version']['v1.0-alpha'])
+        self.assertEqual(2, plan['by_event_type']['MARKET_SNAPSHOT'])
+        self.assertFalse(plan['write_performed'])
+        self.assertIn('previous_context', plan['matches'][0])
+
     def test_cli_outputs_json_plan(self):
         with patch('builtins.print') as mocked_print:
             code = repair_data_quality.main(['--project-dir', self.project])

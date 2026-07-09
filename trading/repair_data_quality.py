@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import sys
+from collections import Counter
 from datetime import datetime, timezone
 
 import audit_data_quality
@@ -50,6 +51,13 @@ TRADE_INVESTIGATION_FILES = (
     ('jsonl', 'data/history/timeline.jsonl'),
     ('json', 'trading/bot_state.json'),
     ('json', 'data/history/futures_reconciliation_status.json'),
+)
+SUSPICIOUS_TEST_RECORD_FILES = (
+    'data/history/trades.jsonl',
+    'trading/trade_analytics.jsonl',
+    'data/history/features.jsonl',
+    'data/history/snapshots.jsonl',
+    'trading/decision_snapshots.jsonl',
 )
 
 
@@ -882,23 +890,205 @@ def build_suspicious_test_record_plan(project_dir=PROJECT_DIR, trade_id='t1', ma
     }
 
 
+def _safe_relpath_fragment(relpath):
+    return relpath.replace('/', '__').replace('\\', '__')
+
+
+def _write_json_report(project_dir, report):
+    reports_dir = os.path.join(project_dir, 'data', 'history', 'repair_reports')
+    os.makedirs(reports_dir, exist_ok=True)
+    filename = f"{_stamp()}_{report.get('action', report.get('plan', 'repair'))}.json"
+    path = os.path.join(reports_dir, filename)
+    report['report_path'] = os.path.relpath(path, project_dir)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(report, f, indent=2, sort_keys=True, ensure_ascii=False)
+    return report
+
+
+def apply_suspicious_test_record_cleanup(project_dir=PROJECT_DIR, trade_id='t1', confirm_trade_id=None):
+    generated_at = _now_iso()
+    report = {
+        'schema_version': REPAIR_SCHEMA_VERSION,
+        'generated_at': generated_at,
+        'action': 'suspicious_test_record_cleanup',
+        'target_trade_id': trade_id,
+        'files_scanned': [],
+        'files_modified': [],
+        'occurrences_found': 0,
+        'occurrences_removed': 0,
+        'backup_paths': [],
+        'sample_removed_records': [],
+        'write_performed': False,
+        'report_path': None,
+    }
+
+    if trade_id != 't1':
+        report['error'] = 'unsupported_trade_id'
+        report['message'] = 'Only trade_id=t1 is eligible for this explicit cleanup plan.'
+        return report, 2
+    if confirm_trade_id != trade_id:
+        report['error'] = 'confirmation_required'
+        report['message'] = '--confirm-trade-id must exactly match --trade-id.'
+        return report, 2
+
+    backups_dir = os.path.join(project_dir, 'data', 'history', 'backups')
+    os.makedirs(backups_dir, exist_ok=True)
+
+    for relpath in SUSPICIOUS_TEST_RECORD_FILES:
+        path = os.path.join(project_dir, *relpath.split('/'))
+        report['files_scanned'].append(relpath)
+        if not os.path.exists(path):
+            continue
+        kept_lines = []
+        removed_records = []
+        with open(path, encoding='utf-8') as f:
+            for line in f:
+                raw = line.rstrip('\n')
+                try:
+                    record = json.loads(raw) if raw.strip() else None
+                except json.JSONDecodeError:
+                    kept_lines.append(line)
+                    continue
+                if isinstance(record, dict) and record.get('trade_id') == trade_id:
+                    report['occurrences_found'] += 1
+                    report['occurrences_removed'] += 1
+                    removed_records.append(record)
+                    if len(report['sample_removed_records']) < 20:
+                        report['sample_removed_records'].append({
+                            'path': relpath,
+                            'record': _public_fields(record),
+                        })
+                    continue
+                kept_lines.append(line)
+
+        if not removed_records:
+            continue
+
+        backup_name = f'{_stamp()}_{_safe_relpath_fragment(relpath)}.bak'
+        backup_path = os.path.join(backups_dir, backup_name)
+        shutil.copy2(path, backup_path)
+        with open(path, 'w', encoding='utf-8', newline='') as f:
+            f.writelines(kept_lines)
+        report['files_modified'].append(relpath)
+        report['backup_paths'].append(os.path.relpath(backup_path, project_dir))
+
+    report['write_performed'] = bool(report['files_modified'])
+    report = _write_json_report(project_dir, report)
+    return report, 0
+
+
+def _snapshot_metadata_flags(record):
+    if not isinstance(record, dict):
+        return []
+    metadata = record.get('metadata') if isinstance(record.get('metadata'), dict) else {}
+    text = ' '.join(str(record.get(key) or '') for key in ('source', 'module', 'reason', 'description', 'event_type')).lower()
+    text = f'{text} ' + ' '.join(str(value or '') for value in metadata.values()).lower()
+    flags = []
+    for token in ('backfill', 'backfilled', 'imported', 'synthetic', 'recovered'):
+        if token in text:
+            flags.append(token)
+    for key in ('backfilled', 'imported', 'synthetic', 'recovered'):
+        if record.get(key) is True or metadata.get(key) is True:
+            flags.append(key)
+    return sorted(set(flags))
+
+
+def build_stale_market_snapshots_plan(project_dir=PROJECT_DIR, timestamp='2026-06-30T12:00:00Z', max_samples=20):
+    relpath = 'data/history/snapshots.jsonl'
+    path = os.path.join(project_dir, *relpath.split('/'))
+    rows = _read_jsonl_lines(path)
+    matches = []
+    by_bot_version = Counter()
+    by_event_type = Counter()
+    metadata_count = 0
+
+    for idx, (line, _raw, record) in enumerate(rows):
+        if not isinstance(record, dict) or record.get('timestamp') != timestamp:
+            continue
+        flags = _snapshot_metadata_flags(record)
+        if flags:
+            metadata_count += 1
+        bot_version = record.get('bot_version') or 'unknown'
+        event_type = record.get('event_type') or 'unknown'
+        by_bot_version[bot_version] += 1
+        by_event_type[event_type] += 1
+        if len(matches) < max_samples:
+            prev_record = rows[idx - 1][2] if idx > 0 else None
+            next_record = rows[idx + 1][2] if idx + 1 < len(rows) else None
+            matches.append({
+                'path': relpath,
+                'line': line,
+                'record': _public_fields(record),
+                'bot_version': bot_version,
+                'event_type': event_type,
+                'trade_id': record.get('trade_id'),
+                'source': record.get('source'),
+                'module': record.get('module'),
+                'metadata_flags': flags,
+                'previous_context': _public_fields(prev_record) if isinstance(prev_record, dict) else None,
+                'next_context': _public_fields(next_record) if isinstance(next_record, dict) else None,
+            })
+
+    total = sum(by_event_type.values())
+    if total == 0:
+        recommendation = 'unresolved_manual_review'
+    elif metadata_count == total:
+        recommendation = 'add_backfill_metadata_with_backup'
+    elif any((sample.get('event_type') == 'MARKET_SNAPSHOT' and not sample.get('trade_id') and not sample.get('source') and not sample.get('module')) for sample in matches):
+        recommendation = 'remove_synthetic_snapshot_with_backup'
+    else:
+        recommendation = 'unresolved_manual_review'
+
+    return {
+        'schema_version': REPAIR_SCHEMA_VERSION,
+        'generated_at': _now_iso(),
+        'mode': 'dry_run',
+        'plan': 'stale-market-snapshots',
+        'timestamp': timestamp,
+        'path': relpath,
+        'total_occurrences': total,
+        'by_bot_version': dict(by_bot_version),
+        'by_event_type': dict(by_event_type),
+        'sample_count': len(matches),
+        'sample_truncated': total > len(matches),
+        'matches': matches,
+        'recommendation': recommendation,
+        'write_performed': False,
+        'notes': [
+            'No historical file was modified.',
+            'This plan only inspects stale MARKET_SNAPSHOT records and nearby context.',
+            'Snapshot writes are intentionally not implemented in this iteration.',
+        ],
+    }
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Build a dry-run data repair plan.')
     parser.add_argument('--project-dir', default=PROJECT_DIR)
     parser.add_argument('--dry-run', action='store_true', default=True)
-    parser.add_argument('--plan', choices=('summary', 'version-backfill', 'trade-gap', 'trade-open-backfill', 'data-hygiene-backfill', 'suspicious-test-record'), default='summary')
+    parser.add_argument('--plan', choices=('summary', 'version-backfill', 'trade-gap', 'trade-open-backfill', 'data-hygiene-backfill', 'suspicious-test-record', 'stale-market-snapshots'), default='summary')
     parser.add_argument('--trade-id', default='short_WLDUSDT_1782763085')
     parser.add_argument('--confirm-trade-id', default=None)
+    parser.add_argument('--timestamp', default='2026-06-30T12:00:00Z')
     parser.add_argument('--write', action='store_true', help='Reserved for future use; currently rejected.')
     parser.add_argument('--apply', action='store_true', help='Reserved for future use; currently rejected.')
     args = parser.parse_args(argv)
 
-    if (args.write or args.apply) and args.plan != 'trade-open-backfill':
+    if (args.write or args.apply) and args.plan not in {'trade-open-backfill', 'suspicious-test-record'}:
         print('ERROR: write mode is not implemented. This scaffold is dry-run only.', file=sys.stderr)
         return 2
 
     if (args.write or args.apply) and args.plan == 'trade-open-backfill':
         plan, code = apply_trade_open_backfill(
+            args.project_dir,
+            trade_id=args.trade_id,
+            confirm_trade_id=args.confirm_trade_id,
+        )
+        print(json.dumps(plan, indent=2, sort_keys=True, ensure_ascii=False))
+        return code
+
+    if (args.write or args.apply) and args.plan == 'suspicious-test-record':
+        plan, code = apply_suspicious_test_record_cleanup(
             args.project_dir,
             trade_id=args.trade_id,
             confirm_trade_id=args.confirm_trade_id,
@@ -912,6 +1102,8 @@ def main(argv=None):
         plan = build_data_hygiene_backfill_plan(args.project_dir)
     elif args.plan == 'suspicious-test-record':
         plan = build_suspicious_test_record_plan(args.project_dir, trade_id=args.trade_id)
+    elif args.plan == 'stale-market-snapshots':
+        plan = build_stale_market_snapshots_plan(args.project_dir, timestamp=args.timestamp)
     elif args.plan == 'trade-gap':
         plan = build_trade_gap_plan(args.project_dir, trade_id=args.trade_id)
     elif args.plan == 'trade-open-backfill':
