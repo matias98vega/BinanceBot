@@ -3,13 +3,16 @@
 import json
 import logging
 import os
+import sys
 from datetime import datetime, timezone
 
 import capital_accounting
+import feature_store
 import history
 
 
 DEFAULT_STATS_FILE = os.path.join(history.DEFAULT_HISTORY_DIR, 'stats.json')
+STATS_SCHEMA_VERSION = 2
 
 EXIT_REASONS = ('TP', 'SL', 'TRAILING', 'PARTIAL', 'STALE', 'RECOVERY', 'EMERGENCY', 'MANUAL', 'UNKNOWN')
 DIRECTIONS = ('LONG', 'SHORT', 'UNKNOWN')
@@ -22,6 +25,15 @@ def _safe_accounting(default, func, *args, **kwargs):
     except Exception as exc:
         logging.warning('analytics_engine capital accounting failed: %s', exc)
         return default
+
+
+def _test_mode_default_stats_write_blocked(stats_file):
+    if os.path.abspath(stats_file) != os.path.abspath(DEFAULT_STATS_FILE):
+        return False
+    env_blocked = str(os.environ.get('BINANCEBOT_TEST_MODE') or '').lower() in {'1', 'true', 'yes'}
+    argv = ' '.join(str(arg).lower() for arg in sys.argv)
+    unittest_blocked = 'unittest' in argv or 'discover' in argv
+    return env_blocked or unittest_blocked
 
 
 def _empty_bucket():
@@ -47,17 +59,20 @@ def _empty_bucket():
 
 def _empty_stats():
     return {
-        'schema_version': 1,
+        'schema_version': STATS_SCHEMA_VERSION,
         'source': {
             'trades_file': history.DEFAULT_TRADES_FILE,
             'decisions_file': history.DEFAULT_DECISIONS_FILE,
             'snapshots_file': history.DEFAULT_SNAPSHOTS_FILE,
+            'features_file': feature_store.DEFAULT_FEATURES_FILE,
             'trade_events': 0,
             'decision_events': 0,
             'snapshot_events': 0,
+            'feature_events': 0,
             'invalid_trade_lines': 0,
             'invalid_decision_lines': 0,
             'invalid_snapshot_lines': 0,
+            'invalid_feature_lines': 0,
         },
         'general': {
             **_empty_bucket(),
@@ -189,6 +204,91 @@ def _trade_regime_value(trade):
             if btc_context.get(key) not in (None, ''):
                 return _normalise_regime(btc_context.get(key))
     return 'unknown'
+
+
+def _base_trade_id(trade_id):
+    value = str(trade_id or '')
+    return value.split(':', 1)[0] if value else value
+
+
+def _nested_value(record, *path):
+    current = record
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _feature_trade_id(record):
+    return record.get('trade_id') or _nested_value(record, 'identification', 'trade_id')
+
+
+def _feature_regime_value(record):
+    if not isinstance(record, dict):
+        return 'unknown'
+    candidates = (
+        record.get('regime'),
+        record.get('market_regime'),
+        record.get('btc_regime'),
+        _nested_value(record, 'market', 'regime'),
+        _nested_value(record, 'market', 'btc_regime'),
+        _nested_value(record, 'bot_state', 'current_regime'),
+        _nested_value(record, 'btc_context', 'regime'),
+        _nested_value(record, 'btc_context', 'trend'),
+    )
+    for value in candidates:
+        regime = _normalise_regime(value)
+        if regime != 'unknown':
+            return regime
+    return 'unknown'
+
+
+def _feature_opened_at(record):
+    return (
+        record.get('opened_at')
+        or record.get('entry_time')
+        or record.get('timestamp')
+        or _nested_value(record, 'identification', 'timestamp')
+    )
+
+
+def _feature_index(records):
+    index = {}
+    for record in records:
+        trade_id = _feature_trade_id(record)
+        if not trade_id:
+            continue
+        regime = _feature_regime_value(record)
+        if regime == 'unknown':
+            continue
+        payload = {
+            'trade_id': trade_id,
+            'regime': regime,
+            'market_regime': _nested_value(record, 'market', 'btc_regime') or record.get('market_regime') or regime,
+            'opened_at': _feature_opened_at(record),
+        }
+        index.setdefault(trade_id, payload)
+        index.setdefault(_base_trade_id(trade_id), payload)
+    return index
+
+
+def _enrich_trade_regime(trade, feature_lookup=None):
+    if not isinstance(trade, dict):
+        return trade
+    if _trade_regime_value(trade) != 'unknown':
+        return trade
+    feature_lookup = feature_lookup or {}
+    trade_id = trade.get('trade_id')
+    feature = feature_lookup.get(trade_id) or feature_lookup.get(_base_trade_id(trade_id))
+    if not feature:
+        return trade
+    enriched = dict(trade)
+    enriched.setdefault('regime', feature.get('regime'))
+    enriched.setdefault('market_regime', feature.get('market_regime') or feature.get('regime'))
+    if not enriched.get('opened_at') and feature.get('opened_at'):
+        enriched['opened_at'] = feature.get('opened_at')
+    return enriched
 
 
 def _result(pnl):
@@ -420,29 +520,35 @@ def _compute_drawdown(stats):
     stats['general']['equity_peak'] = round(peak, 8)
 
 
-def _stats_from_sources(trades_file, decisions_file, snapshots_file):
+def _stats_from_sources(trades_file, decisions_file, snapshots_file, features_file=feature_store.DEFAULT_FEATURES_FILE):
     stats = _empty_stats()
     stats['source']['trades_file'] = trades_file
     stats['source']['decisions_file'] = decisions_file
     stats['source']['snapshots_file'] = snapshots_file
+    stats['source']['features_file'] = features_file
 
     trade_events, invalid_trades = _iter_jsonl(trades_file)
     decision_events, invalid_decisions = _iter_jsonl(decisions_file)
     snapshot_events, invalid_snapshots = _iter_jsonl(snapshots_file)
+    feature_events, invalid_features = _iter_jsonl(features_file)
 
     stats['source']['trade_events'] = len(trade_events)
     stats['source']['decision_events'] = len(decision_events)
     stats['source']['snapshot_events'] = len(snapshot_events)
+    stats['source']['feature_events'] = len(feature_events)
     stats['source']['invalid_trade_lines'] = invalid_trades
     stats['source']['invalid_decision_lines'] = invalid_decisions
     stats['source']['invalid_snapshot_lines'] = invalid_snapshots
+    stats['source']['invalid_feature_lines'] = invalid_features
     stats['history']['trades_registered'] = len(trade_events)
     stats['history']['decisions_registered'] = len(decision_events)
     stats['history']['snapshots_registered'] = len(snapshot_events)
 
+    feature_lookup = _feature_index(feature_events)
     merged = _merge_trade_events(trade_events)
     stats['_closed_for_drawdown'] = []
     for trade in merged.values():
+        trade = _enrich_trade_regime(trade, feature_lookup)
         _add_trade(stats, trade, mark_processed=True)
         if str(trade.get('status') or '').upper() == 'CLOSED':
             stats['_closed_for_drawdown'].append(trade)
@@ -476,6 +582,9 @@ def _set_history_bounds(stats, *groups):
 
 
 def save_stats(stats, stats_file=DEFAULT_STATS_FILE):
+    if _test_mode_default_stats_write_blocked(stats_file):
+        logging.debug('analytics stats write suppressed in test mode path=%s', stats_file)
+        return stats_file
     os.makedirs(os.path.dirname(stats_file), exist_ok=True)
     with open(stats_file, 'w', encoding='utf-8') as f:
         json.dump(stats, f, ensure_ascii=False, indent=2, sort_keys=True)
@@ -484,29 +593,37 @@ def save_stats(stats, stats_file=DEFAULT_STATS_FILE):
 
 
 def rebuild_statistics(trades_file=history.DEFAULT_TRADES_FILE, decisions_file=history.DEFAULT_DECISIONS_FILE,
-                       snapshots_file=history.DEFAULT_SNAPSHOTS_FILE, stats_file=DEFAULT_STATS_FILE):
-    stats = _stats_from_sources(trades_file, decisions_file, snapshots_file)
+                       snapshots_file=history.DEFAULT_SNAPSHOTS_FILE, stats_file=DEFAULT_STATS_FILE,
+                       features_file=feature_store.DEFAULT_FEATURES_FILE):
+    stats = _stats_from_sources(trades_file, decisions_file, snapshots_file, features_file)
     save_stats(stats, stats_file)
     return stats
 
 
 def load_stats(stats_file=DEFAULT_STATS_FILE, rebuild_if_missing=True, trades_file=history.DEFAULT_TRADES_FILE,
-               decisions_file=history.DEFAULT_DECISIONS_FILE, snapshots_file=history.DEFAULT_SNAPSHOTS_FILE):
+               decisions_file=history.DEFAULT_DECISIONS_FILE, snapshots_file=history.DEFAULT_SNAPSHOTS_FILE,
+               features_file=feature_store.DEFAULT_FEATURES_FILE):
     if not os.path.exists(stats_file):
         if rebuild_if_missing:
-            return rebuild_statistics(trades_file, decisions_file, snapshots_file, stats_file)
+            if _test_mode_default_stats_write_blocked(stats_file):
+                return _empty_stats()
+            return rebuild_statistics(trades_file, decisions_file, snapshots_file, stats_file, features_file)
         return _empty_stats()
     try:
         with open(stats_file, encoding='utf-8') as f:
             data = json.load(f)
         if isinstance(data, dict):
+            if rebuild_if_missing and data.get('schema_version') != STATS_SCHEMA_VERSION:
+                if _test_mode_default_stats_write_blocked(stats_file):
+                    return data
+                return rebuild_statistics(trades_file, decisions_file, snapshots_file, stats_file, features_file)
             return data
     except json.JSONDecodeError as exc:
         logging.warning('analytics_engine stats.json corrupt path=%s error=%s', stats_file, exc)
     except Exception as exc:
         logging.warning('analytics_engine stats.json unreadable path=%s error=%s', stats_file, exc)
     if rebuild_if_missing:
-        return rebuild_statistics(trades_file, decisions_file, snapshots_file, stats_file)
+        return rebuild_statistics(trades_file, decisions_file, snapshots_file, stats_file, features_file)
     return _empty_stats()
 
 
@@ -517,9 +634,10 @@ def _rehydrate_working_stats(stats):
 
 
 def update_trade(trade, stats_file=DEFAULT_STATS_FILE, trades_file=history.DEFAULT_TRADES_FILE,
-                 decisions_file=history.DEFAULT_DECISIONS_FILE, snapshots_file=history.DEFAULT_SNAPSHOTS_FILE):
+                 decisions_file=history.DEFAULT_DECISIONS_FILE, snapshots_file=history.DEFAULT_SNAPSHOTS_FILE,
+                 features_file=feature_store.DEFAULT_FEATURES_FILE):
     try:
-        stats = load_stats(stats_file, True, trades_file, decisions_file, snapshots_file)
+        stats = load_stats(stats_file, True, trades_file, decisions_file, snapshots_file, features_file)
         trade_id = trade.get('trade_id') if isinstance(trade, dict) else None
         if not trade_id:
             return stats
@@ -545,6 +663,9 @@ def update_trade(trade, stats_file=DEFAULT_STATS_FILE, trades_file=history.DEFAU
         was_open = str(indexed.get('status') or '').upper() == 'OPEN'
         merged_trade = dict(indexed)
         merged_trade.update({k: v for k, v in trade.items() if v is not None})
+        if _trade_regime_value(merged_trade) == 'unknown':
+            feature_events, _ = _iter_jsonl(features_file)
+            merged_trade = _enrich_trade_regime(merged_trade, _feature_index(feature_events))
 
         # Updating mature aggregate averages incrementally is less invasive than
         # rebuilding; derive enough counters from public fields before adding.
@@ -558,7 +679,7 @@ def update_trade(trade, stats_file=DEFAULT_STATS_FILE, trades_file=history.DEFAU
         return stats
     except Exception as exc:
         logging.warning('analytics_engine update_trade failed: %s', exc)
-        return load_stats(stats_file, True, trades_file, decisions_file, snapshots_file)
+        return load_stats(stats_file, True, trades_file, decisions_file, snapshots_file, features_file)
 
 
 def _prepare_incremental_buckets(stats):

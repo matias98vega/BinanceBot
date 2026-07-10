@@ -101,6 +101,7 @@ class CapitalAccountingTests(unittest.TestCase):
         trades_file = os.path.join(self.tmp.name, 'trades.jsonl')
         decisions_file = os.path.join(self.tmp.name, 'decisions.jsonl')
         snapshots_file = os.path.join(self.tmp.name, 'snapshots.jsonl')
+        features_file = os.path.join(self.tmp.name, 'features.jsonl')
         trade = {
             'event_type': 'TRADE_CLOSE',
             'trade_id': 't1',
@@ -121,6 +122,7 @@ class CapitalAccountingTests(unittest.TestCase):
             decisions_file=decisions_file,
             snapshots_file=snapshots_file,
             stats_file=stats_file,
+            features_file=features_file,
         )
         self.seed_movements()
         after = analytics_engine.rebuild_statistics(
@@ -128,6 +130,7 @@ class CapitalAccountingTests(unittest.TestCase):
             decisions_file=decisions_file,
             snapshots_file=snapshots_file,
             stats_file=stats_file,
+            features_file=features_file,
         )
 
         self.assertEqual(after['general']['pnl_total'], baseline['general']['pnl_total'])

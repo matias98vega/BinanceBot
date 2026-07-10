@@ -19,6 +19,7 @@ class AnalyticsEngineTests(unittest.TestCase):
         self.trades = os.path.join(base, 'trades.jsonl')
         self.decisions = os.path.join(base, 'decisions.jsonl')
         self.snapshots = os.path.join(base, 'snapshots.jsonl')
+        self.features = os.path.join(base, 'features.jsonl')
         self.stats = os.path.join(base, 'stats.json')
         self.ledger = os.path.join(base, 'capital_ledger.jsonl')
         self.store = history.HistoryStore(self.trades, self.decisions, self.snapshots)
@@ -32,6 +33,7 @@ class AnalyticsEngineTests(unittest.TestCase):
             decisions_file=self.decisions,
             snapshots_file=self.snapshots,
             stats_file=stats_file or self.stats,
+            features_file=self.features,
         )
 
     def _load(self):
@@ -40,6 +42,7 @@ class AnalyticsEngineTests(unittest.TestCase):
             trades_file=self.trades,
             decisions_file=self.decisions,
             snapshots_file=self.snapshots,
+            features_file=self.features,
         )
 
     def _seed_closed_trades(self):
@@ -229,6 +232,98 @@ class AnalyticsEngineTests(unittest.TestCase):
         self.assertEqual(stats['by_regime']['bear']['closed'], 1)
         self.assertEqual(stats['by_regime']['unknown']['closed'], 0)
 
+    def test_rebuild_uses_feature_store_regime_when_trade_close_lacks_regime(self):
+        self.store._append(self.trades, {
+            'trade_id': 'short_ADAUSDT_1',
+            'symbol': 'ADAUSDT',
+            'side': 'SHORT',
+            'status': 'CLOSED',
+            'closed_at': '2026-07-09T12:00:00Z',
+            'pnl_usdt': 1.2,
+        })
+        self.store._append(self.features, {
+            'identification': {'trade_id': 'short_ADAUSDT_1', 'timestamp': '2026-07-09T11:00:00Z'},
+            'market': {'regime': 'bullish'},
+        })
+
+        stats = self._rebuild()
+
+        self.assertEqual(stats['by_regime']['bull']['closed'], 1)
+        self.assertEqual(stats['by_regime']['unknown']['closed'], 0)
+        self.assertEqual(stats['trade_index']['short_ADAUSDT_1']['regime'], 'bull')
+
+    def test_rebuild_uses_base_trade_id_for_partial_feature_regime(self):
+        self.store._append(self.trades, {
+            'trade_id': 'short_ADAUSDT_2:partial',
+            'symbol': 'ADAUSDT',
+            'side': 'SHORT',
+            'status': 'CLOSED',
+            'exit_reason': 'PARTIAL',
+            'pnl_usdt': 0.4,
+        })
+        self.store._append(self.features, {
+            'identification': {'trade_id': 'short_ADAUSDT_2'},
+            'market': {'regime': 'bear'},
+        })
+
+        stats = self._rebuild()
+
+        self.assertEqual(stats['by_regime']['bear']['closed'], 1)
+        self.assertEqual(stats['by_regime']['unknown']['closed'], 0)
+
+    def test_update_trade_uses_feature_store_regime_when_index_lacks_open(self):
+        self.store._append(self.features, {
+            'identification': {'trade_id': 'short_NEARUSDT_1', 'timestamp': '2026-07-09T10:00:00Z'},
+            'market': {'regime': 'sideways'},
+        })
+        analytics_engine.rebuild_statistics(
+            trades_file=self.trades,
+            decisions_file=self.decisions,
+            snapshots_file=self.snapshots,
+            stats_file=self.stats,
+            features_file=self.features,
+        )
+
+        stats = analytics_engine.update_trade(
+            {
+                'trade_id': 'short_NEARUSDT_1',
+                'symbol': 'NEARUSDT',
+                'side': 'SHORT',
+                'status': 'CLOSED',
+                'closed_at': '2026-07-09T11:00:00Z',
+                'pnl_usdt': 0.7,
+            },
+            stats_file=self.stats,
+            trades_file=self.trades,
+            decisions_file=self.decisions,
+            snapshots_file=self.snapshots,
+            features_file=self.features,
+        )
+
+        self.assertEqual(stats['by_regime']['sideways']['closed'], 1)
+        self.assertEqual(stats['by_regime']['unknown']['closed'], 0)
+
+    def test_load_stats_old_schema_rebuilds_with_feature_regime(self):
+        self.store._append(self.trades, {
+            'trade_id': 'long_SOLUSDT_1',
+            'symbol': 'SOLUSDT',
+            'side': 'LONG',
+            'status': 'CLOSED',
+            'pnl_usdt': 2,
+        })
+        self.store._append(self.features, {
+            'identification': {'trade_id': 'long_SOLUSDT_1'},
+            'market': {'regime': 'neutral'},
+        })
+        with open(self.stats, 'w', encoding='utf-8') as f:
+            json.dump({'schema_version': 1, 'by_regime': {'unknown': {'closed': 1}}}, f)
+
+        stats = self._load()
+
+        self.assertEqual(stats['schema_version'], analytics_engine.STATS_SCHEMA_VERSION)
+        self.assertEqual(stats['by_regime']['neutral']['closed'], 1)
+        self.assertEqual(stats['by_regime']['unknown']['closed'], 0)
+
     def test_load_stats_missing_rebuilds(self):
         self._seed_closed_trades()
 
@@ -258,7 +353,13 @@ class AnalyticsEngineTests(unittest.TestCase):
             entry_price=100,
             market_regime='bullish',
         )
-        analytics_engine.rebuild_statistics(self.trades, self.decisions, self.snapshots, self.stats)
+        analytics_engine.rebuild_statistics(
+            self.trades,
+            self.decisions,
+            self.snapshots,
+            self.stats,
+            features_file=self.features,
+        )
         close = self.store.record_trade_close(
             trade_id='t1',
             symbol='ETHUSDT',
@@ -277,6 +378,7 @@ class AnalyticsEngineTests(unittest.TestCase):
             trades_file=self.trades,
             decisions_file=self.decisions,
             snapshots_file=self.snapshots,
+            features_file=self.features,
         )
         rebuild_stats_file = os.path.join(self.tmp.name, 'stats_rebuild.json')
         rebuilt = self._rebuild(rebuild_stats_file)
