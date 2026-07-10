@@ -12,6 +12,11 @@ sys.path.insert(0, os.path.dirname(__file__))
 import feature_store
 
 
+class NoopTimeline:
+    def record_event(self, *args, **kwargs):
+        return None
+
+
 class FeatureStoreTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -133,8 +138,19 @@ class FeatureStoreTests(unittest.TestCase):
 
     def test_analytics_integration_does_not_change_flow(self):
         import analytics
+        import history
 
-        logger = analytics.AnalyticsLogger(path=os.path.join(self.tmp.name, 'analytics.jsonl'))
+        history_store = history.HistoryStore(
+            trades_file=os.path.join(self.tmp.name, 'history_trades.jsonl'),
+            decisions_file=os.path.join(self.tmp.name, 'history_decisions.jsonl'),
+            snapshots_file=os.path.join(self.tmp.name, 'history_snapshots.jsonl'),
+            timeline_recorder=NoopTimeline(),
+        )
+        logger = analytics.AnalyticsLogger(
+            path=os.path.join(self.tmp.name, 'analytics.jsonl'),
+            history_store=history_store,
+            timeline_recorder=NoopTimeline(),
+        )
         with patch('feature_store.record_trade_features', side_effect=OSError('no write')):
             record = logger.log_trade_open(
                 trade_id='t1',
@@ -147,6 +163,108 @@ class FeatureStoreTests(unittest.TestCase):
 
         self.assertEqual(record['trade_id'], 't1')
         self.assertEqual(record['status'], 'OPEN')
+        with open(history_store.trades_file, encoding='utf-8') as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+        self.assertEqual(rows[0]['trade_id'], 't1')
+        self.assertEqual(rows[0]['symbol'], 'ADAUSDT')
+
+    def test_analytics_integration_does_not_write_production_history_files(self):
+        import analytics
+        import history
+
+        project_dir = os.path.dirname(os.path.dirname(__file__))
+        production_files = [
+            os.path.join(project_dir, 'data', 'history', 'trades.jsonl'),
+            os.path.join(project_dir, 'data', 'history', 'features.jsonl'),
+            os.path.join(project_dir, 'data', 'history', 'snapshots.jsonl'),
+            os.path.join(project_dir, 'data', 'history', 'timeline.jsonl'),
+            os.path.join(project_dir, 'data', 'history', 'capital_ledger.jsonl'),
+            os.path.join(project_dir, 'trading', 'trade_analytics.jsonl'),
+            os.path.join(project_dir, 'trading', 'decision_snapshots.jsonl'),
+        ]
+
+        def digest(path):
+            if not os.path.exists(path):
+                return None
+            with open(path, 'rb') as f:
+                return __import__('hashlib').sha256(f.read()).hexdigest()
+
+        before = {path: digest(path) for path in production_files}
+        history_store = history.HistoryStore(
+            trades_file=os.path.join(self.tmp.name, 'isolated_trades.jsonl'),
+            decisions_file=os.path.join(self.tmp.name, 'isolated_decisions.jsonl'),
+            snapshots_file=os.path.join(self.tmp.name, 'isolated_snapshots.jsonl'),
+            timeline_recorder=NoopTimeline(),
+        )
+        logger = analytics.AnalyticsLogger(
+            path=os.path.join(self.tmp.name, 'isolated_analytics.jsonl'),
+            history_store=history_store,
+            timeline_recorder=NoopTimeline(),
+        )
+
+        with patch('feature_store.record_trade_features', side_effect=OSError('no write')):
+            record = logger.log_trade_open(
+                trade_id='t1',
+                symbol='ADAUSDT',
+                side='SHORT',
+                entry_price=1.0,
+                score=90,
+                entry_time='2026-06-30T12:00:00Z',
+            )
+
+        after = {path: digest(path) for path in production_files}
+        self.assertEqual(before, after)
+        self.assertEqual(record['trade_id'], 't1')
+        self.assertTrue(os.path.exists(history_store.trades_file))
+        with open(history_store.trades_file, encoding='utf-8') as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+        self.assertEqual(rows[0]['trade_id'], 't1')
+        self.assertEqual(rows[0]['symbol'], 'ADAUSDT')
+
+    def test_decision_snapshot_logger_does_not_write_production_history_files(self):
+        import analytics
+        import history
+
+        project_dir = os.path.dirname(os.path.dirname(__file__))
+        production_files = [
+            os.path.join(project_dir, 'data', 'history', 'trades.jsonl'),
+            os.path.join(project_dir, 'data', 'history', 'decisions.jsonl'),
+            os.path.join(project_dir, 'data', 'history', 'snapshots.jsonl'),
+            os.path.join(project_dir, 'data', 'history', 'timeline.jsonl'),
+            os.path.join(project_dir, 'trading', 'decision_snapshots.jsonl'),
+        ]
+
+        def digest(path):
+            if not os.path.exists(path):
+                return None
+            with open(path, 'rb') as f:
+                return __import__('hashlib').sha256(f.read()).hexdigest()
+
+        before = {path: digest(path) for path in production_files}
+        history_store = history.HistoryStore(
+            trades_file=os.path.join(self.tmp.name, 'snapshot_trades.jsonl'),
+            decisions_file=os.path.join(self.tmp.name, 'snapshot_decisions.jsonl'),
+            snapshots_file=os.path.join(self.tmp.name, 'snapshot_snapshots.jsonl'),
+            timeline_recorder=NoopTimeline(),
+        )
+        logger = analytics.DecisionSnapshotLogger(
+            path=os.path.join(self.tmp.name, 'isolated_decision_snapshots.jsonl'),
+            history_store=history_store,
+            timeline_recorder=NoopTimeline(),
+        )
+
+        record = logger.log_snapshot(
+            market_regime='bearish',
+            btc_change_4h=-1.5,
+            candidates=[{'symbol': 'ADAUSDT', 'side': 'SHORT', 'score': 90, 'decision': 'OPEN'}],
+            timestamp='2026-06-30T12:00:00Z',
+        )
+
+        after = {path: digest(path) for path in production_files}
+        self.assertEqual(before, after)
+        self.assertEqual(record['market_regime'], 'bearish')
+        self.assertTrue(os.path.exists(history_store.snapshots_file))
+        self.assertTrue(os.path.exists(history_store.decisions_file))
 
 
 if __name__ == '__main__':

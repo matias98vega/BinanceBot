@@ -123,10 +123,11 @@ def _bot_version():
 
 class HistoryStore:
     def __init__(self, trades_file=DEFAULT_TRADES_FILE, decisions_file=DEFAULT_DECISIONS_FILE,
-                 snapshots_file=DEFAULT_SNAPSHOTS_FILE):
+                 snapshots_file=DEFAULT_SNAPSHOTS_FILE, timeline_recorder=None):
         self.trades_file = trades_file
         self.decisions_file = decisions_file
         self.snapshots_file = snapshots_file
+        self.timeline_recorder = timeline_recorder or decision_timeline
 
     def record_trade_open(
         self,
@@ -186,7 +187,7 @@ class HistoryStore:
             record['extra'] = extra
         version_history.attach_version_metadata(record)
         self._append(self.trades_file, record)
-        decision_timeline.record_event(
+        self.timeline_recorder.record_event(
             'history_trade_open',
             f'{symbol} {record["side"]} trade open stored',
             category='ANALYTICS',
@@ -237,7 +238,7 @@ class HistoryStore:
             record['extra'] = extra
         version_history.attach_version_metadata(record)
         self._append(self.trades_file, record)
-        decision_timeline.record_event(
+        self.timeline_recorder.record_event(
             'history_trade_close',
             f'{symbol or trade_id} trade close stored: {record["exit_reason"]}',
             category='ANALYTICS',
@@ -267,7 +268,7 @@ class HistoryStore:
         }
         version_history.attach_version_metadata(record)
         self._append(self.decisions_file, record)
-        decision_timeline.record_event(
+        self.timeline_recorder.record_event(
             'history_decision',
             f'Decision stored: {decision}',
             category='ANALYTICS',
@@ -309,7 +310,7 @@ class HistoryStore:
                 record['metadata'] = details_payload.get('metadata')
         version_history.attach_version_metadata(record)
         self._append(self.snapshots_file, record)
-        decision_timeline.record_event(
+        self.timeline_recorder.record_event(
             'history_snapshot',
             'Market snapshot stored',
             category='ANALYTICS',

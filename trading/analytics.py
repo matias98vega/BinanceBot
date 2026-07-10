@@ -54,8 +54,10 @@ CSV_COLUMNS = [
 
 
 class AnalyticsLogger:
-    def __init__(self, path=ANALYTICS_FILE):
+    def __init__(self, path=ANALYTICS_FILE, history_store=None, timeline_recorder=None):
         self.path = path
+        self.history_store = history_store or history
+        self.timeline_recorder = timeline_recorder or decision_timeline
 
     def log_trade_open(
         self,
@@ -108,7 +110,7 @@ class AnalyticsLogger:
         version_history.attach_version_metadata(record)
         self._append(record)
         try:
-            decision_timeline.record_event(
+            self.timeline_recorder.record_event(
                 'trade_registered',
                 f'{symbol} {side} trade registered',
                 category='ANALYTICS',
@@ -166,7 +168,7 @@ class AnalyticsLogger:
         version_history.attach_version_metadata(record)
         self._append(record)
         try:
-            decision_timeline.record_event(
+            self.timeline_recorder.record_event(
                 'trade_closed_registered',
                 f'{symbol or trade_id} closed: {exit_reason}',
                 category='ANALYTICS',
@@ -230,7 +232,7 @@ class AnalyticsLogger:
 
     def _record_history_open(self, record, **extra):
         try:
-            history.record_trade_open(
+            self.history_store.record_trade_open(
                 trade_id=record.get('trade_id'),
                 symbol=record.get('symbol'),
                 side=record.get('side'),
@@ -258,7 +260,7 @@ class AnalyticsLogger:
                     'reject_reasons': record.get('reject_reasons'),
                 },
             )
-            history.record_snapshot(
+            self.history_store.record_snapshot(
                 market={
                     'market_regime': record.get('market_regime'),
                     'btc_context': extra.get('btc_context') or {},
@@ -319,7 +321,7 @@ class AnalyticsLogger:
 
     def _record_history_close(self, record, extra):
         try:
-            history.record_trade_close(
+            self.history_store.record_trade_close(
                 trade_id=record.get('trade_id'),
                 symbol=record.get('symbol'),
                 side=record.get('side'),
@@ -399,8 +401,10 @@ class AnalyticsLogger:
 
 
 class DecisionSnapshotLogger:
-    def __init__(self, path=DECISIONS_FILE):
+    def __init__(self, path=DECISIONS_FILE, history_store=None, timeline_recorder=None):
         self.path = path
+        self.history_store = history_store or history
+        self.timeline_recorder = timeline_recorder or decision_timeline
 
     def log_snapshot(
         self,
@@ -430,7 +434,7 @@ class DecisionSnapshotLogger:
         with open(self.path, 'a', encoding='utf-8') as f:
             f.write(json.dumps(record, ensure_ascii=False, separators=(',', ':')) + '\n')
         try:
-            decision_timeline.record_event(
+            self.timeline_recorder.record_event(
                 'decision_snapshot_registered',
                 f'Decision snapshot stored: {len(record.get("candidates") or [])} candidates',
                 category='ANALYTICS',
@@ -458,7 +462,7 @@ class DecisionSnapshotLogger:
                 'futures': record.get('futures_balance'),
             }
             candidates = record.get('candidates') or []
-            history.record_snapshot(
+            self.history_store.record_snapshot(
                 market=market,
                 capital=capital,
                 details={'candidate_count': len(candidates)},
@@ -474,7 +478,7 @@ class DecisionSnapshotLogger:
                 ]
                 if candidate.get('reason'):
                     steps.append(f'reason: {candidate.get("reason")}')
-                history.record_decision(
+                self.history_store.record_decision(
                     decision=candidate.get('decision'),
                     symbol=candidate.get('symbol'),
                     side=candidate.get('side'),

@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import sys
 import uuid
 from datetime import datetime, timezone
 
@@ -77,6 +78,16 @@ def _normalise_category(category):
     return value if value in CATEGORIES else 'SYSTEM'
 
 
+def _test_mode_external_write_blocked(path):
+    if os.path.abspath(path) != os.path.abspath(DEFAULT_TIMELINE_FILE):
+        return False
+    env_blocked = str(os.environ.get('BINANCEBOT_TEST_MODE') or '').lower() in {'1', 'true', 'yes'}
+    env_blocked = env_blocked or str(os.environ.get('BINANCEBOT_DISABLE_EXTERNAL_NOTIFICATIONS') or '').lower() in {'1', 'true', 'yes'}
+    argv = ' '.join(str(arg).lower() for arg in sys.argv)
+    unittest_blocked = 'unittest' in argv or 'discover' in argv
+    return env_blocked or unittest_blocked
+
+
 def _rotate_if_needed(path=DEFAULT_TIMELINE_FILE, max_bytes=MAX_TIMELINE_BYTES, keep_bytes=KEEP_RECENT_BYTES):
     try:
         if not os.path.exists(path) or os.path.getsize(path) <= max_bytes:
@@ -107,8 +118,6 @@ def record_event(
     path=DEFAULT_TIMELINE_FILE,
 ):
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        _rotate_if_needed(path)
         record = {
             'event_id': uuid.uuid4().hex,
             'timestamp': timestamp or _now_iso(),
@@ -123,6 +132,11 @@ def record_event(
             'related_trade_id': related_trade_id,
         }
         version_history.attach_version_metadata(record)
+        if _test_mode_external_write_blocked(path):
+            logging.debug('decision timeline write suppressed in test mode path=%s event=%s', path, record.get('event'))
+            return record
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        _rotate_if_needed(path)
         with open(path, 'a', encoding='utf-8') as f:
             f.write(json.dumps(record, ensure_ascii=False, separators=(',', ':')) + '\n')
         return record

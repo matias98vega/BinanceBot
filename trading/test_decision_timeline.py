@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import hashlib
 import os
 import sys
 import tempfile
@@ -94,6 +95,22 @@ class DecisionTimelineTests(unittest.TestCase):
 
     def test_missing_file_returns_empty(self):
         self.assertEqual(decision_timeline.read_recent_events(path=self.path), [])
+
+    def test_default_timeline_write_is_suppressed_under_unittest(self):
+        path = decision_timeline.DEFAULT_TIMELINE_FILE
+
+        def digest():
+            if not os.path.exists(path):
+                return None
+            with open(path, 'rb') as f:
+                return hashlib.sha256(f.read()).hexdigest()
+
+        before = digest()
+        event = decision_timeline.record_event('unit_test_event', 'should not write default timeline')
+        after = digest()
+
+        self.assertIsNotNone(event)
+        self.assertEqual(before, after)
 
 
 if __name__ == '__main__':
