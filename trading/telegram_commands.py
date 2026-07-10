@@ -1092,28 +1092,35 @@ def _bucket_line(label, bucket, include_duration=False):
 def _pnl_for_period(stats, key):
     today = datetime.now(UY_TZ)
     if key == 'day':
-        return stats.get('general', {}).get('pnl_daily', {}).get(today.date().isoformat(), 0)
+        return stats.get('general', {}).get('pnl_daily', {}).get(today.date().isoformat())
     if key == 'week':
         iso = today.isocalendar()
-        return stats.get('general', {}).get('pnl_weekly', {}).get(f'{iso.year}-W{iso.week:02d}', 0)
+        return stats.get('general', {}).get('pnl_weekly', {}).get(f'{iso.year}-W{iso.week:02d}')
     if key == 'month':
-        return stats.get('general', {}).get('pnl_monthly', {}).get(f'{today.year:04d}-{today.month:02d}', 0)
-    return 0
+        return stats.get('general', {}).get('pnl_monthly', {}).get(f'{today.year:04d}-{today.month:02d}')
+    return None
 
 
 def _analytics_pnl_summary(snapshot=None):
     snapshot = snapshot if isinstance(snapshot, dict) else None
     pnl_state = snapshot.get('pnl') if isinstance((snapshot or {}).get('pnl'), dict) else {}
+    try:
+        stats, _warning = _stats_payload()
+        general = stats.get('general') if isinstance(stats, dict) else {}
+        pnl = {
+            'today': _pnl_for_period(stats, 'day') if isinstance(stats, dict) else None,
+            'total': (general or {}).get('pnl_total'),
+        }
+        if pnl.get('today') is not None or pnl.get('total') is not None:
+            return pnl
+    except Exception:
+        pass
     if pnl_state.get('today') is not None or pnl_state.get('total') is not None:
         return {
             'today': pnl_state.get('today'),
             'total': pnl_state.get('total'),
         }
-    stats, _warning = _stats_payload()
-    return {
-        'today': _pnl_for_period(stats, 'day'),
-        'total': (stats.get('general') or {}).get('pnl_total'),
-    }
+    return {'today': None, 'total': None}
 
 
 def _capital_accounting_payload(metrics=None):

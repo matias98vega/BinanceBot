@@ -193,7 +193,7 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertGreater(len(chunks), 1)
         self.assertTrue(all(len(chunk) <= 1000 for chunk in chunks))
 
-    def test_home_uses_bot_state_pnl_and_real_wallet_totals(self):
+    def test_home_uses_analytics_pnl_and_real_wallet_totals(self):
         stats = sample_stats()
         stats['general']['pnl_total'] = 12.34
         today = telegram_commands.datetime.now(telegram_commands.UY_TZ).date().isoformat()
@@ -224,15 +224,81 @@ class TelegramStatsTests(unittest.TestCase):
              patch.object(telegram_commands, '_guardian_status', return_value='ONLINE'):
             text = telegram_commands._render_page('home')['text']
 
-        self.assertIn('PnL hoy: -0.44 USDT', text)
-        self.assertIn('PnL total: +5.00 USDT', text)
+        self.assertIn('PnL hoy: +1.23 USDT', text)
+        self.assertIn('PnL total: +12.34 USDT', text)
         self.assertIn('Régimen actual: Bear', text)
         self.assertIn('BTC 4h: -1.23%', text)
         self.assertIn('BTC precio: $61,234.56', text)
         self.assertIn('Modo direccional: Activo', text)
         self.assertIn('Spot: 8.40 USDT / 26.90 USDT', text)
         self.assertIn('Futures: 18.20 USDT / 27.10 USDT', text)
-        self.assertNotIn('+12.34 USDT', text)
+        self.assertNotIn('Spot: 8.40 USDT / 25.00 USDT', text)
+        self.assertNotIn('Futures: 18.20 USDT / 30.00 USDT', text)
+
+    def test_stats_and_home_use_same_analytics_pnl_source(self):
+        stats = sample_stats()
+        stats['general']['pnl_total'] = 12.34
+        today = telegram_commands.datetime.now(telegram_commands.UY_TZ).date().isoformat()
+        stats['general']['pnl_daily'] = {today: 1.23}
+        bot_snapshot = {
+            'system': {'health': 'OK', 'last_execution': '2026-01-01T12:00:00Z'},
+            'pnl': {'today': -0.44, 'total': 5.0},
+            'capital': {'spot_real': 26.9, 'spot_used': 8.4, 'futures_real': 27.1, 'futures_used': 18.2},
+            'positions': {'long': {'current': 1, 'max': 2}, 'short': {'current': 1, 'max': 2}},
+        }
+        with patch.object(telegram_commands, '_stats_payload', return_value=(stats, None)), \
+             patch.object(telegram_commands, '_bot_state', return_value=bot_snapshot), \
+             patch.object(telegram_commands, '_state', return_value={}), \
+             patch.object(telegram_commands, '_health_summary', return_value=('OK', [], [])), \
+             patch.object(telegram_commands, '_bot_status', return_value='ONLINE'), \
+             patch.object(telegram_commands, '_guardian_status', return_value='ONLINE'), \
+             patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics()):
+            home = telegram_commands._render_page('home')['text']
+            stats_text = telegram_commands._render_page('stats')['text']
+
+        self.assertIn('PnL hoy: +1.23 USDT', home)
+        self.assertIn('PnL total: +12.34 USDT', home)
+        self.assertIn('Hoy: +1.23 USDT', stats_text)
+        self.assertIn('Total: +12.34 USDT', stats_text)
+        self.assertNotIn('-0.44 USDT', home)
+        self.assertNotIn('+5.00 USDT', home)
+
+    def test_home_pnl_falls_back_to_bot_state_when_analytics_unavailable(self):
+        bot_snapshot = {
+            'system': {'health': 'OK', 'last_execution': '2026-01-01T12:00:00Z'},
+            'pnl': {'today': -0.4402, 'total': 5.0022},
+            'capital': {'spot_real': 26.9, 'spot_used': 8.4, 'futures_real': 27.1, 'futures_used': 18.2},
+            'positions': {'long': {'current': 1, 'max': 2}, 'short': {'current': 1, 'max': 2}},
+        }
+
+        with patch.object(telegram_commands, '_stats_payload', side_effect=RuntimeError('stats unavailable')), \
+             patch.object(telegram_commands, '_bot_state', return_value=bot_snapshot), \
+             patch.object(telegram_commands, '_state', return_value={}), \
+             patch.object(telegram_commands, '_health_summary', return_value=('OK', [], [])), \
+             patch.object(telegram_commands, '_bot_status', return_value='ONLINE'), \
+             patch.object(telegram_commands, '_guardian_status', return_value='ONLINE'):
+            text = telegram_commands._render_page('home')['text']
+
+        self.assertIn('PnL hoy: -0.44 USDT', text)
+        self.assertIn('PnL total: +5.00 USDT', text)
+
+    def test_home_pnl_shows_na_when_no_reliable_source_exists(self):
+        bot_snapshot = {
+            'system': {'health': 'OK', 'last_execution': '2026-01-01T12:00:00Z'},
+            'capital': {'spot_real': 26.9, 'spot_used': 8.4, 'futures_real': 27.1, 'futures_used': 18.2},
+            'positions': {'long': {'current': 1, 'max': 2}, 'short': {'current': 1, 'max': 2}},
+        }
+
+        with patch.object(telegram_commands, '_stats_payload', side_effect=RuntimeError('stats unavailable')), \
+             patch.object(telegram_commands, '_bot_state', return_value=bot_snapshot), \
+             patch.object(telegram_commands, '_state', return_value={}), \
+             patch.object(telegram_commands, '_health_summary', return_value=('OK', [], [])), \
+             patch.object(telegram_commands, '_bot_status', return_value='ONLINE'), \
+             patch.object(telegram_commands, '_guardian_status', return_value='ONLINE'):
+            text = telegram_commands._render_page('home')['text']
+
+        self.assertIn('PnL hoy: N/A', text)
+        self.assertIn('PnL total: N/A', text)
 
     def test_capital_market_regime_fallback_when_missing(self):
         with patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics()), \
@@ -563,7 +629,7 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertIn('Comisiones: 0.50 USDT', text)
         self.assertIn('Funding: -0.10 USDT', text)
 
-    def test_stats_uses_bot_state_pnl_total_when_available(self):
+    def test_stats_uses_analytics_pnl_total_when_available(self):
         stats = sample_stats()
         stats['general']['pnl_total'] = 3.26
         metrics = self._metrics()
@@ -574,9 +640,10 @@ class TelegramStatsTests(unittest.TestCase):
              patch.object(telegram_commands, '_bot_state', return_value=bot_snapshot):
             text = telegram_commands._render_page('stats_general')['text']
 
-        self.assertIn('Total: +5.00 USDT', text)
-        self.assertIn('Hoy: -0.44 USDT', text)
-        self.assertNotIn('+3.26 USDT', text)
+        self.assertIn('Total: +3.26 USDT', text)
+        self.assertIn('Hoy: N/A', text)
+        self.assertNotIn('Total: +5.00 USDT', text)
+        self.assertNotIn('Hoy: -0.44 USDT', text)
 
     def test_stats_does_not_treat_limit_gap_as_trading_loss(self):
         stats = sample_stats()
