@@ -136,6 +136,10 @@ class TelegramStatsTests(unittest.TestCase):
 
         text = response['text']
         self.assertIn('Resumen General', text)
+        self.assertIn('Operacion:', text)
+        self.assertIn('PnL:', text)
+        self.assertIn('Capital:', text)
+        self.assertIn('Trading ajustado:', text)
         self.assertIn('Trades totales: 3', text)
         self.assertIn('Win Rate: 50.0%', text)
         self.assertIn('Profit Factor: 2.00', text)
@@ -224,12 +228,10 @@ class TelegramStatsTests(unittest.TestCase):
              patch.object(telegram_commands, '_guardian_status', return_value='ONLINE'):
             text = telegram_commands._render_page('home')['text']
 
-        self.assertIn('PnL hoy: +1.23 USDT', text)
-        self.assertIn('PnL total: +12.34 USDT', text)
-        self.assertIn('Régimen actual: Bear', text)
-        self.assertIn('BTC 4h: -1.23%', text)
-        self.assertIn('BTC precio: $61,234.56', text)
-        self.assertIn('Modo direccional: Activo', text)
+        self.assertIn('Hoy: +1.23 USDT', text)
+        self.assertIn('Total: +12.34 USDT', text)
+        self.assertIn('Bear | BTC 4h -1.23%', text)
+        self.assertIn('BTC: $61,234.56', text)
         self.assertIn('Spot: 8.40 USDT / 26.90 USDT', text)
         self.assertIn('Futures: 18.20 USDT / 27.10 USDT', text)
         self.assertNotIn('Spot: 8.40 USDT / 25.00 USDT', text)
@@ -256,8 +258,8 @@ class TelegramStatsTests(unittest.TestCase):
             home = telegram_commands._render_page('home')['text']
             stats_text = telegram_commands._render_page('stats')['text']
 
-        self.assertIn('PnL hoy: +1.23 USDT', home)
-        self.assertIn('PnL total: +12.34 USDT', home)
+        self.assertIn('Hoy: +1.23 USDT', home)
+        self.assertIn('Total: +12.34 USDT', home)
         self.assertIn('Hoy: +1.23 USDT', stats_text)
         self.assertIn('Total: +12.34 USDT', stats_text)
         self.assertNotIn('-0.44 USDT', home)
@@ -279,8 +281,8 @@ class TelegramStatsTests(unittest.TestCase):
              patch.object(telegram_commands, '_guardian_status', return_value='ONLINE'):
             text = telegram_commands._render_page('home')['text']
 
-        self.assertIn('PnL hoy: -0.44 USDT', text)
-        self.assertIn('PnL total: +5.00 USDT', text)
+        self.assertIn('Hoy: -0.44 USDT', text)
+        self.assertIn('Total: +5.00 USDT', text)
 
     def test_home_pnl_shows_na_when_no_reliable_source_exists(self):
         bot_snapshot = {
@@ -297,8 +299,8 @@ class TelegramStatsTests(unittest.TestCase):
              patch.object(telegram_commands, '_guardian_status', return_value='ONLINE'):
             text = telegram_commands._render_page('home')['text']
 
-        self.assertIn('PnL hoy: N/A', text)
-        self.assertIn('PnL total: N/A', text)
+        self.assertIn('Hoy: N/A', text)
+        self.assertIn('Total: N/A', text)
 
     def test_capital_market_regime_fallback_when_missing(self):
         with patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics()), \
@@ -328,6 +330,22 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertIn('BTC 4h: +2.50%', text)
         self.assertIn('BTC precio: $70,000.00', text)
         self.assertIn('Modo direccional: Inactivo', text)
+
+    def test_capital_groups_real_used_free_and_rebalance_targets(self):
+        metrics = self._metrics()
+        metrics['rebalance'] = {'status': 'NOT_REQUIRED', 'direction': 'NONE', 'amount_pending': 0.0}
+        with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics), \
+             patch.object(telegram_commands, '_bot_state', return_value={}):
+            text = telegram_commands._render_page('capital')['text']
+
+        self.assertIn('Total:\nReal: 54.00 USDT\nUsado: 26.60 USDT\nLibre: 27.40 USDT', text)
+        self.assertIn('Spot:\nReal: 26.90 USDT\nUsado: 8.40 USDT\nLibre: 18.50 USDT', text)
+        self.assertIn('Futures:\nReal: 27.10 USDT\nUsado: 18.20 USDT\nLibre: 8.90 USDT', text)
+        self.assertIn('Objetivo/Rebalance:', text)
+        self.assertIn('Spot objetivo: 26.90 USDT', text)
+        self.assertIn('Futures objetivo: 27.10 USDT', text)
+        self.assertNotIn('Spot:\nReal: 26.90 USDT\nObjetivo:', text)
+        self.assertNotIn('Futures:\nReal: 27.10 USDT\nObjetivo:', text)
 
     def test_capital_shows_capital_accounting_metrics(self):
         metrics = self._metrics()
@@ -552,6 +570,10 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertIn('Bot version: v1.2-sizing-v2', text)
         self.assertIn('Strategy version: current', text)
         self.assertIn('Schema version: v1', text)
+        self.assertIn('Entradas\n', text)
+        self.assertIn('Longs\n', text)
+        self.assertIn('Shorts\n', text)
+        self.assertIn('Rebalance\n', text)
 
     def test_home_expands_futures_reconciliation_when_unmanaged(self):
         metrics = self._metrics(short_count=1)
@@ -889,7 +911,8 @@ class TelegramStatsTests(unittest.TestCase):
             text = telegram_commands._render_page('positions')['text']
 
         self.assertIn('📈 Spot', text)
-        self.assertIn('WLDUSDT LONG', text)
+        self.assertIn('WLD L', text)
+        self.assertIn('PnL abierto total: +1.00 USDT', text)
         self.assertIn('PnL +1.00 USDT (+5.0%)', text)
         self.assertIn('TP +4.8% (+1.00 USDT) | SL -14.3% (-3.00 USDT)', text)
 
@@ -919,7 +942,8 @@ class TelegramStatsTests(unittest.TestCase):
             text = telegram_commands._render_page('positions')['text']
 
         self.assertIn('📉 Futures', text)
-        self.assertIn('CRCLUSDT SHORT | Lev x5 | Cross', text)
+        self.assertIn('PnL abierto total: +0.42 USDT', text)
+        self.assertIn('CRCL S | Lev x5 | Cross', text)
         self.assertIn('Notional 12.34 USDT | PnL +0.42 USDT', text)
         self.assertIn('Entry 0.1234 | Mark 0.1200', text)
 
@@ -977,7 +1001,7 @@ class TelegramStatsTests(unittest.TestCase):
              patch.object(telegram_commands, '_public_price', return_value=0.11):
             text = telegram_commands._render_page('positions')['text']
 
-        self.assertEqual(text.count('CRCLUSDT'), 1)
+        self.assertEqual(text.count('CRCL S'), 1)
 
     def test_positions_degrades_when_futures_fields_are_missing(self):
         bot_snapshot = {
@@ -993,7 +1017,8 @@ class TelegramStatsTests(unittest.TestCase):
              patch.object(telegram_commands, '_futures_reconciliation_entry', return_value={}):
             text = telegram_commands._render_page('positions')['text']
 
-        self.assertIn('SUIUSDT SHORT', text)
+        self.assertIn('SUI S', text)
+        self.assertIn('PnL abierto total: N/A', text)
         self.assertIn('No disponible', text)
 
     def test_positions_compact_format_groups_spot_and_futures(self):

@@ -173,6 +173,26 @@ def _fmt_pnl(value):
         return 'N/A'
 
 
+def _money_free(real, used):
+    real = _to_float(real)
+    used = _to_float(used)
+    if real is None or used is None:
+        return None
+    return max(0.0, real - used)
+
+
+def _fmt_equity(metrics):
+    return _fmt_money(metrics.get('total_real'))
+
+
+def _total_used(metrics):
+    spot_used = _to_float(metrics.get('spot_used'))
+    futures_used = _to_float(metrics.get('futures_used'))
+    if spot_used is None and futures_used is None:
+        return None
+    return (spot_used or 0.0) + (futures_used or 0.0)
+
+
 def _fmt_number(value, digits=2):
     if value is None:
         return 'N/A'
@@ -333,16 +353,31 @@ def _public_price(symbol, direction):
         return None
 
 
+def _compact_symbol(symbol):
+    text = str(symbol or 'N/D').upper()
+    return text[:-4] if text.endswith('USDT') and len(text) > 4 else text
+
+
+def _side_abbrev(side):
+    text = str(side or '').upper()
+    if text.startswith('LONG') or text == 'L':
+        return 'L'
+    if text.startswith('SHORT') or text == 'S':
+        return 'S'
+    return text or 'N/D'
+
+
 def _spot_position_view(pos):
     direction = str(pos.get('direction', '')).lower()
-    side = direction.upper()
-    symbol = pos.get('symbol') or 'N/D'
+    side = _side_abbrev(direction.upper())
+    raw_symbol = pos.get('symbol') or 'N/D'
+    symbol = _compact_symbol(raw_symbol)
     icon = '🟢' if direction == 'long' else '🔴'
     entry = _to_float(pos.get('entry_price'))
     qty = _to_float(pos.get('quantity'))
     tp = _to_float(pos.get('tp'))
     sl = _to_float(pos.get('sl'))
-    price = _public_price(symbol, direction) or _to_float(pos.get('current_price')) or entry
+    price = _public_price(raw_symbol, direction) or _to_float(pos.get('current_price')) or entry
     duration = _duration_short(pos.get('entry_time'))
 
     pnl = pnl_pct = tp_dist = sl_dist = tp_gain = sl_loss = None
@@ -442,6 +477,34 @@ def _futures_positions_for_display():
     return list(by_symbol.values())
 
 
+def _spot_open_pnl(pos):
+    entry = _to_float(pos.get('entry_price'))
+    qty = _to_float(pos.get('quantity'))
+    symbol = pos.get('symbol')
+    direction = str(pos.get('direction') or '').lower()
+    price = _to_float(pos.get('current_price'))
+    if price is None:
+        price = _public_price(symbol, direction)
+    if entry is None or qty is None or price is None:
+        return None
+    if direction == 'short':
+        return (entry - price) * qty
+    return (price - entry) * qty
+
+
+def _open_pnl_total(spot_positions=None, futures_positions=None):
+    values = []
+    for pos in spot_positions if spot_positions is not None else _spot_positions():
+        pnl = _spot_open_pnl(pos)
+        if pnl is not None:
+            values.append(pnl)
+    for pos in futures_positions if futures_positions is not None else _futures_positions_for_display():
+        pnl = _to_float(pos.get('unrealized_pnl'))
+        if pnl is not None:
+            values.append(pnl)
+    return sum(values) if values else None
+
+
 def _fmt_leverage(value):
     value = _to_float(value)
     if value is None:
@@ -452,13 +515,14 @@ def _fmt_leverage(value):
 
 
 def _futures_position_view(pos):
-    side = str(pos.get('side') or pos.get('direction') or 'UNKNOWN').upper()
-    symbol = pos.get('symbol') or 'N/D'
+    side = _side_abbrev(pos.get('side') or pos.get('direction') or 'UNKNOWN')
+    raw_symbol = pos.get('symbol') or 'N/D'
+    symbol = _compact_symbol(raw_symbol)
     icon = '🟢' if side == 'LONG' else '🔴'
     margin_type = pos.get('margin_type') or pos.get('marginType') or 'No disponible'
     if isinstance(margin_type, str) and margin_type != 'No disponible':
         margin_type = margin_type.capitalize()
-    reconciliation = _futures_reconciliation_entry(symbol)
+    reconciliation = _futures_reconciliation_entry(raw_symbol)
     classes = reconciliation.get('classification') or []
     tags = []
     if 'managed_futures_position' in classes:
@@ -883,6 +947,15 @@ def _market_summary_lines(snapshot=None):
         f'BTC 4h: {_fmt_signed_pct(market_info.get("btc_change_4h"))}',
         f'BTC precio: {_fmt_usd_price(market_info.get("btc_price"))}',
         f'Modo direccional: {directional_label}',
+    ]
+
+
+def _market_home_lines(snapshot=None):
+    market_info = _market_info(snapshot)
+    regime_icon, regime_label = _market_regime_label(market_info.get('regime'))
+    return [
+        f'{regime_icon} {regime_label} | BTC 4h {_fmt_signed_pct(market_info.get("btc_change_4h"))}',
+        f'BTC: {_fmt_usd_price(market_info.get("btc_price"))}',
     ]
 
 
@@ -1379,24 +1452,23 @@ class HomePage(MenuPage):
         else:
             short_lines = [f'Shorts: {metrics["short_count"]}/{max_shorts}']
         lines = [
-            f'{_status_icon(bot)} Bot: {bot}',
-            f'{_status_icon(guardian)} Guardian: {guardian}',
-            f'\u2764\ufe0f Healthcheck: {health}',
+            f'{_status_icon(bot)} Bot {bot}',
+            f'{_status_icon(guardian)} Guardian {guardian}',
+            f'\u2764\ufe0f Healthcheck {health}',
             '',
-            'Mercado:',
-            *_market_summary_lines(snapshot),
+            f'\U0001F4B0 Equity: {_fmt_equity(metrics)}',
+            f'\U0001F4C8 Hoy: {_fmt_pnl(pnl.get("today"))}',
+            f'\U0001F4CA Total: {_fmt_pnl(pnl.get("total"))}',
             '',
-            f'PnL hoy: {_fmt_pnl(pnl.get("today"))}',
-            f'PnL total: {_fmt_pnl(pnl.get("total"))}',
-            '',
-            f'Longs: {metrics["long_count"]}/{max_longs}',
-            f'Spot: {_fmt_money(metrics["spot_used"])} / {_fmt_money(metrics["spot_real"])}',
-            '',
+            f'\U0001F7E2 Longs: {metrics["long_count"]}/{max_longs}',
             *short_lines,
+            '',
+            f'Spot: {_fmt_money(metrics["spot_used"])} / {_fmt_money(metrics["spot_real"])}',
             f'Futures: {_fmt_money(metrics["futures_used"])} / {_fmt_money(metrics["futures_real"])}',
             '',
-            '\U0001F552 Ultimo ciclo',
-            _fmt_uy(system.get('last_execution')) if system.get('last_execution') else _mtime_uy(CONFIG.state_file),
+            *_market_home_lines(snapshot),
+            '',
+            f'\U0001F552 Ultimo ciclo: {_fmt_uy(system.get("last_execution")) if system.get("last_execution") else _mtime_uy(CONFIG.state_file)}',
         ]
         return '\n'.join(lines)
 
@@ -1430,13 +1502,15 @@ class CapitalPage(MenuPage):
             '',
             'Total:',
             f'Real: {_fmt_money(metrics["total_real"])}',
-            f'Limite: {_fmt_money(metrics["total_limit"])}',
+            f'Usado: {_fmt_money(_total_used(metrics))}',
+            f'Libre: {_fmt_money(_money_free(metrics.get("total_real"), _total_used(metrics)))}',
             f'Autorizado: {_fmt_money(metrics["total_authorized"])}',
+            f'Limite: {_fmt_money(metrics["total_limit"])}',
             '',
             'Spot:',
             f'Real: {_fmt_money(metrics["spot_real"])}',
-            f'Objetivo: {_fmt_money(metrics["spot_target"])}',
             f'Usado: {_fmt_money(metrics["spot_used"])}',
+            f'Libre: {_fmt_money(_money_free(metrics.get("spot_real"), metrics.get("spot_used")))}',
         ]
         if metrics.get('spot_reserved'):
             lines.append(f'Reserva: {_fmt_money(metrics.get("spot_reserved"))}')
@@ -1444,8 +1518,8 @@ class CapitalPage(MenuPage):
             '',
             'Futures:',
             f'Real: {_fmt_money(metrics["futures_real"])}',
-            f'Objetivo: {_fmt_money(metrics["futures_target"])}',
             f'Usado: {_fmt_money(metrics["futures_used"])}',
+            f'Libre: {_fmt_money(_money_free(metrics.get("futures_real"), metrics.get("futures_used")))}',
         ])
         if metrics.get('futures_position_margin') is not None:
             lines.append(f'Comprometido: {_fmt_money(metrics.get("futures_position_margin"))}')
@@ -1477,13 +1551,15 @@ class CapitalPage(MenuPage):
                 ])
         if metrics.get('futures_reserved'):
             lines.append(f'Reserva: {_fmt_money(metrics.get("futures_reserved"))}')
+        pending_amount = rebalance.get("amount_pending") if rebalance else None
+        lines.extend([
+            '',
+            'Objetivo/Rebalance:',
+            f'Spot objetivo: {_fmt_money(metrics["spot_target"])}',
+            f'Futures objetivo: {_fmt_money(metrics["futures_target"])}',
+        ])
         if rebalance:
-            pending_amount = rebalance.get("amount_pending")
-            lines.extend([
-                '',
-                'Rebalance:',
-                f'{_rebalance_label(rebalance.get("status"))} {direction_label}',
-            ])
+            lines.append(f'{_rebalance_label(rebalance.get("status"))} {direction_label}')
             if rebalance.get('reconciled'):
                 lines.extend([''])
                 lines.extend(_rebalance_reconciled_lines(rebalance))
@@ -1495,6 +1571,11 @@ class CapitalPage(MenuPage):
                 lines.extend(_rebalance_pending_lines(rebalance, direction_label, pending_amount))
             else:
                 lines.append(f'Monto: {_fmt_money(pending_amount)}')
+        else:
+            lines.extend([
+                f'Estado: {_rebalance_label(None)}',
+                f'Monto pendiente: {_fmt_money(None)}',
+            ])
         if metrics.get('warning'):
             lines.extend(['', 'Info:', metrics.get('warning')])
         lines.extend([''])
@@ -1516,7 +1597,8 @@ class PositionsPage(MenuPage):
     def render(self):
         spot_positions = _spot_positions()
         futures_positions = _futures_positions_for_display()
-        lines = ['📂 Posiciones abiertas', '']
+        open_pnl = _open_pnl_total(spot_positions, futures_positions)
+        lines = ['📂 Posiciones abiertas', '', f'PnL abierto total: {_fmt_pnl(open_pnl)}', '']
         if not spot_positions and not futures_positions:
             lines.append('✅ No existen posiciones abiertas.')
             return '\n'.join(lines)
@@ -1596,19 +1678,19 @@ class DiagnosticsPage(MenuPage):
             'Shorts:',
             f'{metrics["short_count"]}/{max_shorts}',
             '',
-            'Entradas:',
+            'Entradas',
             _entries_label(diagnostics.get('entries_status'), diagnostics.get('entries_allowed')),
             diagnostics.get('entries_reason'),
             '',
-            'Longs:',
+            'Longs',
             _side_label(diagnostics.get('long_entries_status')),
             _compact_waiting_reason(diagnostics.get('long_entries_reason')),
             '',
-            'Shorts:',
+            'Shorts',
             _side_label(diagnostics.get('short_entries_status')),
             _compact_waiting_reason(diagnostics.get('short_entries_reason')),
             '',
-            'Rebalance:',
+            'Rebalance',
             _rebalance_label(diagnostics.get('rebalance_status')),
             direction_label,
             f'Pendiente: {_fmt_money(rebalance.get("amount_pending"))}',
@@ -1737,18 +1819,24 @@ class StatsMenuPage(MenuPage):
         lines = ['\U0001F4CA Estadisticas', '']
         lines.extend(_stats_warning_lines(warning))
         lines.extend([
+            'Operacion:',
             f'Trades: {_fmt_count(counts["total"])}',
+            f'Abiertos: {_fmt_count(counts["opened"])}',
             f'Cerrados: {_fmt_count(counts["closed"])}',
             f'Win Rate: {_fmt_stat_pct(general.get("win_rate"))}',
+            f'Profit Factor: {_fmt_ratio(general.get("profit_factor"))}',
+            f'Expectancy: {_fmt_pnl(general.get("expectancy"))}',
             '',
             'PnL:',
-            f'Total: {_fmt_pnl(pnl.get("total"))}',
             f'Hoy: {_fmt_pnl(pnl.get("today"))}',
+            f'Semana: {_fmt_pnl(_pnl_for_period(stats, "week"))}',
+            f'Mes: {_fmt_pnl(_pnl_for_period(stats, "month"))}',
+            f'Total: {_fmt_pnl(pnl.get("total"))}',
             '',
             'Capital:',
             f'Real: {_fmt_money(metrics.get("total_real"))}',
-            f'Limite: {_fmt_money(metrics.get("total_limit"))}',
             f'Autorizado: {_fmt_money(metrics.get("total_authorized"))}',
+            f'Limite: {_fmt_money(metrics.get("total_limit"))}',
             '',
         ])
         lines.extend(_capital_accounting_lines(metrics, compact=True))
@@ -1782,10 +1870,10 @@ class StatsGeneralPage(MenuPage):
         lines = ['\U0001F4C8 Resumen General', '']
         lines.extend(_stats_warning_lines(warning))
         lines.extend([
+            'Operacion:',
             f'Trades totales: {_fmt_count(counts["total"])}',
             f'Abiertos: {_fmt_count(counts["opened"])}',
             f'Cerrados: {_fmt_count(counts["closed"])}',
-            '',
             f'Win: {_fmt_count(general.get("win"))}',
             f'Loss: {_fmt_count(general.get("loss"))}',
             f'Breakeven: {_fmt_count(general.get("breakeven"))}',
@@ -1801,8 +1889,10 @@ class StatsGeneralPage(MenuPage):
             '',
             'Capital:',
             f'Real: {_fmt_money(metrics.get("total_real"))}',
-            f'Limite: {_fmt_money(metrics.get("total_limit"))}',
             f'Autorizado: {_fmt_money(metrics.get("total_authorized"))}',
+            f'Limite: {_fmt_money(metrics.get("total_limit"))}',
+            '',
+            'Detalle:',
             f'Duracion promedio: {_fmt_number(general.get("duration_average_minutes"), 1)}m',
             '',
             f'Mejor: {_fmt(best.get("symbol"))} {_fmt_pnl(best.get("pnl_usdt"))} ({_fmt_stat_pct(best.get("pnl_pct"))})',
