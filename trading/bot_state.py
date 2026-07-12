@@ -16,6 +16,12 @@ from config_loader import PROJECT_DIR, load_dotenv
 
 BOT_STATE_FILE = os.path.join(PROJECT_DIR, 'trading', 'bot_state.json')
 UY_TZ = timezone(timedelta(hours=-3), 'America/Montevideo')
+MARKET_RECOVERY_SOURCES = (
+    ('decision_snapshots', os.path.join(PROJECT_DIR, 'trading', 'decision_snapshots.jsonl')),
+    ('snapshots', os.path.join(PROJECT_DIR, 'data', 'history', 'snapshots.jsonl')),
+    ('features', os.path.join(PROJECT_DIR, 'data', 'history', 'features.jsonl')),
+    ('timeline', os.path.join(PROJECT_DIR, 'data', 'history', 'timeline.jsonl')),
+)
 
 
 def _now_iso():
@@ -46,6 +52,129 @@ def _previous_nested(previous, section, key):
     if not isinstance(value, dict):
         return None
     return value.get(key)
+
+
+def _is_number(value):
+    return _float_or_none(value) is not None
+
+
+def _normalise_regime(value):
+    text = str(value or '').strip().lower()
+    aliases = {
+        'bullish': 'bullish',
+        'bull': 'bullish',
+        'bearish': 'bearish',
+        'bear': 'bearish',
+        'sideways': 'sideways',
+        'neutral': 'neutral',
+    }
+    return aliases.get(text, text or 'unknown')
+
+
+def _market_from_mapping(record):
+    if not isinstance(record, dict):
+        return None
+
+    details = record.get('details') if isinstance(record.get('details'), dict) else {}
+    market = record.get('market') if isinstance(record.get('market'), dict) else {}
+    btc_context = record.get('btc_context') if isinstance(record.get('btc_context'), dict) else {}
+    if not btc_context and isinstance(market.get('btc_context'), dict):
+        btc_context = market.get('btc_context')
+
+    candidates = (record, market, btc_context, details)
+    btc_price = None
+    change_4h = None
+    regime = None
+    force_mode = None
+    timestamp = record.get('timestamp') or record.get('recorded_at') or record.get('event_time')
+
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        if btc_price is None:
+            btc_price = (
+                candidate.get('btc_price')
+                or candidate.get('price_btc')
+                or candidate.get('btc_usdt')
+            )
+        if change_4h is None:
+            change_4h = (
+                candidate.get('btc_change_4h')
+                or candidate.get('change_4h')
+                or candidate.get('btc_4h_change')
+            )
+        if regime is None:
+            regime = (
+                candidate.get('regime')
+                or candidate.get('market_regime')
+                or candidate.get('btc_regime')
+                or candidate.get('trend')
+            )
+        if force_mode is None:
+            force_mode = candidate.get('force_mode')
+        if timestamp is None:
+            timestamp = candidate.get('timestamp') or candidate.get('recorded_at') or candidate.get('event_time')
+
+    if not _is_number(btc_price) or not _is_number(change_4h):
+        return None
+    return {
+        'trend': _normalise_regime(regime),
+        'btc_price': _float_or_none(btc_price),
+        'change_4h': _float_or_none(change_4h),
+        'force_mode': force_mode,
+        'timestamp': timestamp,
+    }
+
+
+def _read_last_valid_market_from_jsonl(path):
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding='utf-8') as f:
+            lines = f.readlines()
+    except Exception:
+        return None
+    for lineno, line in reversed(list(enumerate(lines, 1))):
+        raw = line.strip()
+        if not raw:
+            continue
+        try:
+            record = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        market = _market_from_mapping(record)
+        if market:
+            market['source_line'] = lineno
+            return market
+    return None
+
+
+def find_last_valid_market(previous_state=None, sources=None):
+    """Return the latest internally recorded BTC market context, or None.
+
+    This is read-model recovery only. It never fetches external data and never
+    invents BTC values when no complete internal source exists.
+    """
+    previous_market = (
+        previous_state.get('market')
+        if isinstance(previous_state, dict) and isinstance(previous_state.get('market'), dict)
+        else None
+    )
+    market = _market_from_mapping(previous_market)
+    if market:
+        market['source'] = 'bot_state'
+        market['source_path'] = BOT_STATE_FILE
+        return market
+
+    latest_market = None
+    for source_name, path in (sources or MARKET_RECOVERY_SOURCES):
+        market = _read_last_valid_market_from_jsonl(path)
+        if market:
+            market['source'] = source_name
+            market['source_path'] = path
+            if latest_market is None or str(market.get('timestamp') or '') >= str(latest_market.get('timestamp') or ''):
+                latest_market = market
+    return latest_market
 
 
 def _round_or_none(value, digits=4):
@@ -795,15 +924,26 @@ def build_bot_state(
 
     state = state if isinstance(state, dict) else {}
     previous_state = _load_previous_bot_state()
+    recovered_market = find_last_valid_market(previous_state)
     if not isinstance(btc_ctx, dict):
-        previous_market = previous_state.get('market') if isinstance(previous_state.get('market'), dict) else {}
-        if previous_market:
-            btc_ctx = {
-                'trend': previous_market.get('regime') or 'unknown',
-                'btc_price': previous_market.get('btc_price'),
-                'change_4h': previous_market.get('btc_change_4h'),
-                'force_mode': previous_market.get('force_mode'),
-            }
+        if recovered_market:
+            btc_ctx = recovered_market
+        else:
+            previous_market = previous_state.get('market') if isinstance(previous_state.get('market'), dict) else {}
+            if previous_market:
+                btc_ctx = {
+                    'trend': previous_market.get('regime') or 'unknown',
+                    'btc_price': previous_market.get('btc_price'),
+                    'change_4h': previous_market.get('btc_change_4h'),
+                    'force_mode': previous_market.get('force_mode'),
+                }
+    elif recovered_market:
+        if btc_ctx.get('btc_price') in (None, ''):
+            btc_ctx['btc_price'] = recovered_market.get('btc_price')
+        if btc_ctx.get('change_4h') in (None, '') and btc_ctx.get('btc_change_4h') in (None, ''):
+            btc_ctx['change_4h'] = recovered_market.get('change_4h')
+        if not btc_ctx.get('trend') or btc_ctx.get('trend') == 'unknown':
+            btc_ctx['trend'] = recovered_market.get('trend') or 'unknown'
     if spot_real is None:
         spot_real = _previous_nested(previous_state, 'capital', 'spot_real')
     if futures_real is None:

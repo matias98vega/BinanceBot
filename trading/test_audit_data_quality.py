@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.dirname(__file__))
 
 import audit_data_quality
+import repair_data_quality
 
 
 class AuditDataQualityTests(unittest.TestCase):
@@ -267,6 +268,75 @@ class AuditDataQualityTests(unittest.TestCase):
         self.assertEqual([], report.errors)
         self.assertEqual([], report.operational_warnings)
         self.assertTrue(report.legacy_warnings)
+        self.assertIn('Estado operativo: OK', text)
+
+    def test_degraded_bot_state_market_repair_clears_operational_warning(self):
+        self.write_json('trading/bot_state.json', {
+            'market': {
+                'regime': 'unknown',
+                'btc_price': None,
+                'btc_change_4h': None,
+                'directional_mode': True,
+            },
+            'capital': {
+                'spot_real': 10,
+                'spot_used': 2,
+                'futures_real': 20,
+                'futures_used': 5,
+            },
+            'positions': {
+                'long': {'current': 0, 'max': 1},
+                'short': {'current': 0, 'max': 2},
+            },
+        })
+        self.write_jsonl('trading/decision_snapshots.jsonl', [
+            {
+                'timestamp': '2026-07-08T00:00:00Z',
+                'market_regime': 'bearish',
+                'btc_price': 118000,
+                'btc_change_4h': -0.8,
+                'bot_version': 'v1.1-observability-hardening',
+            }
+        ])
+        self.write_jsonl('trading/trade_analytics.jsonl', [
+            {
+                'timestamp': '2026-06-02T00:00:00Z',
+                'event_type': 'TRADE_OPEN',
+                'trade_id': 't1',
+                'symbol': 'ETHUSDT',
+                'side': 'LONG',
+                'status': 'OPEN',
+                'entry_price': 10,
+                'bot_version': 'v1.0-alpha',
+            },
+            {
+                'timestamp': '2026-06-02T00:01:00Z',
+                'event_type': 'TRADE_CLOSE',
+                'trade_id': 't1',
+                'symbol': 'ETHUSDT',
+                'side': 'LONG',
+                'status': 'CLOSED',
+                'entry_price': 10,
+                'exit_price': 11,
+                'pnl_usdt': 1,
+                'bot_version': 'v1.0-alpha',
+            },
+        ])
+
+        before = audit_data_quality.audit_project(self.project)
+        result, code = repair_data_quality.apply_degraded_bot_state_market_repair(
+            self.project,
+            confirm_plan='degraded-bot-state-market',
+        )
+        after = audit_data_quality.audit_project(self.project)
+        text = audit_data_quality.format_report(after)
+
+        self.assertTrue(any('market.btc_price faltante' in item for item in before.operational_warnings))
+        self.assertEqual(0, code)
+        self.assertTrue(result['write_performed'])
+        self.assertEqual([], after.errors)
+        self.assertFalse(any('market.btc_price faltante' in item for item in after.operational_warnings))
+        self.assertFalse(any('market.btc_change_4h faltante' in item for item in after.operational_warnings))
         self.assertIn('Estado operativo: OK', text)
 
     def test_backfilled_record_warning_is_accepted_not_operational(self):

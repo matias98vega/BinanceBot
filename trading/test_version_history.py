@@ -160,6 +160,49 @@ class VersionHistoryTests(unittest.TestCase):
         self.assertEqual(47.66, payload['capital']['spot_real'])
         self.assertEqual(0.10, payload['capital']['futures_real'])
 
+    def test_paused_bot_state_recovers_market_from_internal_snapshot_when_previous_is_degraded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'bot_state.json')
+            decision_snapshots = os.path.join(tmp, 'decision_snapshots.jsonl')
+            previous = {
+                'market': {
+                    'regime': 'unknown',
+                    'btc_price': None,
+                    'btc_change_4h': None,
+                    'force_mode': None,
+                },
+                'capital': {
+                    'spot_real': 47.66,
+                    'futures_real': 0.10,
+                },
+            }
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(previous, f)
+            with open(decision_snapshots, 'w', encoding='utf-8') as f:
+                f.write(json.dumps({
+                    'timestamp': '2026-07-11T20:00:00Z',
+                    'market_regime': 'bearish',
+                    'btc_price': 118234.25,
+                    'btc_change_4h': -0.72,
+                }) + '\n')
+
+            with patch.object(bot_state, 'BOT_STATE_FILE', path), \
+                 patch.object(bot_state, 'MARKET_RECOVERY_SOURCES', (('decision_snapshots', decision_snapshots),)), \
+                 patch.object(bot_state, 'get_system_statuses', return_value={'bot': 'UNKNOWN', 'guardian': 'UNKNOWN', 'dashboard': 'UNKNOWN'}):
+                payload = bot_state.build_bot_state(
+                    state={'status': 'paused', 'positions': []},
+                    btc_ctx=None,
+                    spot_real=None,
+                    futures_real=None,
+                    system_health='WARNING',
+                )
+
+        self.assertEqual('bearish', payload['market']['regime'])
+        self.assertEqual(118234.25, payload['market']['btc_price'])
+        self.assertEqual(-0.72, payload['market']['btc_change_4h'])
+        self.assertEqual(47.66, payload['capital']['spot_real'])
+        self.assertEqual(0.10, payload['capital']['futures_real'])
+
     def test_timeline_record_includes_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, 'timeline.jsonl')

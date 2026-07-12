@@ -29,6 +29,7 @@ REPAIRABLE_ISSUES = {
     'data_hygiene_backfill': 'Dry-run suggestions for simple missing metadata fields',
     'suspicious_test_record': 'Inspect suspicious scaffold/test trade ids without modifying history',
     'trade_analytics_operational_event': 'Remove operational non-trade events from trade_analytics.jsonl',
+    'degraded_bot_state_market': 'Restore bot_state market fields from the latest valid internal snapshot',
 }
 VERSION_BACKFILL_FILES = (
     ('jsonl', 'trading/trade_analytics.jsonl'),
@@ -59,6 +60,12 @@ SUSPICIOUS_TEST_RECORD_FILES = (
     'data/history/features.jsonl',
     'data/history/snapshots.jsonl',
     'trading/decision_snapshots.jsonl',
+)
+BOT_STATE_MARKET_SOURCES = (
+    'trading/decision_snapshots.jsonl',
+    'data/history/snapshots.jsonl',
+    'data/history/features.jsonl',
+    'data/history/timeline.jsonl',
 )
 
 
@@ -201,6 +208,23 @@ def _to_float(value):
         return None
 
 
+def _is_numeric(value):
+    return _to_float(value) is not None
+
+
+def _normalise_market_regime(value):
+    text = str(value or '').strip().lower()
+    aliases = {
+        'bull': 'bullish',
+        'bullish': 'bullish',
+        'bear': 'bearish',
+        'bearish': 'bearish',
+        'sideways': 'sideways',
+        'neutral': 'neutral',
+    }
+    return aliases.get(text, text or 'unknown')
+
+
 def _get_nested(record, dotted):
     current = record
     for part in dotted.split('.'):
@@ -208,6 +232,65 @@ def _get_nested(record, dotted):
             return None
         current = current.get(part)
     return current
+
+
+def _extract_market_context(record):
+    if not isinstance(record, dict):
+        return None
+    details = record.get('details') if isinstance(record.get('details'), dict) else {}
+    market = record.get('market') if isinstance(record.get('market'), dict) else {}
+    btc_context = record.get('btc_context') if isinstance(record.get('btc_context'), dict) else {}
+    if not btc_context and isinstance(market.get('btc_context'), dict):
+        btc_context = market.get('btc_context')
+
+    btc_price = None
+    change_4h = None
+    regime = None
+    timestamp = record.get('timestamp') or record.get('recorded_at') or record.get('event_time')
+    for candidate in (record, market, btc_context, details):
+        if not isinstance(candidate, dict):
+            continue
+        if btc_price is None:
+            btc_price = candidate.get('btc_price') or candidate.get('price_btc') or candidate.get('btc_usdt')
+        if change_4h is None:
+            change_4h = candidate.get('btc_change_4h') or candidate.get('change_4h') or candidate.get('btc_4h_change')
+        if regime is None:
+            regime = (
+                candidate.get('regime')
+                or candidate.get('market_regime')
+                or candidate.get('btc_regime')
+                or candidate.get('trend')
+            )
+        if timestamp is None:
+            timestamp = candidate.get('timestamp') or candidate.get('recorded_at') or candidate.get('event_time')
+    if not _is_numeric(btc_price) or not _is_numeric(change_4h):
+        return None
+    return {
+        'regime': _normalise_market_regime(regime),
+        'btc_price': _to_float(btc_price),
+        'btc_change_4h': _to_float(change_4h),
+        'timestamp': timestamp,
+    }
+
+
+def _find_latest_market_source(project_dir):
+    latest = None
+    for relpath in BOT_STATE_MARKET_SOURCES:
+        path = os.path.join(project_dir, *relpath.split('/'))
+        rows = _read_jsonl_lines(path)
+        for lineno, _raw, record in reversed(rows):
+            market = _extract_market_context(record)
+            if market:
+                candidate = {
+                    'path': relpath,
+                    'line': lineno,
+                    'timestamp': market.get('timestamp'),
+                    'market': market,
+                }
+                if latest is None or str(candidate.get('timestamp') or '') >= str(latest.get('timestamp') or ''):
+                    latest = candidate
+                break
+    return latest
 
 
 def _first_scalar_source(record, fields):
@@ -1261,11 +1344,114 @@ def apply_trade_analytics_operational_events_cleanup(project_dir=PROJECT_DIR, co
     return report, 0
 
 
+def build_degraded_bot_state_market_plan(project_dir=PROJECT_DIR):
+    relpath = 'trading/bot_state.json'
+    path = os.path.join(project_dir, *relpath.split('/'))
+    bot_state = {}
+    parse_error = None
+    if os.path.exists(path):
+        try:
+            with open(path, encoding='utf-8') as f:
+                loaded = json.load(f)
+            bot_state = loaded if isinstance(loaded, dict) else {}
+        except Exception as exc:
+            parse_error = str(exc)
+    market = bot_state.get('market') if isinstance(bot_state.get('market'), dict) else {}
+    missing_fields = []
+    if not _is_numeric(market.get('btc_price')):
+        missing_fields.append('market.btc_price')
+    if not _is_numeric(market.get('btc_change_4h')):
+        missing_fields.append('market.btc_change_4h')
+
+    source = _find_latest_market_source(project_dir) if missing_fields and not parse_error else None
+    proposed_market = None
+    if source:
+        source_market = source['market']
+        proposed_market = dict(market)
+        proposed_market['btc_price'] = source_market['btc_price']
+        proposed_market['btc_change_4h'] = source_market['btc_change_4h']
+        if not proposed_market.get('regime') or proposed_market.get('regime') == 'unknown':
+            proposed_market['regime'] = source_market.get('regime') or 'unknown'
+
+    recommendation = 'no_action_needed'
+    if parse_error:
+        recommendation = 'manual_review_invalid_bot_state_json'
+    elif missing_fields and source:
+        recommendation = 'apply_degraded_bot_state_market_repair'
+    elif missing_fields:
+        recommendation = 'no_valid_internal_market_source_found'
+
+    return {
+        'schema_version': REPAIR_SCHEMA_VERSION,
+        'generated_at': _now_iso(),
+        'plan': 'degraded-bot-state-market',
+        'mode': 'dry_run',
+        'target_file': relpath,
+        'bot_state_exists': os.path.exists(path),
+        'parse_error': parse_error,
+        'degraded': bool(missing_fields),
+        'missing_fields': missing_fields,
+        'source_found': bool(source),
+        'source': source,
+        'proposed_market': proposed_market,
+        'recommendation': recommendation,
+        'write_performed': False,
+        'notes': [
+            'No historical trade file is modified by this plan.',
+            'Only complete internal market sources with btc_price and btc_change_4h are eligible.',
+            'Apply with --apply --confirm-plan degraded-bot-state-market.',
+        ],
+    }
+
+
+def apply_degraded_bot_state_market_repair(project_dir=PROJECT_DIR, confirm_plan=None):
+    relpath = 'trading/bot_state.json'
+    path = os.path.join(project_dir, *relpath.split('/'))
+    report = build_degraded_bot_state_market_plan(project_dir)
+    report['mode'] = 'apply'
+    report['files_modified'] = []
+    report['backup_paths'] = []
+    if confirm_plan != 'degraded-bot-state-market':
+        report['error'] = 'confirmation_required'
+        report['message'] = '--confirm-plan must equal degraded-bot-state-market.'
+        return report, 2
+    if not report.get('source_found') or not report.get('proposed_market') or not os.path.exists(path):
+        report = _write_json_report(project_dir, report)
+        return report, 0
+
+    with open(path, encoding='utf-8') as f:
+        payload = json.load(f)
+    if not isinstance(payload, dict):
+        report['error'] = 'invalid_bot_state'
+        report = _write_json_report(project_dir, report)
+        return report, 1
+
+    before_checksum = _sha256_file(path)
+    backups_dir = os.path.join(project_dir, 'data', 'history', 'backups')
+    os.makedirs(backups_dir, exist_ok=True)
+    backup_name = f'{_stamp()}_{_safe_relpath_fragment(relpath)}.bak'
+    backup_path = os.path.join(backups_dir, backup_name)
+    shutil.copy2(path, backup_path)
+
+    payload['market'] = report['proposed_market']
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+        f.write('\n')
+
+    report['files_modified'].append(relpath)
+    report['backup_paths'].append(os.path.relpath(backup_path, project_dir))
+    report['checksum_before'] = before_checksum
+    report['checksum_after'] = _sha256_file(path)
+    report['write_performed'] = True
+    report = _write_json_report(project_dir, report)
+    return report, 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Build a dry-run data repair plan.')
     parser.add_argument('--project-dir', default=PROJECT_DIR)
     parser.add_argument('--dry-run', action='store_true', default=True)
-    parser.add_argument('--plan', choices=('summary', 'version-backfill', 'trade-gap', 'trade-open-backfill', 'data-hygiene-backfill', 'suspicious-test-record', 'stale-market-snapshots', 'trade-analytics-operational-events'), default='summary')
+    parser.add_argument('--plan', choices=('summary', 'version-backfill', 'trade-gap', 'trade-open-backfill', 'data-hygiene-backfill', 'suspicious-test-record', 'stale-market-snapshots', 'trade-analytics-operational-events', 'degraded-bot-state-market'), default='summary')
     parser.add_argument('--trade-id', default='short_WLDUSDT_1782763085')
     parser.add_argument('--confirm-trade-id', default=None)
     parser.add_argument('--confirm-plan', default=None)
@@ -1275,7 +1461,7 @@ def main(argv=None):
     parser.add_argument('--apply', action='store_true', help='Reserved for future use; currently rejected.')
     args = parser.parse_args(argv)
 
-    if (args.write or args.apply) and args.plan not in {'trade-open-backfill', 'suspicious-test-record', 'stale-market-snapshots', 'trade-analytics-operational-events'}:
+    if (args.write or args.apply) and args.plan not in {'trade-open-backfill', 'suspicious-test-record', 'stale-market-snapshots', 'trade-analytics-operational-events', 'degraded-bot-state-market'}:
         print('ERROR: write mode is not implemented. This scaffold is dry-run only.', file=sys.stderr)
         return 2
 
@@ -1314,6 +1500,14 @@ def main(argv=None):
         print(json.dumps(plan, indent=2, sort_keys=True, ensure_ascii=False))
         return code
 
+    if (args.write or args.apply) and args.plan == 'degraded-bot-state-market':
+        plan, code = apply_degraded_bot_state_market_repair(
+            args.project_dir,
+            confirm_plan=args.confirm_plan,
+        )
+        print(json.dumps(plan, indent=2, sort_keys=True, ensure_ascii=False))
+        return code
+
     if args.plan == 'version-backfill':
         plan = build_version_backfill_plan(args.project_dir)
     elif args.plan == 'data-hygiene-backfill':
@@ -1324,6 +1518,8 @@ def main(argv=None):
         plan = build_stale_market_snapshots_plan(args.project_dir, timestamp=args.timestamp)
     elif args.plan == 'trade-analytics-operational-events':
         plan = build_trade_analytics_operational_events_plan(args.project_dir)
+    elif args.plan == 'degraded-bot-state-market':
+        plan = build_degraded_bot_state_market_plan(args.project_dir)
     elif args.plan == 'trade-gap':
         plan = build_trade_gap_plan(args.project_dir, trade_id=args.trade_id)
     elif args.plan == 'trade-open-backfill':

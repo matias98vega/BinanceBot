@@ -261,6 +261,90 @@ class RepairDataQualityTests(unittest.TestCase):
         payload = json.loads(printed)
         self.assertEqual('dry_run', payload['mode'])
 
+    def test_degraded_bot_state_market_plan_finds_internal_source(self):
+        self.write_json('trading/bot_state.json', {
+            'status': 'paused',
+            'market': {'regime': 'unknown', 'btc_price': None, 'btc_change_4h': None},
+            'positions': {'long': {'current': 0, 'max': 1}},
+        })
+        self.write_jsonl('trading/decision_snapshots.jsonl', [
+            {
+                'timestamp': '2026-07-11T20:00:00Z',
+                'market_regime': 'bearish',
+                'btc_price': 118234.25,
+                'btc_change_4h': -0.72,
+            }
+        ])
+
+        plan = repair_data_quality.build_degraded_bot_state_market_plan(self.project)
+
+        self.assertEqual('degraded-bot-state-market', plan['plan'])
+        self.assertTrue(plan['degraded'])
+        self.assertTrue(plan['source_found'])
+        self.assertEqual(['market.btc_price', 'market.btc_change_4h'], plan['missing_fields'])
+        self.assertEqual(118234.25, plan['proposed_market']['btc_price'])
+        self.assertEqual(-0.72, plan['proposed_market']['btc_change_4h'])
+        self.assertEqual('bearish', plan['proposed_market']['regime'])
+        self.assertFalse(plan['write_performed'])
+
+    def test_degraded_bot_state_market_apply_modifies_only_bot_state_with_backup(self):
+        bot_state_path = self.write_json('trading/bot_state.json', {
+            'status': 'paused',
+            'pause_until': 1783897916,
+            'market': {'regime': 'unknown', 'btc_price': None, 'btc_change_4h': None},
+            'positions': {'long': {'current': 0, 'max': 1}},
+        })
+        snapshots_path = self.write_jsonl('data/history/snapshots.jsonl', [
+            {
+                'timestamp': '2026-07-11T21:00:00Z',
+                'market': {
+                    'regime': 'bearish',
+                    'btc_context': {'btc_price': 118111.0, 'change_4h': -0.33},
+                },
+            }
+        ])
+        before_snapshot = repair_data_quality._sha256_file(snapshots_path)
+
+        result, code = repair_data_quality.apply_degraded_bot_state_market_repair(
+            self.project,
+            confirm_plan='degraded-bot-state-market',
+        )
+
+        self.assertEqual(0, code)
+        self.assertTrue(result['write_performed'])
+        self.assertEqual(['trading/bot_state.json'], result['files_modified'])
+        self.assertTrue(result['backup_paths'])
+        self.assertTrue(os.path.exists(os.path.join(self.project, result['report_path'])))
+        self.assertEqual(before_snapshot, repair_data_quality._sha256_file(snapshots_path))
+        with open(bot_state_path, encoding='utf-8') as f:
+            repaired = json.load(f)
+        self.assertEqual('paused', repaired['status'])
+        self.assertEqual(1783897916, repaired['pause_until'])
+        self.assertEqual(118111.0, repaired['market']['btc_price'])
+        self.assertEqual(-0.33, repaired['market']['btc_change_4h'])
+
+    def test_degraded_bot_state_market_plan_does_not_invent_without_source(self):
+        bot_state_path = self.write_json('trading/bot_state.json', {
+            'status': 'paused',
+            'market': {'regime': 'unknown', 'btc_price': None, 'btc_change_4h': None},
+        })
+
+        plan = repair_data_quality.build_degraded_bot_state_market_plan(self.project)
+        result, code = repair_data_quality.apply_degraded_bot_state_market_repair(
+            self.project,
+            confirm_plan='degraded-bot-state-market',
+        )
+
+        self.assertTrue(plan['degraded'])
+        self.assertFalse(plan['source_found'])
+        self.assertIsNone(plan['proposed_market'])
+        self.assertEqual(0, code)
+        self.assertFalse(result['write_performed'])
+        with open(bot_state_path, encoding='utf-8') as f:
+            unchanged = json.load(f)
+        self.assertIsNone(unchanged['market']['btc_price'])
+        self.assertIsNone(unchanged['market']['btc_change_4h'])
+
     def test_version_backfill_plan_detects_missing_version(self):
         trades = os.path.join(self.project, 'data', 'history', 'trades.jsonl')
         with open(trades, 'w', encoding='utf-8') as f:
