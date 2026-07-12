@@ -384,6 +384,8 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Limpieza auditada de snapshots stale:** `repair_data_quality.py --plan stale-market-snapshots --timestamp <ts> --write --confirm-timestamp <ts>` elimina exclusivamente lineas JSONL validas de `data/history/snapshots.jsonl` con `event_type=MARKET_SNAPSHOT`, timestamp exacto, sin `trade_id` ni `order_id`. Crea backup y reporte obligatorio; no toca JSON corrupto, trades, rebalance, ledger, residuals ni recovery.
 
+**Eventos operativos:** `trading/trade_analytics.jsonl` es un log de trades, no de estado operativo. Eventos como `CIRCUIT_BREAKER`, `PAUSED`, `HEALTHCHECK`, `REBALANCE`, `BOT_STARTED` o `CYCLE_SKIPPED` no deben persistirse ahi porque carecen de `trade_id`, `symbol` y `side`. El circuit breaker se registra en `decision_timeline` como evento `SYSTEM` y el estado pausado vive en `state.json`/`bot_state.json`. `AnalyticsLogger.log_event(...)` queda como compatibilidad, pero ya no escribe en `trade_analytics.jsonl`.
+
 **Trades abiertos y parciales:** un `TRADE_OPEN` sin cierre no es warning operativo si existe evidencia actual en `trading/state.json`, `trading/bot_state.json` o `data/history/futures_reconciliation_status.json` de que la posicion sigue gestionada. Se reporta como `active_open_trade` informativo. Los cierres `:partial` con `trade_id` base relacionado se clasifican como `partial_close_with_related_base` en warnings conocidos aceptados. IDs sin evidencia runtime, especialmente scaffolds como `t1`, siguen como warning operativo `suspicious_test_record`.
 
 **Ventajas:** permite auditar calidad antes de usar los datos para Analytics avanzado, PnL ajustado o aprendizaje futuro sin tocar estrategia ni estado operativo.

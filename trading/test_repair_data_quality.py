@@ -37,6 +37,11 @@ class RepairDataQualityTests(unittest.TestCase):
                 f.write(json.dumps(row) + '\n')
         return path
 
+    def read_jsonl(self, relpath):
+        path = os.path.join(self.project, *relpath.split('/'))
+        with open(path, encoding='utf-8') as f:
+            return [json.loads(line) for line in f if line.strip()]
+
     def test_build_repair_plan_is_dry_run_only(self):
         plan = repair_data_quality.build_repair_plan(self.project)
 
@@ -651,6 +656,37 @@ class RepairDataQualityTests(unittest.TestCase):
         self.assertEqual('suspicious_test_record_without_state_evidence', plan['classification'])
         self.assertEqual(1, plan['match_count'])
         self.assertFalse(plan['write_performed'])
+
+    def test_trade_analytics_operational_events_plan_finds_circuit_breaker_only(self):
+        self.write_jsonl('trading/trade_analytics.jsonl', [
+            {'trade_id': 't1', 'symbol': 'ETHUSDT', 'side': 'LONG', 'status': 'OPEN'},
+            {'event_type': 'CIRCUIT_BREAKER', 'event_time': '2026-07-11T23:11:57Z', 'status': 'paused'},
+        ])
+
+        plan = repair_data_quality.build_trade_analytics_operational_events_plan(self.project)
+
+        self.assertEqual(1, plan['candidate_count'])
+        self.assertEqual(2, plan['candidates'][0]['line'])
+        self.assertEqual('CIRCUIT_BREAKER', plan['candidates'][0]['event_type'])
+
+    def test_trade_analytics_operational_events_apply_creates_backup_and_keeps_trades(self):
+        self.write_jsonl('trading/trade_analytics.jsonl', [
+            {'trade_id': 't1', 'symbol': 'ETHUSDT', 'side': 'LONG', 'status': 'OPEN'},
+            {'event_type': 'CIRCUIT_BREAKER', 'event_time': '2026-07-11T23:11:57Z', 'status': 'paused'},
+        ])
+
+        report, code = repair_data_quality.apply_trade_analytics_operational_events_cleanup(
+            self.project,
+            confirm_plan='trade-analytics-operational-events',
+        )
+
+        self.assertEqual(0, code)
+        self.assertTrue(report['write_performed'])
+        self.assertEqual(1, report['removed_count'])
+        self.assertTrue(report['backup_paths'])
+        rows = self.read_jsonl('trading/trade_analytics.jsonl')
+        self.assertEqual(1, len(rows))
+        self.assertEqual('t1', rows[0]['trade_id'])
 
 
 if __name__ == '__main__':

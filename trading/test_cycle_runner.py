@@ -75,6 +75,48 @@ class CycleRunnerTests(unittest.TestCase):
         safe_persist.assert_called_once_with(state, system_health='WARNING')
         save_state.assert_called_once_with(state)
 
+    def test_circuit_breaker_records_timeline_not_trade_analytics(self):
+        state = {
+            'status': 'active',
+            'daily_pnl_usdt': -4.0,
+            'positions': [],
+            'pnl_date': time.strftime('%Y-%m-%d', time.gmtime()),
+            'last_bl_review': time.time(),
+            'consec_sl': 4,
+        }
+        analytics = Mock()
+        safe_persist = Mock()
+        runner = cycle_runner.CycleRunner(
+            out_fn=Mock(),
+            analytics=analytics,
+            binance=Mock(),
+            safe_log_open_fn=Mock(),
+            safe_log_close_fn=Mock(),
+            safe_log_decision_snapshot_fn=Mock(),
+            safe_persist_bot_state_fn=safe_persist,
+            audit_orphans_fn=Mock(),
+            maybe_clean_dust_fn=Mock(),
+            check_partial_long_fn=Mock(),
+            check_partial_short_fn=Mock(),
+            handle_close_fn=Mock(),
+        )
+
+        with patch('utils.load_state', return_value=state), \
+             patch('utils.save_state') as save_state, \
+             patch('utils.send_alert'), \
+             patch('decision_timeline.record_cycle_start'), \
+             patch('decision_timeline.record_event') as record_event, \
+             patch('time.time', return_value=1000):
+            runner.run()
+
+        analytics.log_event.assert_not_called()
+        record_event.assert_called_once()
+        self.assertEqual('circuit_breaker_paused', record_event.call_args.args[0])
+        self.assertEqual('SYSTEM', record_event.call_args.kwargs['category'])
+        self.assertEqual('CIRCUIT_BREAKER', record_event.call_args.kwargs['details']['event_type'])
+        safe_persist.assert_called_once_with(state, system_health='WARNING')
+        save_state.assert_called_once_with(state)
+
 
 if __name__ == '__main__':
     unittest.main()

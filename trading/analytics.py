@@ -189,7 +189,16 @@ class AnalyticsLogger:
         }
         record.update(fields)
         version_history.attach_version_metadata(record)
-        self._append(record)
+        try:
+            self.timeline_recorder.record_event(
+                str(event_type or 'operational_event').lower(),
+                f'Operational event: {event_type}',
+                category='SYSTEM',
+                level='WARNING' if str(record.get('status', '')).lower() == 'paused' else 'INFO',
+                details=record,
+            )
+        except Exception:
+            pass
         return record
 
     def export_csv(self, csv_path=CSV_FILE):

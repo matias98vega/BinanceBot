@@ -124,6 +124,42 @@ class VersionHistoryTests(unittest.TestCase):
         self.assertEqual('v1', data.get('data_schema_version'))
         self.assertTrue(version_history.has_top_level_version_metadata(data))
 
+    def test_paused_bot_state_preserves_previous_market_and_capital_when_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'bot_state.json')
+            previous = {
+                'market': {
+                    'regime': 'bearish',
+                    'btc_price': 61234.56,
+                    'btc_change_4h': -1.23,
+                    'force_mode': None,
+                },
+                'capital': {
+                    'spot_real': 47.66,
+                    'futures_real': 0.10,
+                    'spot_target': 47.66,
+                    'futures_target': 0.0,
+                },
+            }
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(previous, f)
+
+            with patch.object(bot_state, 'BOT_STATE_FILE', path), \
+                 patch.object(bot_state, 'get_system_statuses', return_value={'bot': 'UNKNOWN', 'guardian': 'UNKNOWN', 'dashboard': 'UNKNOWN'}):
+                payload = bot_state.build_bot_state(
+                    state={'status': 'paused', 'positions': []},
+                    btc_ctx=None,
+                    spot_real=None,
+                    futures_real=None,
+                    system_health='WARNING',
+                )
+
+        self.assertEqual('bearish', payload['market']['regime'])
+        self.assertEqual(61234.56, payload['market']['btc_price'])
+        self.assertEqual(-1.23, payload['market']['btc_change_4h'])
+        self.assertEqual(47.66, payload['capital']['spot_real'])
+        self.assertEqual(0.10, payload['capital']['futures_real'])
+
     def test_timeline_record_includes_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, 'timeline.jsonl')

@@ -29,6 +29,25 @@ def _float_or_none(value):
         return None
 
 
+def _load_previous_bot_state(path=None):
+    path = path or BOT_STATE_FILE
+    try:
+        with open(path, encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _previous_nested(previous, section, key):
+    if not isinstance(previous, dict):
+        return None
+    value = previous.get(section)
+    if not isinstance(value, dict):
+        return None
+    return value.get(key)
+
+
 def _round_or_none(value, digits=4):
     value = _float_or_none(value)
     return None if value is None else round(value, digits)
@@ -775,6 +794,24 @@ def build_bot_state(
     import utils
 
     state = state if isinstance(state, dict) else {}
+    previous_state = _load_previous_bot_state()
+    if not isinstance(btc_ctx, dict):
+        previous_market = previous_state.get('market') if isinstance(previous_state.get('market'), dict) else {}
+        if previous_market:
+            btc_ctx = {
+                'trend': previous_market.get('regime') or 'unknown',
+                'btc_price': previous_market.get('btc_price'),
+                'change_4h': previous_market.get('btc_change_4h'),
+                'force_mode': previous_market.get('force_mode'),
+            }
+    if spot_real is None:
+        spot_real = _previous_nested(previous_state, 'capital', 'spot_real')
+    if futures_real is None:
+        futures_real = _previous_nested(previous_state, 'capital', 'futures_real')
+    if spot_target is None:
+        spot_target = _previous_nested(previous_state, 'capital', 'spot_target')
+    if futures_target is None:
+        futures_target = _previous_nested(previous_state, 'capital', 'futures_target')
     longs, shorts, spot_used, futures_used = _position_capital(state)
     futures_observability = futures_observability if isinstance(futures_observability, dict) else {}
     futures_reconciliation_summary = (

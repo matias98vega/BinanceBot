@@ -111,11 +111,18 @@ class CycleRunner:
             self.out('â›” Circuit breaker: 4 SLs consecutivos â†’ bot pausado por 24h')
             utils.send_alert('⛔ Bot pausado por circuit breaker: 4 SLs consecutivos')
             try:
-                self.analytics.log_event(
-                    'CIRCUIT_BREAKER',
-                    consec_sl=state.get('consec_sl', 0),
-                    pause_until=state.get('pause_until'),
-                    status=state.get('status'),
+                decision_timeline.record_event(
+                    'circuit_breaker_paused',
+                    'Bot pausado por circuit breaker',
+                    category='SYSTEM',
+                    level='WARNING',
+                    cycle_id=cycle_id,
+                    details={
+                        'event_type': 'CIRCUIT_BREAKER',
+                        'consec_sl': state.get('consec_sl', 0),
+                        'pause_until': state.get('pause_until'),
+                        'status': state.get('status'),
+                    },
                 )
             except Exception:
                 pass

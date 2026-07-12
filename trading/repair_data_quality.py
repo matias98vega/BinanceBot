@@ -28,6 +28,7 @@ REPAIRABLE_ISSUES = {
     'trade_open_backfill': 'Backfill a missing history TRADE_OPEN from an exact trade_analytics OPEN',
     'data_hygiene_backfill': 'Dry-run suggestions for simple missing metadata fields',
     'suspicious_test_record': 'Inspect suspicious scaffold/test trade ids without modifying history',
+    'trade_analytics_operational_event': 'Remove operational non-trade events from trade_analytics.jsonl',
 }
 VERSION_BACKFILL_FILES = (
     ('jsonl', 'trading/trade_analytics.jsonl'),
@@ -1155,20 +1156,126 @@ def apply_stale_market_snapshots_cleanup(project_dir=PROJECT_DIR, timestamp='202
     return report, 0
 
 
+def _is_trade_analytics_operational_event(record):
+    if not isinstance(record, dict):
+        return False, 'not_dict'
+    status = str(record.get('status') or '').upper()
+    event_type = str(record.get('event_type') or '').upper()
+    has_trade_identity = bool(record.get('trade_id') or record.get('symbol') or record.get('side'))
+    operational_events = {
+        'CIRCUIT_BREAKER',
+        'PAUSED',
+        'HEALTHCHECK',
+        'REBALANCE',
+        'BOT_STARTED',
+        'CYCLE_SKIPPED',
+    }
+    if event_type in {'TRADE_OPEN', 'TRADE_CLOSE'}:
+        return False, 'trade_event'
+    if event_type in operational_events and not has_trade_identity:
+        return True, 'operational_event_without_trade_identity'
+    if status == 'PAUSED' and not has_trade_identity:
+        return True, 'paused_without_trade_identity'
+    return False, 'not_matching_operational_event'
+
+
+def build_trade_analytics_operational_events_plan(project_dir=PROJECT_DIR):
+    relpath = 'trading/trade_analytics.jsonl'
+    path = os.path.join(project_dir, *relpath.split('/'))
+    rows = _read_jsonl_lines(path)
+    candidates = []
+    skipped = Counter()
+    for lineno, _raw, record in rows:
+        removable, reason = _is_trade_analytics_operational_event(record)
+        if removable:
+            candidates.append({
+                'path': relpath,
+                'line': lineno,
+                'event_type': record.get('event_type'),
+                'status': record.get('status'),
+                'event_time': record.get('event_time') or record.get('timestamp'),
+                'reason': reason,
+                'sample': _public_fields(record),
+            })
+        else:
+            skipped[reason] += 1
+    return {
+        'schema_version': REPAIR_SCHEMA_VERSION,
+        'generated_at': _now_iso(),
+        'plan': 'trade-analytics-operational-events',
+        'mode': 'dry_run',
+        'target_file': relpath,
+        'candidates': candidates,
+        'candidate_count': len(candidates),
+        'skipped_reasons': dict(skipped),
+        'write_performed': False,
+        'notes': [
+            'No historical file was modified.',
+            'Apply with --apply --confirm-plan trade-analytics-operational-events.',
+            'Only operational records without trade_id/symbol/side are candidates.',
+        ],
+    }
+
+
+def apply_trade_analytics_operational_events_cleanup(project_dir=PROJECT_DIR, confirm_plan=None):
+    relpath = 'trading/trade_analytics.jsonl'
+    path = os.path.join(project_dir, *relpath.split('/'))
+    report = build_trade_analytics_operational_events_plan(project_dir)
+    report['mode'] = 'apply'
+    report['files_modified'] = []
+    report['backup_paths'] = []
+    report['removed_count'] = 0
+    report['removed_records'] = []
+    if confirm_plan != 'trade-analytics-operational-events':
+        report['error'] = 'confirmation_required'
+        report['message'] = '--confirm-plan must equal trade-analytics-operational-events.'
+        return report, 2
+    if not os.path.exists(path) or not report['candidates']:
+        report = _write_json_report(project_dir, report)
+        return report, 0
+
+    candidate_lines = {item['line'] for item in report['candidates']}
+    kept_lines = []
+    for lineno, raw, record in _read_jsonl_lines(path):
+        if lineno in candidate_lines:
+            report['removed_count'] += 1
+            if len(report['removed_records']) < 20:
+                report['removed_records'].append(_public_fields(record))
+            continue
+        kept_lines.append(raw + '\n')
+
+    backups_dir = os.path.join(project_dir, 'data', 'history', 'backups')
+    os.makedirs(backups_dir, exist_ok=True)
+    backup_name = f'{_stamp()}_{_safe_relpath_fragment(relpath)}.bak'
+    backup_path = os.path.join(backups_dir, backup_name)
+    before_checksum = _sha256_file(path)
+    shutil.copy2(path, backup_path)
+    with open(path, 'w', encoding='utf-8', newline='') as f:
+        f.writelines(kept_lines)
+    report['files_modified'].append(relpath)
+    report['backup_paths'].append(os.path.relpath(backup_path, project_dir))
+    report['checksum_before'] = before_checksum
+    report['checksum_after'] = _sha256_file(path)
+    report['write_performed'] = True
+    report = _write_json_report(project_dir, report)
+    return report, 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Build a dry-run data repair plan.')
     parser.add_argument('--project-dir', default=PROJECT_DIR)
     parser.add_argument('--dry-run', action='store_true', default=True)
-    parser.add_argument('--plan', choices=('summary', 'version-backfill', 'trade-gap', 'trade-open-backfill', 'data-hygiene-backfill', 'suspicious-test-record', 'stale-market-snapshots'), default='summary')
+    parser.add_argument('--plan', choices=('summary', 'version-backfill', 'trade-gap', 'trade-open-backfill', 'data-hygiene-backfill', 'suspicious-test-record', 'stale-market-snapshots', 'trade-analytics-operational-events'), default='summary')
     parser.add_argument('--trade-id', default='short_WLDUSDT_1782763085')
     parser.add_argument('--confirm-trade-id', default=None)
+    parser.add_argument('--confirm-plan', default=None)
     parser.add_argument('--timestamp', default='2026-06-30T12:00:00Z')
     parser.add_argument('--confirm-timestamp', default=None)
     parser.add_argument('--write', action='store_true', help='Reserved for future use; currently rejected.')
     parser.add_argument('--apply', action='store_true', help='Reserved for future use; currently rejected.')
     args = parser.parse_args(argv)
 
-    if (args.write or args.apply) and args.plan not in {'trade-open-backfill', 'suspicious-test-record', 'stale-market-snapshots'}:
+    if (args.write or args.apply) and args.plan not in {'trade-open-backfill', 'suspicious-test-record', 'stale-market-snapshots', 'trade-analytics-operational-events'}:
         print('ERROR: write mode is not implemented. This scaffold is dry-run only.', file=sys.stderr)
         return 2
 
@@ -1199,6 +1306,14 @@ def main(argv=None):
         print(json.dumps(plan, indent=2, sort_keys=True, ensure_ascii=False))
         return code
 
+    if (args.write or args.apply) and args.plan == 'trade-analytics-operational-events':
+        plan, code = apply_trade_analytics_operational_events_cleanup(
+            args.project_dir,
+            confirm_plan=args.confirm_plan,
+        )
+        print(json.dumps(plan, indent=2, sort_keys=True, ensure_ascii=False))
+        return code
+
     if args.plan == 'version-backfill':
         plan = build_version_backfill_plan(args.project_dir)
     elif args.plan == 'data-hygiene-backfill':
@@ -1207,6 +1322,8 @@ def main(argv=None):
         plan = build_suspicious_test_record_plan(args.project_dir, trade_id=args.trade_id)
     elif args.plan == 'stale-market-snapshots':
         plan = build_stale_market_snapshots_plan(args.project_dir, timestamp=args.timestamp)
+    elif args.plan == 'trade-analytics-operational-events':
+        plan = build_trade_analytics_operational_events_plan(args.project_dir)
     elif args.plan == 'trade-gap':
         plan = build_trade_gap_plan(args.project_dir, trade_id=args.trade_id)
     elif args.plan == 'trade-open-backfill':

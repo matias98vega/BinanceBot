@@ -315,6 +315,26 @@ class AuditDataQualityTests(unittest.TestCase):
         self.assertIn('line=1', text)
         self.assertIn('trade_id=t1', text)
 
+    def test_trade_analytics_rejects_paused_operational_event(self):
+        self.valid_bot_state()
+        self.write_jsonl('trading/decision_snapshots.jsonl', [{'timestamp': '2026-01-01T00:00:00Z'}])
+        self.write_jsonl('trading/trade_analytics.jsonl', [
+            {
+                'event_type': 'CIRCUIT_BREAKER',
+                'event_time': '2026-07-11T23:11:57Z',
+                'consec_sl': 4,
+                'pause_until': 1783897916,
+                'status': 'paused',
+            }
+        ])
+
+        report = audit_data_quality.audit_project(self.project)
+
+        self.assertTrue(any('status invalido' in item and 'PAUSED' in item for item in report.errors))
+        self.assertTrue(any('trade_id ausente' in item for item in report.operational_warnings))
+        self.assertTrue(any('symbol ausente' in item for item in report.operational_warnings))
+        self.assertTrue(any('side ausente' in item for item in report.operational_warnings))
+
     def test_partial_close_with_base_trade_existing_is_warning_not_critical(self):
         self.valid_bot_state()
         self.write_jsonl('trading/decision_snapshots.jsonl', [{'timestamp': '2026-01-01T00:00:00Z'}])
