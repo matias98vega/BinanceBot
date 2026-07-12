@@ -82,13 +82,13 @@ Este documento registra decisiones de diseno importantes. Su objetivo es preserv
 
 **Alternativas:** validaciones locales por modulo, constantes fijas por trade, o helper compartido.
 
-**Solucion actual:** `capital_manager.max_margin_per_position(...)` es la fuente comun para margen maximo por operacion: capital usable por `BOT_MAX_EXPOSURE_PERCENT / max_positions`.
+**Solucion actual:** desde `v1.2-sizing-v2`, el sizing separa Spot y Futures por tipo de exposicion. Para Spot Long, `utils.get_spot_capital_per_position(...)` calcula un slot objetivo como `spot_usable * BOT_MAX_EXPOSURE_PERCENT / max_longs`, descuenta el capital ya usado por longs (`entry_price * quantity`) y limita por saldo libre con buffer. Para Futures Short, `utils.get_futures_notional_per_position(...)` calcula primero el notional objetivo como `futures_usable * BOT_MAX_EXPOSURE_PERCENT / max_shorts`, descuenta el notional abierto (`entry_price * quantity`) y deriva el margen requerido dividiendo por `FUTURES_LEVERAGE`. `capital_manager` conserva los guardrails de margen y exposicion de wallet para validar que el margen requerido entra en el capital disponible.
 
-**Ventajas:** evita contradicciones entre sizing y guardrail.
+**Ventajas:** `BOT_MAX_EXPOSURE_PERCENT` representa mejor la exposicion real que se busca usar. Longs completos tienden a desplegar cerca del porcentaje configurado en Spot; Shorts completos tienden a usar ese porcentaje como notional objetivo, no como margen apalancado. `futures_used` puede seguir mostrando margen/initial margin sin confundirse con notional.
 
-**Desventajas:** aun existen variables deprecated de capital que deben retirarse con cuidado.
+**Desventajas:** los datos historicos anteriores a `v1.2-sizing-v2` pertenecen al modelo anterior y no se reescriben. Si ya hubiera posiciones abiertas legacy, las nuevas entradas solo respetan el remaining exposure; no recalculan ni compensan agresivamente posiciones existentes.
 
-**Mejoras futuras:** eliminar `BOT_MAX_POSITION_PERCENT` cuando no quede compatibilidad pendiente.
+**Mejoras futuras:** agregar una capa adicional de risk-to-SL para limitar perdida esperada por trade, independiente de notional y margen, y eliminar `BOT_MAX_POSITION_PERCENT` cuando no quede compatibilidad pendiente.
 
 ## Capital Ledger
 

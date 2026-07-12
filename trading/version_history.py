@@ -13,7 +13,7 @@ TRADING_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(TRADING_DIR)
 VERSION_FILE = os.path.join(PROJECT_DIR, 'VERSION')
 SCHEMA_VERSION = 1
-BOT_VERSION = os.environ.get('BOT_VERSION') or 'v1.1-observability-hardening'
+BOT_VERSION = os.environ.get('BOT_VERSION') or 'v1.2-sizing-v2'
 STRATEGY_VERSION = os.environ.get('STRATEGY_VERSION') or 'current'
 DATA_SCHEMA_VERSION = os.environ.get('DATA_SCHEMA_VERSION') or 'v1'
 VERSION_FIELDS = ('bot_version', 'strategy_version', 'data_schema_version')
@@ -77,10 +77,10 @@ VERSION_HISTORY = [
         'confidence': 'medium',
     },
     {
-        'version': BOT_VERSION,
+        'version': 'v1.1-observability-hardening',
         'label': 'Runtime metadata and observability hardening',
         'started_at': '2026-07-08T00:00:00Z',
-        'ended_at': None,
+        'ended_at': '2026-07-12T00:00:00Z',
         'capabilities': [
             'New runtime records carry bot_version, strategy_version and data_schema_version',
             'Telegram System/Diagnostics exposes runtime version metadata',
@@ -97,6 +97,31 @@ VERSION_HISTORY = [
         ],
         'fixes': [
             'Runtime version metadata added to new bot state, trade, feature, timeline and status records',
+        ],
+        'data_policy': 'trusted_if_auditor_clean',
+        'confidence': 'high',
+    },
+    {
+        'version': BOT_VERSION,
+        'label': 'Sizing v2 capital exposure model',
+        'started_at': '2026-07-12T00:00:00Z',
+        'ended_at': None,
+        'capabilities': [
+            'Spot Long entries use target exposure slots instead of a decreasing free-balance percentage',
+            'Futures Short entries size by target notional exposure and derive required margin from leverage',
+            'Runtime records continue carrying bot_version, strategy_version and data_schema_version',
+        ],
+        'known_bugs': [
+            'Historical records before this version used the previous sizing model',
+            'Known historical debt remains around short_WLDUSDT_1782763085',
+        ],
+        'limitations': [
+            'Sizing v2 only applies to new entries; historical trades are not backfilled',
+            'Existing legacy positions, if any, keep their original quantities and exposure',
+        ],
+        'fixes': [
+            'Long sizing now targets configured Spot exposure across available slots',
+            'Short sizing now caps configured Futures exposure as notional rather than leveraged margin',
         ],
         'data_policy': 'trusted_if_auditor_clean',
         'confidence': 'high',

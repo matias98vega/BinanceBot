@@ -539,7 +539,7 @@ class TelegramStatsTests(unittest.TestCase):
              patch.object(telegram_commands, '_server_uptime', return_value='N/A'):
             text = telegram_commands._render_page('system')['text']
 
-        self.assertIn('Bot version: v1.1-observability-hardening', text)
+        self.assertIn('Bot version: v1.2-sizing-v2', text)
         self.assertIn('Strategy version: current', text)
         self.assertIn('Schema version: v1', text)
 
@@ -549,7 +549,7 @@ class TelegramStatsTests(unittest.TestCase):
              patch.object(telegram_commands, '_market_summary_lines', return_value=['Regimen actual: Neutral']):
             text = telegram_commands._render_page('diagnostics')['text']
 
-        self.assertIn('Bot version: v1.1-observability-hardening', text)
+        self.assertIn('Bot version: v1.2-sizing-v2', text)
         self.assertIn('Strategy version: current', text)
         self.assertIn('Schema version: v1', text)
 

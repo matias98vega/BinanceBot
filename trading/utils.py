@@ -799,39 +799,73 @@ def get_futures_risk_pct(usdt_available):
     return config.FUTURES_RISK_PCT        # 50% (default)
 
 
-def get_futures_capital_per_position(state):
+def _open_short_notional(state):
+    return sum(
+        float(p.get('entry_price', 0)) * float(p.get('quantity', 0))
+        for p in state.get('positions', [])
+        if isinstance(p, dict) and p.get('direction') == 'short'
+    )
+
+
+def get_futures_notional_per_position(state, max_shorts=None):
     """
-    Retorna el capital a usar por posicion short usando el mismo presupuesto
-    por operacion que valida capital_manager.
+    Retorna el notional objetivo para una nueva posicion short.
+
+    Sizing v2 controla exposicion de mercado (notional), no margen visual.
+    El margen requerido se deriva despues dividiendo por leverage.
     """
     import capital_manager
 
     total, available, _ = get_futures_summary()
     limits = capital_manager.get_limits()
     usable = capital_manager.futures_usable_capital(total, limits)
-    max_shorts = get_max_short_positions(usable)
-    capital = capital_manager.max_margin_per_position(
-        usable, max_shorts, limits.max_exposure_percent
-    )
+    slots = max_shorts if max_shorts is not None else get_max_short_positions(usable)
+    max_notional = capital_manager.max_exposure(usable, limits)
+    current_notional = _open_short_notional(state)
+    remaining_notional = max(0.0, max_notional - current_notional)
+    slot_notional = max_notional / max(int(slots or 1), 1)
+    target_notional = min(slot_notional, remaining_notional)
+    available_margin_notional = max(float(available or 0), 0.0) * 0.95 * config.FUTURES_LEVERAGE
+    notional = min(target_notional, available_margin_notional)
     logging.debug(
         'POSITION SIZING:\n'
         'wallet=futures\n'
         'usable=%.2f\n'
         'exposure_limit=%.2f%%\n'
         'slots=%s\n'
-        'margin_per_position=%.2f',
+        'max_notional=%.2f\n'
+        'current_notional=%.2f\n'
+        'remaining_notional=%.2f\n'
+        'notional_per_position=%.2f\n'
+        'required_margin=%.2f',
         usable,
         limits.max_exposure_percent,
-        max_shorts,
-        capital,
+        slots,
+        max_notional,
+        current_notional,
+        remaining_notional,
+        notional,
+        notional / config.FUTURES_LEVERAGE if config.FUTURES_LEVERAGE else 0.0,
     )
-    return min(capital, available * 0.95)
+    return max(notional, 0.0)
 
 
-def get_spot_capital_per_position(state, spot_free=None):
+def get_futures_capital_per_position(state):
     """
-    Retorna el capital a usar por posicion long usando el mismo presupuesto
-    por operacion que valida capital_manager.
+    Retorna el margen requerido por posicion short bajo Sizing v2.
+
+    Mantiene compatibilidad con callers antiguos: el valor sigue siendo capital
+    de wallet/margen, mientras el sizing nuevo calcula primero el notional.
+    """
+    leverage = config.FUTURES_LEVERAGE or 1
+    return get_futures_notional_per_position(state) / leverage
+
+
+def get_spot_capital_per_position(state, spot_free=None, max_longs=None):
+    """
+    Retorna el capital objetivo para una nueva posicion long bajo Sizing v2.
+
+    Usa slot objetivo de exposicion y descuenta la exposicion Spot ya abierta.
     """
     import capital_manager
 
@@ -841,23 +875,30 @@ def get_spot_capital_per_position(state, spot_free=None):
     spot_total = float(spot_free or 0) + spot_in_pos
     limits = capital_manager.get_limits()
     usable = capital_manager.spot_usable_capital(spot_total, limits)
-    max_longs = get_max_long_positions(usable)
-    capital = capital_manager.max_margin_per_position(
-        usable, max_longs, limits.max_exposure_percent
-    )
+    slots = max_longs if max_longs is not None else get_max_long_positions(usable)
+    max_spot_exposure = capital_manager.max_exposure(usable, limits)
+    remaining_exposure = max(0.0, max_spot_exposure - spot_in_pos)
+    slot_capital = max_spot_exposure / max(int(slots or 1), 1)
+    capital = min(slot_capital, remaining_exposure, float(spot_free or 0) * 0.95)
     logging.debug(
         'POSITION SIZING:\n'
         'wallet=spot\n'
         'usable=%.2f\n'
         'exposure_limit=%.2f%%\n'
         'slots=%s\n'
-        'margin_per_position=%.2f',
+        'max_spot_exposure=%.2f\n'
+        'current_spot_used=%.2f\n'
+        'remaining_exposure=%.2f\n'
+        'capital_per_position=%.2f',
         usable,
         limits.max_exposure_percent,
-        max_longs,
+        slots,
+        max_spot_exposure,
+        spot_in_pos,
+        remaining_exposure,
         capital,
     )
-    return min(capital, float(spot_free or 0) * 0.95)
+    return max(capital, 0.0)
 
 
 def get_max_short_positions(usdt_available):

@@ -132,16 +132,16 @@ def open_short(candidate, state, max_shorts=None):
     )
 
     available = BINANCE.get_usdt_futures()
-    capital   = utils.get_futures_capital_per_position(state)
     limits = capital_manager.get_limits()
     futures_usable = capital_manager.futures_usable_capital(available, limits)
     max_shorts = max_shorts if max_shorts is not None else utils.get_max_short_positions(futures_usable)
     ok_capacity, capacity_msg, _, _ = utils.validate_position_capacity(state, 'short', max_shorts)
     if not ok_capacity:
         return None, capacity_msg
+    notional = utils.get_futures_notional_per_position(state, max_shorts=max_shorts)
     # Reducir capital si el token es volátil/riesgoso
     if candidate.get('risky'):
-        capital = capital * config.RISKY_RISK_FACTOR
+        notional = notional * config.RISKY_RISK_FACTOR
 
     try:
         filters  = BINANCE.get_futures_filters(sym)
@@ -160,8 +160,7 @@ def open_short(candidate, state, max_shorts=None):
         atr_v = candidate['atr']
         real_sl = utils.round_tick(price + config.SL_ATR_MULT_SHORT * atr_v, tick)
         real_tp = utils.round_tick(price - config.TP_ATR_MULT * atr_v, tick)
-        notional_dry = capital * config.FUTURES_LEVERAGE
-        qty_dry = utils.round_step(notional_dry / price, step)
+        qty_dry = utils.round_step(notional / price, step)
         requested_margin = (qty_dry * price) / config.FUTURES_LEVERAGE
         try:
             ok, limit_msg, _ = capital_manager.validate_futures_order(
@@ -183,7 +182,6 @@ def open_short(candidate, state, max_shorts=None):
         }
         return pos, f'[DRY-RUN] SHORT {sym} @ ${price:.4f} SL=${real_sl:.4f} TP=${real_tp:.4f}'
 
-    notional = capital * config.FUTURES_LEVERAGE
     qty      = utils.round_step(notional / price, step)
 
     if qty < min_qty:

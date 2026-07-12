@@ -6,8 +6,8 @@ El versionado operativo actual sigue leyendo `VERSION`. La clasificacion histori
 
 ## Estado Actual
 
-- Version runtime actual: `v1.1-observability-hardening`.
-- Version legacy declarada en `VERSION`: `v1.0-alpha`.
+- Version runtime actual: `v1.2-sizing-v2`.
+- Version declarada en `VERSION`: `v1.2-sizing-v2`.
 - Granularidad historica anterior: gruesa. Desde `v1.1-observability-hardening`, los nuevos registros llevan metadata runtime explicita.
 - Politica de datos actual: usar datos historicos solo con auditoria previa.
 - Reparacion de datos: no automatica. `trading/repair_data_quality.py` existe como scaffold dry-run, sin escritura.
@@ -18,7 +18,8 @@ El versionado operativo actual sigue leyendo `VERSION`. La clasificacion histori
 |---|---|---|---|---|
 | `legacy-pre-history` | Desconocido | 2026-06-01 | excluir o revisar manualmente | Baja |
 | `v1.0-alpha` | 2026-06-01 | 2026-07-08 | usable con flags de auditoria | Media |
-| `v1.1-observability-hardening` | 2026-07-08 | Actual | trusted si auditor reciente no tiene criticos | Alta |
+| `v1.1-observability-hardening` | 2026-07-08 | 2026-07-12 | trusted si auditor reciente no tiene criticos | Alta |
+| `v1.2-sizing-v2` | 2026-07-12 | Actual | trusted si auditor reciente no tiene criticos | Alta |
 
 ## Metadata Runtime
 
@@ -64,6 +65,26 @@ La fuente runtime es `trading/version_history.py`. Los historicos sin metadata p
 - Datos anteriores al fix pueden seguir siendo utiles, pero deben marcarse con limitacion.
 - Para ML o backtesting, excluir registros con errores criticos del auditor.
 - Para analisis manual, usar `trade_inspector`, `audit_data_quality.py` y `version_history.classify_record(...)`.
+
+## v1.2-sizing-v2
+
+### Capacidades
+
+- Nuevas entradas Long Spot usan slots objetivo de exposicion: `spot_usable * BOT_MAX_EXPOSURE_PERCENT / max_longs`.
+- Nuevas entradas Short Futures controlan notional objetivo: `futures_usable * BOT_MAX_EXPOSURE_PERCENT / max_shorts`.
+- El margen Futures requerido se deriva desde notional dividido por `FUTURES_LEVERAGE`; el leverage no multiplica el limite de exposicion configurado.
+- La version runtime se persiste en nuevos trades, features, snapshots, timeline, bot_state y estados diagnosticos que ya incorporan metadata.
+
+### Limitaciones
+
+- No reescribe historicos ni hace backfill.
+- Solo aplica a nuevas entradas posteriores al despliegue.
+- Las metricas visuales existentes mantienen su semantica: `spot_used` es capital Spot comprado y `futures_used` es margen/initial margin, no notional.
+
+### Uso De Datos
+
+- Comparar resultados pre y post `v1.2-sizing-v2` considerando que el modelo de sizing cambio.
+- Los registros anteriores deben conservar su version original y no deben reinterpretarse como Sizing v2.
 
 ## Reparacion Futura
 

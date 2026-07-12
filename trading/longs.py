@@ -90,19 +90,24 @@ def open_long(candidate, state, max_longs=None):
         for p in state.get('positions', []) if p['direction'] == 'long'
     )
     spot_total = usdt + spot_in_pos
+    reduced_risk_context = state.get('consec_sl', 0) >= config.MAX_CONSEC_SL
     risk_pct = utils.get_spot_risk_pct(spot_total, state.get('consec_sl', 0))
     # Reducir riesgo si contexto macro es bajista
     if candidate.get('bearish_context'):
         risk_pct = min(risk_pct, config.SPOT_RISK_BEARISH)
+        reduced_risk_context = True
     # Reducir riesgo si el token es volátil/riesgoso
     if candidate.get('risky'):
         risk_pct = min(risk_pct, config.RISKY_RISK_FACTOR)
+        reduced_risk_context = True
     max_longs = max_longs if max_longs is not None else utils.get_max_long_positions(spot_total)
     ok_capacity, capacity_msg, _, _ = utils.validate_position_capacity(state, 'long', max_longs)
     if not ok_capacity:
         return None, capacity_msg
-    capital_budget = utils.get_spot_capital_per_position(state, usdt)
-    capital  = min(usdt * risk_pct, capital_budget)
+    capital_budget = utils.get_spot_capital_per_position(state, usdt, max_longs=max_longs)
+    capital = capital_budget
+    if reduced_risk_context:
+        capital = min(capital, usdt * risk_pct)
 
     # Dry-run: simular sin ejecutar
     if config.DRY_RUN:

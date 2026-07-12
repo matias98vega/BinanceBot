@@ -622,7 +622,7 @@ class ExitRecoveryProtectionTests(unittest.TestCase):
         self.assertTrue(second)
         send_alert.assert_called_once()
         self.assertEqual(1, status['residuals']['NEARUSDT']['alert_count'])
-        self.assertEqual('v1.1-observability-hardening', status['bot_version'])
+        self.assertEqual('v1.2-sizing-v2', status['bot_version'])
 
     def test_long_recovery_without_oco_records_residual_before_post(self):
         client = Mock()
