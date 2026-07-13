@@ -136,10 +136,25 @@ def _fmt_uy(value):
     return dt.astimezone(UY_TZ).strftime('%d/%m %H:%M UY')
 
 
+def _fmt_uy_time(value):
+    dt = _parse_time(value)
+    if not dt:
+        return 'N/A'
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(UY_TZ).strftime('%H:%M UY')
+
+
 def _mtime_uy(path):
     if not os.path.exists(path):
         return 'N/A'
     return _fmt_uy(os.path.getmtime(path))
+
+
+def _mtime_uy_time(path):
+    if not os.path.exists(path):
+        return 'N/A'
+    return _fmt_uy_time(os.path.getmtime(path))
 
 
 def _is_recent(path, max_age_seconds):
@@ -367,6 +382,16 @@ def _side_abbrev(side):
     return text or 'N/D'
 
 
+def _first_value(data, keys):
+    if not isinstance(data, dict):
+        return None
+    for key in keys:
+        value = data.get(key)
+        if value is not None:
+            return value
+    return None
+
+
 def _spot_position_view(pos):
     direction = str(pos.get('direction', '')).lower()
     side = _side_abbrev(direction.upper())
@@ -401,11 +426,11 @@ def _spot_position_view(pos):
             sl_loss = -abs((price - sl) * qty)
 
     return '\n'.join([
-        f'{icon} {symbol} {side} | ⏱ {duration}',
-        f'PnL {_fmt_pnl_or_unavailable(pnl)} ({_fmt_signed_pct_or_unavailable(pnl_pct)})',
+        f'{icon} {symbol} {side} | abierto {duration}',
+        f'PnL: {_fmt_pnl_or_unavailable(pnl)} ({_fmt_signed_pct_or_unavailable(pnl_pct)})',
         (
-            f'TP {_fmt_distance_or_unavailable(tp_dist, "+")} ({_fmt_pnl_or_unavailable(tp_gain)}) | '
-            f'SL {_fmt_distance_or_unavailable(sl_dist, "-")} ({_fmt_pnl_or_unavailable(sl_loss)})'
+            f'TP: {_fmt_distance_or_unavailable(tp_dist, "+")} ({_fmt_pnl_or_unavailable(tp_gain)}) | '
+            f'SL: {_fmt_distance_or_unavailable(sl_dist, "-")} ({_fmt_pnl_or_unavailable(sl_loss)})'
         ),
     ])
 
@@ -461,6 +486,14 @@ def _state_short_as_futures(pos):
         'unrealized_pnl': pnl,
         'leverage': leverage,
         'margin_type': pos.get('margin_type') or pos.get('marginType'),
+        'tp': pos.get('tp'),
+        'sl': pos.get('sl'),
+        'tp_price': pos.get('tp_price'),
+        'sl_price': pos.get('sl_price'),
+        'take_profit': pos.get('take_profit'),
+        'stop_loss': pos.get('stop_loss'),
+        'entry_time': pos.get('entry_time'),
+        'opened_at': pos.get('opened_at'),
     }
 
 
@@ -472,8 +505,16 @@ def _futures_positions_for_display():
     }
     for pos in _state_futures_positions():
         symbol = _position_symbol(pos)
-        if symbol and symbol not in by_symbol:
-            by_symbol[symbol] = _state_short_as_futures(pos)
+        if not symbol:
+            continue
+        state_view = _state_short_as_futures(pos)
+        if symbol in by_symbol:
+            merged = by_symbol[symbol]
+            for key, value in state_view.items():
+                if merged.get(key) is None and value is not None:
+                    merged[key] = value
+        else:
+            by_symbol[symbol] = state_view
     return list(by_symbol.values())
 
 
@@ -515,13 +556,41 @@ def _fmt_leverage(value):
 
 
 def _futures_position_view(pos):
-    side = _side_abbrev(pos.get('side') or pos.get('direction') or 'UNKNOWN')
+    side_full = str(pos.get('side') or pos.get('direction') or 'UNKNOWN').upper()
+    side = _side_abbrev(side_full)
     raw_symbol = pos.get('symbol') or 'N/D'
     symbol = _compact_symbol(raw_symbol)
-    icon = '🟢' if side == 'LONG' else '🔴'
-    margin_type = pos.get('margin_type') or pos.get('marginType') or 'No disponible'
-    if isinstance(margin_type, str) and margin_type != 'No disponible':
-        margin_type = margin_type.capitalize()
+    icon = '🟢' if side == 'L' else '🔴'
+    entry = _to_float(pos.get('entry_price'))
+    mark = _to_float(pos.get('mark_price') or pos.get('current_price'))
+    qty = _to_float(pos.get('quantity'))
+    notional = _to_float(pos.get('notional'))
+    if qty is None and notional is not None and mark:
+        qty = abs(notional) / mark
+    pnl = _to_float(pos.get('unrealized_pnl'))
+    if pnl is None and entry is not None and mark is not None and qty is not None:
+        pnl = (mark - entry) * qty if side == 'L' else (entry - mark) * qty
+    pnl_pct = None
+    if entry and mark:
+        pnl_pct = (mark - entry) / entry * 100 if side == 'L' else (entry - mark) / entry * 100
+    tp = _to_float(_first_value(pos, ('tp', 'tp_price', 'take_profit', 'take_profit_price')))
+    sl = _to_float(_first_value(pos, ('sl', 'sl_price', 'stop_loss', 'stop_loss_price')))
+    duration = _duration_short(_first_value(pos, ('entry_time', 'opened_at', 'timestamp')))
+    tp_dist = sl_dist = tp_gain = sl_loss = None
+    if mark and qty is not None and tp is not None:
+        if side == 'L':
+            tp_dist = max(0.0, (tp - mark) / mark * 100)
+            tp_gain = max(0.0, (tp - mark) * qty)
+        else:
+            tp_dist = max(0.0, (mark - tp) / mark * 100)
+            tp_gain = max(0.0, (mark - tp) * qty)
+    if mark and qty is not None and sl is not None:
+        if side == 'L':
+            sl_dist = max(0.0, (mark - sl) / mark * 100)
+            sl_loss = -abs((mark - sl) * qty)
+        else:
+            sl_dist = max(0.0, (sl - mark) / mark * 100)
+            sl_loss = -abs((sl - mark) * qty)
     reconciliation = _futures_reconciliation_entry(raw_symbol)
     classes = reconciliation.get('classification') or []
     tags = []
@@ -537,14 +606,11 @@ def _futures_position_view(pos):
         tags.append('Cerrada en historial, abierta en exchange')
     status_line = f'Estado: {" | ".join(tags)}' if tags else None
     return '\n'.join([
-        f'{icon} {symbol} {side} | Lev {_fmt_leverage(pos.get("leverage"))} | {margin_type}',
+        f'{icon} {symbol} {side} | abierto {duration}',
+        f'PnL: {_fmt_pnl_or_unavailable(pnl)} ({_fmt_signed_pct_or_unavailable(pnl_pct)})',
         (
-            f'Notional {_fmt_money_or_unavailable(pos.get("notional"))} | '
-            f'PnL {_fmt_pnl_or_unavailable(pos.get("unrealized_pnl"))}'
-        ),
-        (
-            f'Entry {_fmt_price_or_unavailable(pos.get("entry_price"))} | '
-            f'Mark {_fmt_price_or_unavailable(pos.get("mark_price"))}'
+            f'TP: {_fmt_distance_or_unavailable(tp_dist, "+")} ({_fmt_pnl_or_unavailable(tp_gain)}) | '
+            f'SL: {_fmt_distance_or_unavailable(sl_dist, "-")} ({_fmt_pnl_or_unavailable(sl_loss)})'
         ),
         *([status_line] if status_line else []),
     ])
@@ -1174,6 +1240,54 @@ def _pnl_for_period(stats, key):
     return None
 
 
+def _closed_trade_timestamp(record):
+    if not isinstance(record, dict):
+        return None
+    return (
+        record.get('exit_time')
+        or record.get('closed_at')
+        or record.get('timestamp')
+        or record.get('event_time')
+    )
+
+
+def _is_closed_trade_record(record):
+    if not isinstance(record, dict):
+        return False
+    status = str(record.get('status') or '').upper()
+    event_type = str(record.get('event_type') or '').upper()
+    return status == 'CLOSED' or event_type == 'TRADE_CLOSE'
+
+
+def _pnl_today_from_records(records):
+    today_uy = datetime.now(UY_TZ).date()
+    values = []
+    for record in records or []:
+        if not _is_closed_trade_record(record):
+            continue
+        pnl = _to_float(record.get('pnl_usdt'))
+        if pnl is None:
+            continue
+        dt = _parse_time(_closed_trade_timestamp(record))
+        if not dt:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if dt.astimezone(UY_TZ).date() == today_uy:
+            values.append(pnl)
+    return sum(values) if values else None
+
+
+def _fallback_today_pnl_from_closed_trades():
+    trades, _corrupt = _merged_trades()
+    pnl = _pnl_today_from_records(trades.values())
+    if pnl is not None:
+        return pnl
+    history_path = os.path.join(PROJECT_DIR, 'data', 'history', 'trades.jsonl')
+    history_records, _history_corrupt = _read_jsonl(history_path)
+    return _pnl_today_from_records(history_records)
+
+
 def _analytics_pnl_summary(snapshot=None):
     snapshot = snapshot if isinstance(snapshot, dict) else None
     pnl_state = snapshot.get('pnl') if isinstance((snapshot or {}).get('pnl'), dict) else {}
@@ -1184,16 +1298,18 @@ def _analytics_pnl_summary(snapshot=None):
             'today': _pnl_for_period(stats, 'day') if isinstance(stats, dict) else None,
             'total': (general or {}).get('pnl_total'),
         }
+        if pnl.get('today') is None:
+            pnl['today'] = _fallback_today_pnl_from_closed_trades()
         if pnl.get('today') is not None or pnl.get('total') is not None:
             return pnl
     except Exception:
         pass
     if pnl_state.get('today') is not None or pnl_state.get('total') is not None:
         return {
-            'today': pnl_state.get('today'),
+            'today': pnl_state.get('today') if pnl_state.get('today') is not None else _fallback_today_pnl_from_closed_trades(),
             'total': pnl_state.get('total'),
         }
-    return {'today': None, 'total': None}
+    return {'today': _fallback_today_pnl_from_closed_trades(), 'total': None}
 
 
 def _capital_accounting_payload(metrics=None):
@@ -1440,7 +1556,7 @@ class HomePage(MenuPage):
         max_shorts = _display_capacity(metrics["short_count"], metrics["max_shorts"])
         if reconciliation and reconciliation_risk:
             short_lines = [
-                'Shorts:',
+                '📉 Shorts:',
                 f'- Observadas: {observed_shorts}',
                 f'- Gestionadas: {_to_int(reconciliation.get("managed_count"))}',
                 f'- Permitidas ahora: {permitted_shorts}',
@@ -1448,9 +1564,9 @@ class HomePage(MenuPage):
                 f'- Estado: {_reconciliation_status_label(reconciliation)}',
             ]
         elif reconciliation:
-            short_lines = [f'Shorts: {compact_short_count}/{compact_max_shorts}']
+            short_lines = [f'📉 Shorts: {compact_short_count}/{compact_max_shorts}']
         else:
-            short_lines = [f'Shorts: {metrics["short_count"]}/{max_shorts}']
+            short_lines = [f'📉 Shorts: {metrics["short_count"]}/{max_shorts}']
         lines = [
             f'{_status_icon(bot)} Bot {bot}',
             f'{_status_icon(guardian)} Guardian {guardian}',
@@ -1460,15 +1576,15 @@ class HomePage(MenuPage):
             f'\U0001F4C8 Hoy: {_fmt_pnl(pnl.get("today"))}',
             f'\U0001F4CA Total: {_fmt_pnl(pnl.get("total"))}',
             '',
-            f'\U0001F7E2 Longs: {metrics["long_count"]}/{max_longs}',
-            *short_lines,
-            '',
+            f'📈 Longs: {metrics["long_count"]}/{max_longs}',
             f'Spot: {_fmt_money(metrics["spot_used"])} / {_fmt_money(metrics["spot_real"])}',
-            f'Futures: {_fmt_money(metrics["futures_used"])} / {_fmt_money(metrics["futures_real"])}',
+            '',
+            *short_lines,
+            f'Futures margen: {_fmt_money(metrics["futures_used"])} / {_fmt_money(metrics["futures_real"])}',
             '',
             *_market_home_lines(snapshot),
             '',
-            f'\U0001F552 Ultimo ciclo: {_fmt_uy(system.get("last_execution")) if system.get("last_execution") else _mtime_uy(CONFIG.state_file)}',
+            f'\U0001F552 Ultimo ciclo: {_fmt_uy_time(system.get("last_execution")) if system.get("last_execution") else _mtime_uy_time(CONFIG.state_file)}',
         ]
         return '\n'.join(lines)
 
@@ -1518,7 +1634,7 @@ class CapitalPage(MenuPage):
             '',
             'Futures:',
             f'Real: {_fmt_money(metrics["futures_real"])}',
-            f'Usado: {_fmt_money(metrics["futures_used"])}',
+            f'Margen usado: {_fmt_money(metrics["futures_used"])}',
             f'Libre: {_fmt_money(_money_free(metrics.get("futures_real"), metrics.get("futures_used")))}',
         ])
         if metrics.get('futures_position_margin') is not None:
@@ -1559,18 +1675,21 @@ class CapitalPage(MenuPage):
             f'Futures objetivo: {_fmt_money(metrics["futures_target"])}',
         ])
         if rebalance:
+            rebalance_status = str(rebalance.get('status') or '').upper()
+            is_pending_rebalance = rebalance_status in {'PENDING', 'BLOCKED'}
             lines.append(f'{_rebalance_label(rebalance.get("status"))} {direction_label}')
-            if rebalance.get('reconciled'):
-                lines.extend([''])
-                lines.extend(_rebalance_reconciled_lines(rebalance))
-            if rebalance.get('recovered'):
-                lines.extend([''])
-                lines.extend(_rebalance_recovered_lines(rebalance))
-            if str(rebalance.get('status') or '').upper() == 'PENDING':
+            if is_pending_rebalance:
                 lines.extend([''])
                 lines.extend(_rebalance_pending_lines(rebalance, direction_label, pending_amount))
             else:
-                lines.append(f'Monto: {_fmt_money(pending_amount)}')
+                if rebalance.get('reconciled'):
+                    lines.extend([''])
+                    lines.extend(_rebalance_reconciled_lines(rebalance))
+                if rebalance.get('recovered'):
+                    lines.extend([''])
+                    lines.extend(_rebalance_recovered_lines(rebalance))
+                if not rebalance.get('reconciled') and not rebalance.get('recovered'):
+                    lines.append(f'Monto: {_fmt_money(pending_amount)}')
         else:
             lines.extend([
                 f'Estado: {_rebalance_label(None)}',
