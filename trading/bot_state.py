@@ -35,6 +35,45 @@ def _float_or_none(value):
         return None
 
 
+def _timestamp_to_iso(value):
+    if value in (None, ''):
+        return None
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(float(value), timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+    text = str(value)
+    if text.isdigit():
+        return datetime.fromtimestamp(float(text), timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+    return text
+
+
+def _build_safety_pause(state):
+    if not isinstance(state, dict):
+        return None
+    pause_until = int(state.get('pause_until') or 0)
+    pause_started_at = state.get('pause_started_at')
+    reason = state.get('pause_reason') or ('daily_stop_loss_limit' if pause_until else None)
+    sl_count = state.get('pause_sl_count')
+    if sl_count is None:
+        sl_count = state.get('consec_sl')
+    duration_hours = state.get('pause_duration_hours')
+    if duration_hours is None and pause_started_at and pause_until:
+        try:
+            duration_hours = round((float(pause_until) - float(pause_started_at)) / 3600, 2)
+        except (TypeError, ValueError):
+            duration_hours = None
+    if not pause_until and not pause_started_at and not reason:
+        return None
+    now = int(time.time())
+    return {
+        'active': bool(pause_until and pause_until > now),
+        'reason': reason,
+        'started_at': _timestamp_to_iso(pause_started_at),
+        'until': _timestamp_to_iso(pause_until) if pause_until else None,
+        'duration_hours': duration_hours,
+        'sl_count': sl_count,
+    }
+
+
 def _load_previous_bot_state(path=None):
     path = path or BOT_STATE_FILE
     try:
@@ -1036,6 +1075,7 @@ def build_bot_state(
         guardian_status = live_system.get('guardian')
     if live_system.get('dashboard') != 'UNKNOWN':
         dashboard_status = live_system.get('dashboard')
+    safety_pause = _build_safety_pause(state)
     payload = {
         'timestamp': cycle_timestamp,
         'timezone': 'America/Montevideo',
@@ -1093,6 +1133,8 @@ def build_bot_state(
         'diagnostics': diagnostics,
         'rebalance': rebalance_info,
     }
+    if safety_pause:
+        payload['safety_pause'] = safety_pause
     return version_history.attach_version_metadata(payload)
 
 

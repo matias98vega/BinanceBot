@@ -231,6 +231,70 @@ class AuditDataQualityTests(unittest.TestCase):
 
         self.assertTrue(any('gap grande' in item for item in report.operational_warnings))
 
+    def test_recent_gap_covered_by_circuit_breaker_pause_is_accepted(self):
+        self.valid_bot_state()
+        self.write_jsonl('trading/decision_snapshots.jsonl', [
+            {'timestamp': '2026-07-11T23:10:00Z', 'bot_version': 'v1.2-sizing-v2'},
+            {'timestamp': '2026-07-12T23:05:00Z', 'bot_version': 'v1.2-sizing-v2'},
+        ])
+        self.write_jsonl('trading/trade_analytics.jsonl', [])
+        self.write_jsonl('data/history/timeline.jsonl', [
+            {
+                'timestamp': '2026-07-11T23:00:00Z',
+                'event': 'circuit_breaker_pause_started',
+                'category': 'RISK',
+                'details': {
+                    'reason': 'daily_stop_loss_limit',
+                    'pause_started_at': '2026-07-11T23:00:00Z',
+                    'pause_until': '2026-07-12T23:30:00Z',
+                    'duration_hours': 24,
+                    'sl_count': 4,
+                },
+                'bot_version': 'v1.2-sizing-v2',
+            }
+        ])
+
+        report = audit_data_quality.audit_project(self.project)
+
+        self.assertTrue(any('gap grande' in item and 'justified_by=safety_pause:daily_stop_loss_limit' in item for item in report.accepted_warnings))
+        self.assertFalse(any('gap grande' in item for item in report.operational_warnings))
+
+    def test_recent_gap_without_pause_evidence_stays_operational(self):
+        self.valid_bot_state()
+        self.write_jsonl('trading/decision_snapshots.jsonl', [
+            {'timestamp': '2026-07-11T23:10:00Z', 'bot_version': 'v1.2-sizing-v2'},
+            {'timestamp': '2026-07-12T23:05:00Z', 'bot_version': 'v1.2-sizing-v2'},
+        ])
+        self.write_jsonl('trading/trade_analytics.jsonl', [])
+
+        report = audit_data_quality.audit_project(self.project)
+
+        self.assertTrue(any('gap grande' in item for item in report.operational_warnings))
+
+    def test_recent_gap_partially_covered_by_pause_stays_operational(self):
+        self.valid_bot_state()
+        self.write_jsonl('trading/decision_snapshots.jsonl', [
+            {'timestamp': '2026-07-11T23:10:00Z', 'bot_version': 'v1.2-sizing-v2'},
+            {'timestamp': '2026-07-13T03:05:00Z', 'bot_version': 'v1.2-sizing-v2'},
+        ])
+        self.write_jsonl('trading/trade_analytics.jsonl', [])
+        self.write_jsonl('data/history/timeline.jsonl', [
+            {
+                'timestamp': '2026-07-11T23:00:00Z',
+                'event': 'circuit_breaker_pause_started',
+                'details': {
+                    'reason': 'daily_stop_loss_limit',
+                    'pause_started_at': '2026-07-11T23:00:00Z',
+                    'pause_until': '2026-07-12T23:00:00Z',
+                },
+                'bot_version': 'v1.2-sizing-v2',
+            }
+        ])
+
+        report = audit_data_quality.audit_project(self.project)
+
+        self.assertTrue(any('gap grande' in item for item in report.operational_warnings))
+
     def test_only_legacy_warnings_keep_operational_status_ok(self):
         self.valid_bot_state()
         self.write_jsonl('trading/decision_snapshots.jsonl', [

@@ -2,6 +2,7 @@
 """Main cycle orchestration extracted from bot.py without changing behavior."""
 
 import time
+from datetime import datetime, timezone
 
 import bot_state
 import capital_manager
@@ -106,21 +107,31 @@ class CycleRunner:
 
         # â”€â”€ Circuit breaker: pausa 24h si â‰¥4 SLs consecutivos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if state.get('consec_sl', 0) >= 4:
+            pause_started_at = int(time.time())
+            pause_until = pause_started_at + 86400
             state['status'] = 'paused'
-            state['pause_until'] = int(time.time()) + 86400  # 24h
+            state['pause_until'] = pause_until  # 24h
+            state['pause_started_at'] = pause_started_at
+            state['pause_reason'] = 'daily_stop_loss_limit'
+            state['pause_duration_hours'] = 24
+            state['pause_sl_count'] = state.get('consec_sl', 0)
             self.out('â›” Circuit breaker: 4 SLs consecutivos â†’ bot pausado por 24h')
             utils.send_alert('⛔ Bot pausado por circuit breaker: 4 SLs consecutivos')
             try:
                 decision_timeline.record_event(
-                    'circuit_breaker_paused',
-                    'Bot pausado por circuit breaker',
-                    category='SYSTEM',
+                    'circuit_breaker_pause_started',
+                    'Bot paused for 24h after daily SL limit',
+                    category='RISK',
                     level='WARNING',
                     cycle_id=cycle_id,
                     details={
                         'event_type': 'CIRCUIT_BREAKER',
+                        'reason': 'daily_stop_loss_limit',
+                        'pause_started_at': datetime.fromtimestamp(pause_started_at, timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z'),
+                        'pause_until': datetime.fromtimestamp(pause_until, timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z'),
+                        'duration_hours': 24,
+                        'sl_count': state.get('consec_sl', 0),
                         'consec_sl': state.get('consec_sl', 0),
-                        'pause_until': state.get('pause_until'),
                         'status': state.get('status'),
                     },
                 )

@@ -841,6 +841,44 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertNotIn('Rebalance pendiente', text)
         self.assertNotIn('Desbalance pendiente:\n26.94 USDT', text)
 
+    def test_system_shows_active_safety_pause(self):
+        snapshot = {
+            'safety_pause': {
+                'active': True,
+                'reason': 'daily_stop_loss_limit',
+                'until': '2026-07-13T02:30:00Z',
+            }
+        }
+        with patch.object(telegram_commands, '_bot_state', return_value=snapshot), \
+             patch.object(telegram_commands, '_bot_status', return_value='PAUSED'), \
+             patch.object(telegram_commands, '_guardian_status', return_value='ONLINE'), \
+             patch.object(telegram_commands, '_dashboard_status', return_value='ONLINE'), \
+             patch.object(telegram_commands, '_telegram_service_status', return_value='ONLINE'), \
+             patch.object(telegram_commands, '_systemd_active_since', return_value='N/A'), \
+             patch.object(telegram_commands, '_git_commit', return_value='abc123'), \
+             patch.object(telegram_commands, '_git_deploy_time', return_value='N/A'), \
+             patch.object(telegram_commands, '_server_uptime', return_value='N/A'):
+            text = telegram_commands._render_page('system')['text']
+
+        self.assertIn('Pausa de seguridad activa', text)
+        self.assertIn('Motivo: 4 SL diarios', text)
+        self.assertIn('Hasta: 23:30 UY', text)
+
+    def test_system_does_not_show_inactive_safety_pause(self):
+        snapshot = {'safety_pause': {'active': False, 'reason': 'daily_stop_loss_limit'}}
+        with patch.object(telegram_commands, '_bot_state', return_value=snapshot), \
+             patch.object(telegram_commands, '_bot_status', return_value='ONLINE'), \
+             patch.object(telegram_commands, '_guardian_status', return_value='ONLINE'), \
+             patch.object(telegram_commands, '_dashboard_status', return_value='ONLINE'), \
+             patch.object(telegram_commands, '_telegram_service_status', return_value='ONLINE'), \
+             patch.object(telegram_commands, '_systemd_active_since', return_value='N/A'), \
+             patch.object(telegram_commands, '_git_commit', return_value='abc123'), \
+             patch.object(telegram_commands, '_git_deploy_time', return_value='N/A'), \
+             patch.object(telegram_commands, '_server_uptime', return_value='N/A'):
+            text = telegram_commands._render_page('system')['text']
+
+        self.assertNotIn('Pausa de seguridad activa', text)
+
     def test_capital_explains_futures_rebalance_blocked_by_open_positions(self):
         metrics = self._metrics(short_count=5)
         metrics.update({

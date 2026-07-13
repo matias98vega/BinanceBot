@@ -157,6 +157,21 @@ def _mtime_uy_time(path):
     return _fmt_uy_time(os.path.getmtime(path))
 
 
+def _safety_pause_lines(snapshot=None):
+    snapshot = snapshot if isinstance(snapshot, dict) else _bot_state()
+    pause = snapshot.get('safety_pause') if isinstance(snapshot.get('safety_pause'), dict) else {}
+    if not pause.get('active'):
+        return []
+    reason = pause.get('reason') or 'No disponible'
+    reason_label = '4 SL diarios' if reason == 'daily_stop_loss_limit' else str(reason)
+    return [
+        '',
+        '🛑 Pausa de seguridad activa',
+        f'Motivo: {reason_label}',
+        f'Hasta: {_fmt_uy_time(pause.get("until"))}',
+    ]
+
+
 def _is_recent(path, max_age_seconds):
     return os.path.exists(path) and time.time() - os.path.getmtime(path) <= max_age_seconds
 
@@ -2147,19 +2162,23 @@ class SystemPage(MenuPage):
     page_id = 'system'
 
     def render(self):
+        snapshot = _bot_state()
         bot = _bot_status()
         guardian = _guardian_status()
         dashboard = _dashboard_status()
         telegram = _telegram_service_status()
         dashboard_since = _systemd_active_since('binancebot-dashboard.service')
         telegram_since = _systemd_active_since('binancebot-telegram.service')
-        return '\n'.join([
+        lines = [
             '\u2699 Sistema',
             '',
             f'{_status_icon(bot)} Bot: {bot}',
             f'{_status_icon(guardian)} Guardian: {guardian}',
             f'{_status_icon(dashboard)} Dashboard: {dashboard}',
             f'{_status_icon(telegram)} Telegram: {telegram}',
+        ]
+        lines.extend(_safety_pause_lines(snapshot))
+        lines.extend([
             *_version_metadata_lines(),
             f'Commit: {_git_commit()}',
             f'Deploy: {_git_deploy_time()}',
@@ -2169,6 +2188,7 @@ class SystemPage(MenuPage):
             '',
             '\u2500' * 12,
         ])
+        return '\n'.join(lines)
 
 
 MENU_PAGES = {

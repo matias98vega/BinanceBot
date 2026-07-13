@@ -160,6 +160,36 @@ class VersionHistoryTests(unittest.TestCase):
         self.assertEqual(47.66, payload['capital']['spot_real'])
         self.assertEqual(0.10, payload['capital']['futures_real'])
 
+    def test_bot_state_exposes_active_safety_pause(self):
+        with patch.object(bot_state, 'get_system_statuses', return_value={'bot': 'UNKNOWN', 'guardian': 'UNKNOWN', 'dashboard': 'UNKNOWN'}), \
+             patch.object(bot_state.time, 'time', return_value=1000):
+            payload = bot_state.build_bot_state(
+                state={
+                    'status': 'paused',
+                    'positions': [],
+                    'pause_started_at': 1000,
+                    'pause_until': 87400,
+                    'pause_reason': 'daily_stop_loss_limit',
+                    'pause_duration_hours': 24,
+                    'pause_sl_count': 4,
+                },
+                btc_ctx={'trend': 'neutral'},
+                system_health='WARNING',
+            )
+
+        self.assertTrue(payload['safety_pause']['active'])
+        self.assertEqual('daily_stop_loss_limit', payload['safety_pause']['reason'])
+        self.assertEqual('1970-01-01T00:16:40Z', payload['safety_pause']['started_at'])
+        self.assertEqual('1970-01-02T00:16:40Z', payload['safety_pause']['until'])
+        self.assertEqual(24, payload['safety_pause']['duration_hours'])
+        self.assertEqual(4, payload['safety_pause']['sl_count'])
+
+    def test_bot_state_omits_safety_pause_when_no_pause_metadata(self):
+        with patch.object(bot_state, 'get_system_statuses', return_value={'bot': 'UNKNOWN', 'guardian': 'UNKNOWN', 'dashboard': 'UNKNOWN'}):
+            payload = bot_state.build_bot_state(state={'positions': []}, btc_ctx={'trend': 'neutral'})
+
+        self.assertNotIn('safety_pause', payload)
+
     def test_paused_bot_state_recovers_market_from_internal_snapshot_when_previous_is_degraded(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, 'bot_state.json')

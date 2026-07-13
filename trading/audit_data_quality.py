@@ -6,7 +6,7 @@ import json
 import os
 import sys
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import version_history
 
@@ -211,7 +211,16 @@ def _record_context(record):
     return ' '.join(f'{key}={value}' for key, value in fields.items() if value not in (None, ''))
 
 
-def _validate_timestamp(report, path, record, previous_dt=None, previous_record=None, require=True):
+def _pause_coverage_for_gap(pause_context, previous_dt, current_dt):
+    if pause_context is None or previous_dt is None or current_dt is None:
+        return None
+    covers = getattr(pause_context, 'covers', None)
+    if callable(covers):
+        return covers(previous_dt, current_dt)
+    return None
+
+
+def _validate_timestamp(report, path, record, previous_dt=None, previous_record=None, require=True, pause_context=None):
     value = _timestamp_value(record)
     dt, err = _parse_ts(value)
     if err == 'missing':
@@ -235,7 +244,12 @@ def _validate_timestamp(report, path, record, previous_dt=None, previous_record=
     if previous_dt and (dt - previous_dt).total_seconds() > MAX_APPEND_GAP_SECONDS and not source_timestamp_separated:
         prev_value = _timestamp_value(previous_record) if isinstance(previous_record, dict) else previous_dt.isoformat()
         gap_hours = round((dt - previous_dt).total_seconds() / 3600, 2)
-        report.record_warning(path, _timestamp_warning_message(f'gap grande entre registros: {gap_hours}h', prev_value, value, record, previous_record), record)
+        message = _timestamp_warning_message(f'gap grande entre registros: {gap_hours}h', prev_value, value, record, previous_record)
+        coverage = _pause_coverage_for_gap(pause_context, previous_dt, dt)
+        if coverage:
+            report.accepted_warning(path, f'{message} justified_by={coverage}')
+        else:
+            report.record_warning(path, message, record)
     return dt
 
 
@@ -469,6 +483,115 @@ class ActiveTradeContext:
         return None
 
 
+class SafetyPauseContext:
+    def __init__(self, windows=None):
+        self.windows = list(windows or [])
+
+    def covers(self, previous_dt, current_dt):
+        if previous_dt is None or current_dt is None:
+            return None
+        tolerance = timedelta(minutes=5)
+        for window in self.windows:
+            start = window.get('start')
+            end = window.get('end')
+            if not start or not end:
+                continue
+            if previous_dt >= start - tolerance and current_dt <= end + tolerance:
+                reason = window.get('reason') or 'safety_pause'
+                return f'safety_pause:{reason}'
+        return None
+
+
+def _parse_audit_time(value):
+    if value in (None, ''):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value), timezone.utc)
+        except (TypeError, ValueError, OSError):
+            return None
+    text = str(value)
+    if text.isdigit():
+        try:
+            return datetime.fromtimestamp(float(text), timezone.utc)
+        except (TypeError, ValueError, OSError):
+            return None
+    dt, err = _parse_ts(text)
+    return dt if not err else None
+
+
+def _pause_window(start, end, reason='safety_pause', source=None):
+    start_dt = _parse_audit_time(start)
+    end_dt = _parse_audit_time(end)
+    if not start_dt or not end_dt or end_dt <= start_dt:
+        return None
+    return {'start': start_dt, 'end': end_dt, 'reason': reason, 'source': source}
+
+
+def _collect_pause_windows_from_state(data, source):
+    windows = []
+    if not isinstance(data, dict):
+        return windows
+    safety = data.get('safety_pause') if isinstance(data.get('safety_pause'), dict) else {}
+    if safety:
+        window = _pause_window(
+            safety.get('started_at') or safety.get('pause_started_at'),
+            safety.get('until') or safety.get('pause_until'),
+            safety.get('reason') or 'safety_pause',
+            source,
+        )
+        if window:
+            windows.append(window)
+    pause_until = data.get('pause_until')
+    pause_started_at = data.get('pause_started_at')
+    if pause_until and pause_started_at:
+        window = _pause_window(
+            pause_started_at,
+            pause_until,
+            data.get('pause_reason') or 'daily_stop_loss_limit',
+            source,
+        )
+        if window:
+            windows.append(window)
+    return windows
+
+
+def _collect_pause_windows_from_timeline(path):
+    windows = []
+    if not os.path.exists(path):
+        return windows
+    try:
+        with open(path, encoding='utf-8') as f:
+            for raw in f:
+                try:
+                    record = json.loads(raw.strip())
+                except Exception:
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                event = str(record.get('event') or '').lower()
+                details = record.get('details') if isinstance(record.get('details'), dict) else {}
+                if event not in {'circuit_breaker_pause_started', 'circuit_breaker_paused'}:
+                    continue
+                start = details.get('pause_started_at') or record.get('timestamp')
+                end = details.get('pause_until')
+                reason = details.get('reason') or 'daily_stop_loss_limit'
+                window = _pause_window(start, end, reason, 'timeline')
+                if window:
+                    windows.append(window)
+    except Exception:
+        return windows
+    return windows
+
+
+def _build_safety_pause_context(state, bot_state, timeline_path):
+    windows = []
+    windows.extend(_collect_pause_windows_from_state(state, 'state'))
+    windows.extend(_collect_pause_windows_from_state(bot_state, 'bot_state'))
+    windows.extend(_collect_pause_windows_from_timeline(timeline_path))
+    return SafetyPauseContext(windows)
+
+
 def _read_json(path, report, required=False):
     if not os.path.exists(path):
         if required:
@@ -495,7 +618,7 @@ def _read_json(path, report, required=False):
         return None
 
 
-def _read_jsonl(path, report, required=False, closed_trade_ids=None, active_context=None):
+def _read_jsonl(path, report, required=False, closed_trade_ids=None, active_context=None, pause_context=None):
     records = []
     if not os.path.exists(path):
         if required:
@@ -536,6 +659,7 @@ def _read_jsonl(path, report, required=False, closed_trade_ids=None, active_cont
                     previous_dt=previous_dt,
                     previous_record=previous_record,
                     require=False,
+                    pause_context=pause_context,
                 )
                 if current_dt:
                     previous_dt = current_dt
@@ -810,13 +934,15 @@ def audit_project(project_dir=PROJECT_DIR):
     state = _read_json(_project_path(trading_dir, 'state.json'), report)
     futures_reconciliation = _read_json(_project_path(history_dir, 'futures_reconciliation_status.json'), report)
     active_context = ActiveTradeContext(state=state, bot_state=bot_state, reconciliation=futures_reconciliation)
+    timeline_path = _project_path(history_dir, 'timeline.jsonl')
+    pause_context = _build_safety_pause_context(state, bot_state, timeline_path)
 
     history_jsonl_paths = sorted(glob.glob(_project_path(history_dir, '*.jsonl')))
     history_records = {}
     trades_path = _project_path(history_dir, 'trades.jsonl')
     trades_history = []
     if trades_path in history_jsonl_paths:
-        trades_history = _read_jsonl(trades_path, report, active_context=active_context)
+        trades_history = _read_jsonl(trades_path, report, active_context=active_context, pause_context=pause_context)
         history_records[trades_path] = trades_history
     closed_trade_ids = _collect_closed_trade_ids(trades_history)
 
@@ -826,8 +952,9 @@ def audit_project(project_dir=PROJECT_DIR):
         required=True,
         closed_trade_ids=closed_trade_ids,
         active_context=active_context,
+        pause_context=pause_context,
     )
-    decision_snapshots = _read_jsonl(_project_path(trading_dir, 'decision_snapshots.jsonl'), report, required=True)
+    decision_snapshots = _read_jsonl(_project_path(trading_dir, 'decision_snapshots.jsonl'), report, required=True, pause_context=pause_context)
     closed_trade_ids = _collect_closed_trade_ids(trade_analytics + trades_history)
     for path in history_jsonl_paths:
         if path == trades_path:
@@ -837,6 +964,7 @@ def audit_project(project_dir=PROJECT_DIR):
             report,
             closed_trade_ids=closed_trade_ids,
             active_context=active_context,
+            pause_context=pause_context,
         )
 
     all_trade_records = trade_analytics + trades_history
