@@ -866,6 +866,45 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertNotIn('Rebalance pendiente', text)
         self.assertNotIn('Desbalance pendiente:\n26.94 USDT', text)
 
+    def test_capital_shows_targets_when_aligned_targets_match_real_capital(self):
+        metrics = self._metrics()
+        metrics.update({
+            'spot_real': 26.90,
+            'spot_target': 26.90,
+            'futures_real': 27.10,
+            'futures_target': 27.10,
+            'rebalance': {'status': 'NOT_REQUIRED', 'tolerance': 0.20},
+        })
+
+        with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics), \
+             patch.object(telegram_commands, '_bot_state', return_value={}):
+            text = telegram_commands._render_page('capital')['text']
+
+        self.assertIn('Estado: ✅ Alineado', text)
+        self.assertIn('Spot objetivo: 26.90 USDT', text)
+        self.assertIn('Futures objetivo: 27.10 USDT', text)
+        self.assertNotIn('Objetivo: No disponible', text)
+
+    def test_capital_hides_targets_when_aligned_targets_do_not_match_real_capital(self):
+        metrics = self._metrics()
+        metrics.update({
+            'spot_real': 0.10,
+            'spot_target': 25.16,
+            'futures_real': 49.84,
+            'futures_target': 25.16,
+            'rebalance': {'status': 'NOT_REQUIRED', 'tolerance': 0.20},
+        })
+
+        with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics), \
+             patch.object(telegram_commands, '_bot_state', return_value={}):
+            text = telegram_commands._render_page('capital')['text']
+
+        self.assertIn('Estado: ✅ Alineado', text)
+        self.assertIn('Objetivo: No disponible', text)
+        self.assertIn('objetivo reportado no coincide', text)
+        self.assertNotIn('Spot objetivo: 25.16 USDT', text)
+        self.assertNotIn('Futures objetivo: 25.16 USDT', text)
+
     def test_capital_incomplete_pending_rebalance_does_not_show_long_unknown_block(self):
         metrics = self._metrics()
         metrics['rebalance'] = {
@@ -916,6 +955,8 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertIn('Shorts: 2/2 | Reconciliacion: ALINEADA', text)
         self.assertIn('Estado:', text)
         self.assertIn('Pendiente', text)
+        self.assertIn('Spot objetivo: 26.90 USDT', text)
+        self.assertIn('Futures objetivo: 27.10 USDT', text)
         self.assertIn('Transferible: 35.26 USDT', text)
         self.assertIn('Capital Futures comprometido: 14.60 USDT', text)
         self.assertNotIn('Shorts: 2/2 | Estado: ALINEADO', text)

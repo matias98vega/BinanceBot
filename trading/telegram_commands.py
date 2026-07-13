@@ -1132,6 +1132,63 @@ def _rebalance_display_status(rebalance):
     return 'unknown'
 
 
+def _rebalance_has_context(rebalance):
+    if not isinstance(rebalance, dict):
+        return False
+    return bool(
+        rebalance.get('last_check')
+        or rebalance.get('pending_reason')
+        or rebalance.get('blocked_reason')
+        or rebalance.get('last_error')
+        or rebalance.get('last_message')
+        or rebalance.get('last_http_status')
+        or rebalance.get('last_binance_code') is not None
+    )
+
+
+def _capital_target_tolerance(rebalance):
+    for key in ('tolerance', 'alignment_tolerance', 'rebalance_tolerance'):
+        value = _to_float(rebalance.get(key) if isinstance(rebalance, dict) else None)
+        if value is not None:
+            return max(0.0, value)
+    return 0.20
+
+
+def _capital_targets_consistent(metrics, rebalance):
+    spot_real = _to_float(metrics.get('spot_real'))
+    futures_real = _to_float(metrics.get('futures_real'))
+    spot_target = _to_float(metrics.get('spot_target'))
+    futures_target = _to_float(metrics.get('futures_target'))
+    if None in (spot_real, futures_real, spot_target, futures_target):
+        return False
+    tolerance = _capital_target_tolerance(rebalance)
+    return abs(spot_real - spot_target) <= tolerance and abs(futures_real - futures_target) <= tolerance
+
+
+def _capital_target_lines(metrics, rebalance, display_status):
+    if display_status == 'aligned':
+        if _capital_targets_consistent(metrics, rebalance):
+            return [
+                f'Spot objetivo: {_fmt_money(metrics.get("spot_target"))}',
+                f'Futures objetivo: {_fmt_money(metrics.get("futures_target"))}',
+            ]
+        return [
+            'Objetivo: No disponible',
+            'Detalle: objetivo reportado no coincide con el estado actual.',
+        ]
+    if display_status in {'pending', 'blocked'} and _rebalance_has_context(rebalance):
+        return [
+            f'Spot objetivo: {_fmt_money(metrics.get("spot_target"))}',
+            f'Futures objetivo: {_fmt_money(metrics.get("futures_target"))}',
+        ]
+    if display_status == 'incomplete':
+        return ['Objetivo: No disponible']
+    return [
+        f'Spot objetivo: {_fmt_money(metrics.get("spot_target"))}',
+        f'Futures objetivo: {_fmt_money(metrics.get("futures_target"))}',
+    ]
+
+
 def _rebalance_transferable_amount(rebalance, metrics):
     available = rebalance.get('available_balance')
     if available is not None:
@@ -1789,15 +1846,15 @@ class CapitalPage(MenuPage):
         lines.extend([
             '',
             'Objetivo/Rebalance:',
-            f'Spot objetivo: {_fmt_money(metrics["spot_target"])}',
-            f'Futures objetivo: {_fmt_money(metrics["futures_target"])}',
         ])
         if rebalance:
             rebalance_display_status = _rebalance_display_status(rebalance)
             if rebalance_display_status in {'pending', 'blocked', 'incomplete'}:
+                lines.extend(_capital_target_lines(metrics, rebalance, rebalance_display_status))
                 lines.extend(_rebalance_pending_lines_v2(rebalance, direction_label, pending_amount, metrics))
             elif rebalance_display_status == 'aligned':
                 lines.append('Estado: \u2705 Alineado')
+                lines.extend(_capital_target_lines(metrics, rebalance, rebalance_display_status))
                 if rebalance.get('reconciled'):
                     lines.extend([''])
                     lines.extend(_rebalance_reconciled_lines(rebalance))
@@ -1807,9 +1864,11 @@ class CapitalPage(MenuPage):
                 if not rebalance.get('reconciled') and not rebalance.get('recovered'):
                     lines.append('Sin rebalance pendiente.')
             else:
+                lines.extend(_capital_target_lines(metrics, rebalance, rebalance_display_status))
                 lines.append(f'Estado: {_rebalance_label(rebalance.get("status"))}')
                 lines.append(f'Monto pendiente: {_fmt_money(pending_amount)}')
         else:
+            lines.extend(_capital_target_lines(metrics, rebalance, 'unknown'))
             lines.extend([
                 f'Estado: {_rebalance_label(None)}',
                 f'Monto pendiente: {_fmt_money(None)}',
