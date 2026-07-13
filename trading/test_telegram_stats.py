@@ -78,9 +78,20 @@ class TelegramStatsTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.stats_file = os.path.join(self.tmp.name, 'stats.json')
+        self._old_daily_pnl_paths = telegram_commands.DAILY_PNL_FALLBACK_PATHS
+        self._old_daily_pnl_now = telegram_commands.DAILY_PNL_FALLBACK_NOW
 
     def tearDown(self):
+        telegram_commands.DAILY_PNL_FALLBACK_PATHS = self._old_daily_pnl_paths
+        telegram_commands.DAILY_PNL_FALLBACK_NOW = self._old_daily_pnl_now
         self.tmp.cleanup()
+
+    def _write_jsonl(self, name, rows):
+        path = os.path.join(self.tmp.name, name)
+        with open(path, 'w', encoding='utf-8') as f:
+            for row in rows:
+                f.write(json.dumps(row) + '\n')
+        return path
 
     def _patch_stats(self, stats=None):
         return patch.multiple(
@@ -273,12 +284,17 @@ class TelegramStatsTests(unittest.TestCase):
         stats = sample_stats()
         stats['general']['pnl_total'] = 12.34
         stats['general']['pnl_daily'] = {}
-        now_uy = telegram_commands.datetime.now(telegram_commands.UY_TZ)
-        closed_today = {
-            'a': {'status': 'CLOSED', 'exit_time': now_uy.isoformat(), 'pnl_usdt': -0.30},
-            'b': {'event_type': 'TRADE_CLOSE', 'closed_at': now_uy.isoformat(), 'pnl_usdt': -0.12},
-            'open': {'status': 'OPEN', 'exit_time': now_uy.isoformat(), 'pnl_usdt': 99},
-        }
+        now_uy = telegram_commands.datetime(2026, 7, 13, 12, 0, tzinfo=telegram_commands.UY_TZ)
+        history_path = self._write_jsonl('fallback_trades.jsonl', [
+            {'status': 'CLOSED', 'exit_time': '2026-07-13T10:00:00-03:00', 'pnl_usdt': -0.10},
+            {'event_type': 'TRADE_CLOSE', 'closed_at': '2026-07-13T11:00:00-03:00', 'pnl_usdt': -0.20},
+            {'status': 'CLOSED', 'exit_time': '2026-07-13T12:00:00-03:00', 'pnl_usdt': -0.12},
+            {'status': 'OPEN', 'exit_time': '2026-07-13T12:00:00-03:00', 'pnl_usdt': 99},
+            {'status': 'CLOSED', 'exit_time': '2026-07-13T12:00:00-03:00', 'pnl_usdt': 'bad'},
+            {'status': 'CLOSED', 'exit_time': '2026-07-12T23:00:00-03:00', 'pnl_usdt': -5},
+        ])
+        telegram_commands.DAILY_PNL_FALLBACK_PATHS = (history_path,)
+        telegram_commands.DAILY_PNL_FALLBACK_NOW = now_uy
         bot_snapshot = {
             'system': {'health': 'OK', 'last_execution': '2026-01-01T12:00:00Z'},
             'capital': {'spot_real': 26.9, 'spot_used': 8.4, 'futures_real': 27.1, 'futures_used': 18.2},
@@ -286,7 +302,6 @@ class TelegramStatsTests(unittest.TestCase):
         }
 
         with patch.object(telegram_commands, '_stats_payload', return_value=(stats, None)), \
-             patch.object(telegram_commands, '_merged_trades', return_value=(closed_today, 0)), \
              patch.object(telegram_commands, '_bot_state', return_value=bot_snapshot), \
              patch.object(telegram_commands, '_state', return_value={}), \
              patch.object(telegram_commands, '_health_summary', return_value=('OK', [], [])), \
@@ -299,6 +314,13 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertIn('Hoy: -0.42 USDT', home)
         self.assertIn('Hoy: -0.42 USDT', stats_text)
         self.assertIn('Total: +12.34 USDT', home)
+
+    def test_daily_pnl_fallback_does_not_read_productive_files_in_tests_without_explicit_source(self):
+        with patch.object(telegram_commands, '_read_jsonl') as read_jsonl:
+            pnl = telegram_commands._fallback_today_pnl_from_closed_trades()
+
+        self.assertIsNone(pnl)
+        read_jsonl.assert_not_called()
 
     def test_home_pnl_falls_back_to_bot_state_when_analytics_unavailable(self):
         bot_snapshot = {

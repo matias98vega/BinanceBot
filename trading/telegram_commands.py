@@ -29,6 +29,8 @@ CONFIG = load_config(require_api=False)
 OFFSET_FILE = os.path.join(BASE_DIR, 'telegram_offset.json')
 BOT_STATE_FILE = os.path.join(BASE_DIR, 'bot_state.json')
 UY_TZ = timezone(timedelta(hours=-3), 'UY')
+DAILY_PNL_FALLBACK_PATHS = None
+DAILY_PNL_FALLBACK_NOW = None
 
 
 def _futures_reconciliation_status():
@@ -174,6 +176,12 @@ def _safety_pause_lines(snapshot=None):
 
 def _is_recent(path, max_age_seconds):
     return os.path.exists(path) and time.time() - os.path.getmtime(path) <= max_age_seconds
+
+
+def _is_test_mode():
+    env_test = str(os.environ.get('BINANCEBOT_TEST_MODE') or '').lower() in {'1', 'true', 'yes'}
+    argv = ' '.join(str(arg).lower() for arg in sys.argv)
+    return env_test or 'unittest' in argv or 'discover' in argv
 
 
 def _fmt(value):
@@ -1274,8 +1282,11 @@ def _is_closed_trade_record(record):
     return status == 'CLOSED' or event_type == 'TRADE_CLOSE'
 
 
-def _pnl_today_from_records(records):
-    today_uy = datetime.now(UY_TZ).date()
+def _pnl_today_from_records(records, now=None):
+    now = now or datetime.now(UY_TZ)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UY_TZ)
+    today_uy = now.astimezone(UY_TZ).date()
     values = []
     for record in records or []:
         if not _is_closed_trade_record(record):
@@ -1293,14 +1304,30 @@ def _pnl_today_from_records(records):
     return sum(values) if values else None
 
 
-def _fallback_today_pnl_from_closed_trades():
-    trades, _corrupt = _merged_trades()
-    pnl = _pnl_today_from_records(trades.values())
-    if pnl is not None:
-        return pnl
-    history_path = os.path.join(PROJECT_DIR, 'data', 'history', 'trades.jsonl')
-    history_records, _history_corrupt = _read_jsonl(history_path)
-    return _pnl_today_from_records(history_records)
+def _daily_closed_trade_pnl_from_history(paths, now=None):
+    values = []
+    for path in paths or []:
+        records, _corrupt = _read_jsonl(path)
+        pnl = _pnl_today_from_records(records, now=now)
+        if pnl is not None:
+            values.append(pnl)
+    return sum(values) if values else None
+
+
+def _fallback_today_pnl_from_closed_trades(paths=None, now=None):
+    explicit_paths = paths is not None
+    if paths is None:
+        paths = DAILY_PNL_FALLBACK_PATHS
+    if paths is None and _is_test_mode():
+        return None
+    if paths is None:
+        paths = (
+            CONFIG.analytics_file,
+            os.path.join(PROJECT_DIR, 'data', 'history', 'trades.jsonl'),
+        )
+    if not explicit_paths and paths is DAILY_PNL_FALLBACK_PATHS and paths is None:
+        return None
+    return _daily_closed_trade_pnl_from_history(paths, now=now or DAILY_PNL_FALLBACK_NOW)
 
 
 def _analytics_pnl_summary(snapshot=None):
