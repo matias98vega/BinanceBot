@@ -256,11 +256,12 @@ class RebalanceDiagnosticsTests(unittest.TestCase):
         with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics):
             text = telegram_commands._render_page('capital')['text']
 
-        self.assertIn('Rebalance pendiente', text)
-        self.assertIn('Dirección:\nSpot → Futures', text)
-        self.assertIn('Desbalance pendiente:\n26.94 USDT', text)
-        self.assertIn('Buffer aplicado:\n0.10 USDT', text)
-        self.assertIn('Intentos:\n17', text)
+        self.assertIn('Estado:', text)
+        self.assertIn('Pendiente', text)
+        self.assertIn('Direccion: Spot', text)
+        self.assertIn('Desbalance: 26.94 USDT', text)
+        self.assertIn('Buffer aplicado: 0.10 USDT', text)
+        self.assertIn('Intentos: 17', text)
         self.assertIn('Ultimo check:', text)
         self.assertIn('HTTP 400', text)
         self.assertIn('code=-2010', text)
@@ -324,13 +325,14 @@ class RebalanceDiagnosticsTests(unittest.TestCase):
         with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics):
             text = telegram_commands._render_page('capital')['text']
 
-        self.assertIn('Rebalance pendiente', text)
-        self.assertIn('Dirección:\nFutures', text)
-        self.assertIn('Desbalance pendiente:\n22.16 USDT', text)
-        self.assertIn('Intentos:\n0', text)
+        self.assertIn('Estado:', text)
+        self.assertIn('Pendiente', text)
+        self.assertIn('Direccion: Futures', text)
+        self.assertIn('Desbalance: 22.16 USDT', text)
+        self.assertIn('Intentos: 0', text)
         self.assertIn('Ultimo check:', text)
-        self.assertIn('intento:\nNo disponible', text)
-        self.assertIn('Motivo / bloqueo:', text)
+        self.assertIn('Ultimo intento: No disponible', text)
+        self.assertIn('Motivo:', text)
         self.assertIn('Futures esta ocupado', text)
         self.assertIn('Bloqueo: active_shorts', text)
 
@@ -394,9 +396,9 @@ class RebalanceDiagnosticsTests(unittest.TestCase):
         with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics):
             text = telegram_commands._render_page('capital')['text']
 
-        self.assertIn('Desbalance pendiente:\n20.21 USDT', text)
-        self.assertIn('Disponible para transferir:\n0.00 USDT', text)
-        self.assertIn('Capital Futures comprometido:\n20.42 USDT', text)
+        self.assertIn('Desbalance: 20.21 USDT', text)
+        self.assertIn('Transferible: 0.00 USDT', text)
+        self.assertIn('Capital Futures comprometido: 20.42 USDT', text)
         self.assertNotIn('Monto:\n0.00 USDT', text)
 
     def test_available_balance_zero_blocks_transfer_without_losing_pending_amount(self):

@@ -831,6 +831,8 @@ class TelegramStatsTests(unittest.TestCase):
                 'status': 'PENDING',
                 'direction': 'SPOT_TO_FUTURES',
                 'amount_pending': 26.94,
+                'last_check': '2026-07-13T12:00:00Z',
+                'pending_reason': 'capital_outside_tolerance',
             },
             'max_exposure_percent': 80.0,
             'max_position_percent': None,
@@ -840,9 +842,10 @@ class TelegramStatsTests(unittest.TestCase):
         with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics):
             text = telegram_commands._render_page('capital')['text']
 
-        self.assertIn('Rebalance pendiente', text)
-        self.assertIn('Dirección:\nSpot → Futures', text)
-        self.assertIn('Desbalance pendiente:\n26.94 USDT', text)
+        self.assertIn('Estado:', text)
+        self.assertIn('Pendiente', text)
+        self.assertIn('Desbalance: 26.94 USDT', text)
+        self.assertEqual(text.count('Pendiente'), 1)
 
     def test_capital_hides_stale_pending_details_when_rebalance_is_reconciled(self):
         metrics = self._metrics()
@@ -862,6 +865,60 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertIn('Capital alineado dentro de la tolerancia', text)
         self.assertNotIn('Rebalance pendiente', text)
         self.assertNotIn('Desbalance pendiente:\n26.94 USDT', text)
+
+    def test_capital_incomplete_pending_rebalance_does_not_show_long_unknown_block(self):
+        metrics = self._metrics()
+        metrics['rebalance'] = {
+            'status': 'PENDING',
+            'direction': 'FUTURES_TO_SPOT',
+            'amount_pending': 24.68,
+        }
+
+        with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics), \
+             patch.object(telegram_commands, '_bot_state', return_value={}):
+            text = telegram_commands._render_page('capital')['text']
+
+        self.assertIn('Datos de rebalance incompletos', text)
+        self.assertIn('Detalle:', text)
+        self.assertNotIn('Motivo desconocido', text)
+        self.assertNotIn('Transferible:', text)
+        self.assertNotIn('Capital Futures comprometido:', text)
+
+    def test_capital_reuses_futures_values_for_pending_rebalance(self):
+        metrics = self._metrics(short_count=2)
+        metrics.update({
+            'futures_available_balance': 35.26,
+            'futures_position_margin': 14.60,
+            'rebalance': {
+                'status': 'PENDING',
+                'direction': 'FUTURES_TO_SPOT',
+                'amount_pending': 24.68,
+                'last_check': '2026-07-13T12:00:00Z',
+                'pending_reason': 'capital_outside_tolerance',
+            },
+            'futures_reconciliation': {
+                'observed_count': 2,
+                'managed_count': 2,
+                'unmanaged_count': 0,
+                'orphan_count': 0,
+                'unprotected_count': 0,
+                'desynced_count': 0,
+                'allowed_count': 2,
+                'aligned': True,
+                'status': 'ALINEADO',
+            },
+        })
+
+        with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics), \
+             patch.object(telegram_commands, '_bot_state', return_value={}):
+            text = telegram_commands._render_page('capital')['text']
+
+        self.assertIn('Shorts: 2/2 | Reconciliacion: ALINEADA', text)
+        self.assertIn('Estado:', text)
+        self.assertIn('Pendiente', text)
+        self.assertIn('Transferible: 35.26 USDT', text)
+        self.assertIn('Capital Futures comprometido: 14.60 USDT', text)
+        self.assertNotIn('Shorts: 2/2 | Estado: ALINEADO', text)
 
     def test_system_shows_active_safety_pause(self):
         snapshot = {
@@ -953,11 +1010,12 @@ class TelegramStatsTests(unittest.TestCase):
              patch.object(telegram_commands, '_bot_state', return_value={}):
             text = telegram_commands._render_page('capital')['text']
 
-        self.assertIn('Shorts: 0/0 | Estado: ALINEADO', text)
+        self.assertIn('Shorts: 0/0 | Reconciliacion: ALINEADA', text)
         self.assertNotIn('Shorts: 0/2', text)
         self.assertNotIn('Shorts observadas:', text)
         self.assertNotIn('Permitidas ahora:', text)
         self.assertNotIn('Sin proteccion:', text)
+        self.assertNotIn('Estado: ALINEADO', text)
 
     def test_capital_compacts_managed_futures_without_position_risk(self):
         metrics = self._metrics(short_count=2)

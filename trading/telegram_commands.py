@@ -1110,6 +1110,82 @@ def _rebalance_pending_lines(rebalance, direction_label, amount):
     return lines
 
 
+def _rebalance_display_status(rebalance):
+    if not isinstance(rebalance, dict) or not rebalance:
+        return 'unknown'
+    status = str(rebalance.get('status') or '').upper()
+    if status in {'NOT_REQUIRED', 'DONE'} or rebalance.get('reconciled') or rebalance.get('recovered'):
+        return 'aligned'
+    if status == 'BLOCKED':
+        return 'blocked'
+    if status == 'PENDING':
+        has_check = bool(rebalance.get('last_check'))
+        has_reason = bool(
+            rebalance.get('pending_reason')
+            or rebalance.get('blocked_reason')
+            or rebalance.get('last_error')
+            or rebalance.get('last_message')
+            or rebalance.get('last_http_status')
+            or rebalance.get('last_binance_code') is not None
+        )
+        return 'pending' if has_check or has_reason else 'incomplete'
+    return 'unknown'
+
+
+def _rebalance_transferable_amount(rebalance, metrics):
+    available = rebalance.get('available_balance')
+    if available is not None:
+        return available
+    direction = str(rebalance.get('direction') or '').upper()
+    if direction == 'FUTURES_TO_SPOT':
+        return rebalance.get('fut_free') if rebalance.get('fut_free') is not None else metrics.get('futures_available_balance')
+    if direction == 'SPOT_TO_FUTURES':
+        return rebalance.get('spot_free') if rebalance.get('spot_free') is not None else _money_free(metrics.get('spot_real'), metrics.get('spot_used'))
+    return None
+
+
+def _rebalance_position_margin(rebalance, metrics):
+    position_margin = rebalance.get('position_margin')
+    if position_margin is None:
+        position_margin = rebalance.get('futures_position_margin')
+    if position_margin is None:
+        position_margin = metrics.get('futures_position_margin')
+    return position_margin
+
+
+def _rebalance_reason_text(rebalance):
+    lines = _rebalance_reason_lines(rebalance)
+    if not lines or lines == ['Motivo desconocido.']:
+        return 'No disponible'
+    return ' | '.join(str(line) for line in lines if line)
+
+
+def _rebalance_pending_lines_v2(rebalance, direction_label, amount, metrics):
+    status = _rebalance_display_status(rebalance)
+    if status == 'incomplete':
+        return [
+            'Estado: \u26a0\ufe0f Datos de rebalance incompletos',
+            'Detalle: hay informacion pendiente sin timestamp o motivo confiable.',
+        ]
+    state_label = '\u26d4 Bloqueado' if status == 'blocked' else '\u23f3 Pendiente'
+    lines = [
+        f'Estado: {state_label}',
+        f'Direccion: {direction_label}',
+        f'Desbalance: {_fmt_money(amount)}',
+        f'Transferible: {_fmt_money(_rebalance_transferable_amount(rebalance, metrics))}',
+        f'Capital Futures comprometido: {_fmt_money(_rebalance_position_margin(rebalance, metrics))}',
+    ]
+    if rebalance.get('buffer_applied') is not None:
+        lines.append(f'Buffer aplicado: {_fmt_money(rebalance.get("buffer_applied"))}')
+    lines.extend([
+        f'Intentos: {rebalance.get("attempts") or 0}',
+        f'Ultimo check: {_fmt_uy(rebalance.get("last_check")) if rebalance.get("last_check") else "No disponible"}',
+        f'Ultimo intento: {_fmt_uy(rebalance.get("last_attempt")) if rebalance.get("last_attempt") else "No disponible"}',
+        f'Motivo: {_rebalance_reason_text(rebalance)}',
+    ])
+    return lines
+
+
 def _rebalance_recovered_lines(rebalance):
     lines = [
         '\u2705 Recuperado autom\u00e1ticamente.',
@@ -1700,7 +1776,7 @@ class CapitalPage(MenuPage):
             else:
                 compact_line = f'Shorts: {metrics.get("short_count")}/{metrics.get("max_shorts")}'
                 if status == 'ALINEADO':
-                    compact_line += f' | Estado: {status}'
+                    compact_line += ' | Reconciliacion: ALINEADA'
                 lines.append(compact_line)
             if _futures_reconciliation_has_risk(metrics, reconciliation) and observed_display and (metrics.get('futures_available_balance') == 0 or metrics.get('futures_position_margin')):
                 lines.extend([
@@ -1717,13 +1793,11 @@ class CapitalPage(MenuPage):
             f'Futures objetivo: {_fmt_money(metrics["futures_target"])}',
         ])
         if rebalance:
-            rebalance_status = str(rebalance.get('status') or '').upper()
-            is_pending_rebalance = rebalance_status in {'PENDING', 'BLOCKED'}
-            lines.append(f'{_rebalance_label(rebalance.get("status"))} {direction_label}')
-            if is_pending_rebalance:
-                lines.extend([''])
-                lines.extend(_rebalance_pending_lines(rebalance, direction_label, pending_amount))
-            else:
+            rebalance_display_status = _rebalance_display_status(rebalance)
+            if rebalance_display_status in {'pending', 'blocked', 'incomplete'}:
+                lines.extend(_rebalance_pending_lines_v2(rebalance, direction_label, pending_amount, metrics))
+            elif rebalance_display_status == 'aligned':
+                lines.append('Estado: \u2705 Alineado')
                 if rebalance.get('reconciled'):
                     lines.extend([''])
                     lines.extend(_rebalance_reconciled_lines(rebalance))
@@ -1731,7 +1805,10 @@ class CapitalPage(MenuPage):
                     lines.extend([''])
                     lines.extend(_rebalance_recovered_lines(rebalance))
                 if not rebalance.get('reconciled') and not rebalance.get('recovered'):
-                    lines.append(f'Monto: {_fmt_money(pending_amount)}')
+                    lines.append('Sin rebalance pendiente.')
+            else:
+                lines.append(f'Estado: {_rebalance_label(rebalance.get("status"))}')
+                lines.append(f'Monto pendiente: {_fmt_money(pending_amount)}')
         else:
             lines.extend([
                 f'Estado: {_rebalance_label(None)}',
