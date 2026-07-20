@@ -1384,6 +1384,54 @@ def _bucket_line(label, bucket, include_duration=False):
     return ' | '.join(parts)
 
 
+def _version_metric(value, formatter, closed):
+    return formatter(value) if closed else 'N/A'
+
+
+def _current_version_lines(stats):
+    version = version_history.current_version()
+    bucket = (stats.get('by_bot_version') or {}).get(version) or {}
+    closed = _safe_count(bucket.get('closed'))
+    return [
+        f'Version actual: {version}',
+        f'Trades {_fmt_count(bucket.get("trades"))} | Abiertos {_fmt_count(bucket.get("open"))} | Cerrados {_fmt_count(closed)}',
+        f'Win {_fmt_count(bucket.get("win"))} | Loss {_fmt_count(bucket.get("loss"))} | WR {_version_metric(bucket.get("win_rate"), _fmt_stat_pct, closed)}',
+        f'PnL {_fmt_pnl(bucket.get("pnl_total"))} | PF {_version_metric(bucket.get("profit_factor"), _fmt_ratio, closed)} | Exp {_version_metric(bucket.get("expectancy"), _fmt_pnl, closed)}',
+    ]
+
+
+def _version_sort_key(item):
+    version, bucket = item
+    return version == version_history.current_version(), bucket.get('last_trade') or bucket.get('first_trade') or '', version
+
+
+def _render_versions_page(page_number=1, page_size=4):
+    stats, warning = _stats_payload()
+    versions = sorted((stats.get('by_bot_version') or {}).items(), key=_version_sort_key, reverse=True)
+    total_pages = max(1, (len(versions) + page_size - 1) // page_size)
+    page_number = min(max(1, int(page_number)), total_pages)
+    start = (page_number - 1) * page_size
+    lines = [f'Por version ({page_number}/{total_pages})', '']
+    lines.extend(_stats_warning_lines(warning))
+    for version, bucket in versions[start:start + page_size]:
+        closed = _safe_count(bucket.get('closed'))
+        lines.extend([
+            str(version),
+            f'T {_fmt_count(bucket.get("trades"))} | A {_fmt_count(bucket.get("open"))} | C {_fmt_count(closed)} | PnL {_fmt_pnl(bucket.get("pnl_total"))}',
+            f'WR {_version_metric(bucket.get("win_rate"), _fmt_stat_pct, closed)} | PF {_version_metric(bucket.get("profit_factor"), _fmt_ratio, closed)} | Exp {_version_metric(bucket.get("expectancy"), _fmt_pnl, closed)}',
+            f'Primera {_fmt_uy(bucket.get("first_trade"))} | Ultima {_fmt_uy(bucket.get("last_trade"))}',
+        ])
+    keyboard = []
+    nav = []
+    if page_number > 1:
+        nav.append(_button('Anterior', f'stats_versions:{page_number - 1}'))
+    if page_number < total_pages:
+        nav.append(_button('Siguiente', f'stats_versions:{page_number + 1}'))
+    if nav:
+        keyboard.append(nav)
+    keyboard.extend([[_button('Estadisticas', 'stats')], [_button('Actualizar', f'r:stats_versions:{page_number}')]])
+    return {'page_id': 'stats_versions', 'text': '\n'.join(lines).rstrip(), 'reply_markup': {'inline_keyboard': keyboard}}
+
 def _pnl_for_period(stats, key):
     today = datetime.now(UY_TZ)
     if key == 'day':
@@ -2139,6 +2187,8 @@ class StatsMenuPage(MenuPage):
         lines.extend(_capital_accounting_lines(metrics, compact=True))
         lines.extend([
             '',
+            *_current_version_lines(stats),
+            '',
             'Seleccione una vista.',
         ])
         return '\n'.join(lines)
@@ -2148,7 +2198,7 @@ class StatsMenuPage(MenuPage):
             [_button('\U0001F4C8 General', 'stats_general'), _button('\U0001FA99 Simbolos', 'stats_symbols')],
             [_button('\U0001F535 Long/Short', 'stats_directions'), _button('\U0001F4C8 Regimen', 'stats_regimes')],
             [_button('\u23F0 Temporal', 'stats_time'), _button('\U0001F6AA Salidas', 'stats_exits')],
-            [_button('\U0001F4F7 Historial', 'stats_history')],
+            [_button('Historial', 'stats_history'), _button('Versiones', 'stats_versions:1')],
             [_button('\u25C0 Menu', 'home'), _button('\U0001F504 Actualizar', 'r:stats')],
         ]
 
@@ -2477,6 +2527,12 @@ def _dispatch_callback(data):
             'text': _trade_inspector_text(mode=mode),
             'reply_markup': {'inline_keyboard': MENU_PAGES['inspect'].keyboard()},
         }
+    if data.startswith('stats_versions:'):
+        try:
+            page_number = int(data.split(':', 1)[1])
+        except (TypeError, ValueError):
+            page_number = 1
+        return _render_versions_page(page_number)
     return _render_page(data if data in MENU_PAGES else 'home')
 
 

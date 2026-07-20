@@ -1271,5 +1271,59 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertLessEqual(len([line for line in text.splitlines() if line.strip()]), 10)
 
 
+    def test_stats_shows_current_version_metrics(self):
+        stats = sample_stats()
+        current = telegram_commands.version_history.current_version()
+        stats['by_bot_version'] = {
+            current: {
+                'trades': 3, 'open': 1, 'closed': 2, 'win': 1, 'loss': 1,
+                'win_rate': 50.0, 'pnl_total': 5.0, 'profit_factor': 2.0, 'expectancy': 2.5,
+            }
+        }
+        with patch.object(telegram_commands, '_stats_payload', return_value=(stats, None)), \
+             patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics()), \
+             patch.object(telegram_commands, '_bot_state', return_value={}):
+            text = telegram_commands._render_page('stats')['text']
+
+        self.assertIn(f'Version actual: {current}', text)
+        self.assertIn('Trades 3 | Abiertos 1 | Cerrados 2', text)
+        self.assertIn('Win 1 | Loss 1 | WR 50.0%', text)
+        self.assertIn('PnL +5.00 USDT | PF 2.00 | Exp +2.50 USDT', text)
+        buttons = [button['callback_data'] for row in telegram_commands.MENU_PAGES['stats'].keyboard() for button in row]
+        self.assertIn('stats_versions:1', buttons)
+
+    def test_stats_current_version_without_trades_is_zero_and_na(self):
+        stats = sample_stats()
+        current = telegram_commands.version_history.current_version()
+        stats['by_bot_version'] = {current: {'trades': 0, 'open': 0, 'closed': 0, 'win': 0, 'loss': 0, 'pnl_total': 0}}
+        with patch.object(telegram_commands, '_stats_payload', return_value=(stats, None)), \
+             patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics()), \
+             patch.object(telegram_commands, '_bot_state', return_value={}):
+            text = telegram_commands._render_page('stats')['text']
+
+        self.assertIn('Trades 0 | Abiertos 0 | Cerrados 0', text)
+        self.assertIn('WR N/A', text)
+        self.assertIn('PF N/A | Exp N/A', text)
+
+    def test_version_history_is_paginated_and_compact(self):
+        stats = sample_stats()
+        stats['by_bot_version'] = {}
+        for index in range(9):
+            stats['by_bot_version'][f'v{index}'] = {
+                'trades': 1, 'open': 0, 'closed': 1, 'win_rate': 100,
+                'pnl_total': 1, 'profit_factor': None, 'expectancy': 1,
+                'first_trade': f'2026-01-{index + 1:02d}T00:00:00Z',
+                'last_trade': f'2026-01-{index + 1:02d}T00:00:00Z',
+            }
+        with patch.object(telegram_commands, '_stats_payload', return_value=(stats, None)):
+            response = telegram_commands._dispatch_callback('stats_versions:1')
+
+        self.assertIn('Por version (1/3)', response['text'])
+        self.assertLessEqual(response['text'].count('\n'), 18)
+        buttons = [button['callback_data'] for row in response['reply_markup']['inline_keyboard'] for button in row]
+        self.assertIn('stats_versions:2', buttons)
+        self.assertLess(len(response['text']), 1500)
+
+
 if __name__ == '__main__':
     unittest.main()

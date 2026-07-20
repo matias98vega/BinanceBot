@@ -9,14 +9,16 @@ from datetime import datetime, timezone
 import capital_accounting
 import feature_store
 import history
+import version_history
 
 
 DEFAULT_STATS_FILE = os.path.join(history.DEFAULT_HISTORY_DIR, 'stats.json')
-STATS_SCHEMA_VERSION = 2
+STATS_SCHEMA_VERSION = 3
 
 EXIT_REASONS = ('TP', 'SL', 'TRAILING', 'PARTIAL', 'STALE', 'RECOVERY', 'EMERGENCY', 'MANUAL', 'UNKNOWN')
 DIRECTIONS = ('LONG', 'SHORT', 'UNKNOWN')
 REGIMES = ('bull', 'bear', 'sideways', 'neutral', 'unknown')
+LEGACY_BOT_VERSION = 'legacy/unknown'
 
 
 def _safe_accounting(default, func, *args, **kwargs):
@@ -96,6 +98,7 @@ def _empty_stats():
         'by_direction': {key: _empty_bucket() for key in DIRECTIONS},
         'by_regime': {key: _empty_bucket() for key in REGIMES},
         'by_exit_reason': {key: _empty_bucket() for key in EXIT_REASONS},
+        'by_bot_version': {version_history.current_version(): _empty_bucket()},
         'time': {
             'hour': {},
             'day': {},
@@ -328,8 +331,41 @@ def _merge_trade_events(records):
         if not trade_id:
             continue
         current = trades.setdefault(trade_id, {})
-        current.update({k: v for k, v in record.items() if v is not None})
+        event_type = str(record.get('event_type') or '').upper()
+        status = str(record.get('status') or '').upper()
+        is_open_event = event_type == 'TRADE_OPEN' or status == 'OPEN'
+        opening_version_known = current.get('_opening_bot_version_known') is True
+        opening_version = current.get('bot_version')
+        current.update({k: v for k, v in record.items() if v is not None and k != 'bot_version'})
+        if is_open_event and not opening_version_known:
+            current['bot_version'] = record.get('bot_version') or LEGACY_BOT_VERSION
+            current['_opening_bot_version_known'] = True
+        elif opening_version_known:
+            current['bot_version'] = opening_version
+        elif event_type != 'TRADE_CLOSE' and record.get('bot_version'):
+            current['bot_version'] = record.get('bot_version')
+            current['_opening_bot_version_known'] = True
+    for trade in trades.values():
+        trade['bot_version'] = trade.get('bot_version') or LEGACY_BOT_VERSION
+        trade.pop('_opening_bot_version_known', None)
     return trades
+
+
+def _bot_version(trade):
+    return str(trade.get('bot_version') or '').strip() or LEGACY_BOT_VERSION
+
+
+def _update_version_bounds(bucket, trade):
+    operation_time = trade.get('opened_at') or trade.get('entry_time') or trade.get('closed_at') or trade.get('exit_time')
+    if not operation_time:
+        return
+    first = bucket.get('first_trade')
+    last = bucket.get('last_trade')
+    parsed = _parse_dt(operation_time)
+    if not first or (parsed and _parse_dt(first) and parsed < _parse_dt(first)):
+        bucket['first_trade'] = operation_time
+    if not last or (parsed and _parse_dt(last) and parsed > _parse_dt(last)):
+        bucket['last_trade'] = operation_time
 
 
 def _add_open(bucket):
@@ -431,6 +467,8 @@ def _add_trade(stats, trade, mark_processed=True):
     side = _normalise_direction(trade.get('side'))
     regime = _trade_regime_value(trade)
     trade_id = trade.get('trade_id')
+    version_bucket = stats.setdefault('by_bot_version', {}).setdefault(_bot_version(trade), _empty_bucket())
+    _update_version_bounds(version_bucket, trade)
 
     if trade_id:
         current = stats.setdefault('trade_index', {}).setdefault(trade_id, {})
@@ -452,6 +490,7 @@ def _add_trade(stats, trade, mark_processed=True):
         _add_closed(stats['by_direction'].setdefault(side, _empty_bucket()), trade)
         _add_closed(stats['by_regime'].setdefault(regime, _empty_bucket()), trade)
         _add_closed(stats['by_exit_reason'].setdefault(reason, _empty_bucket()), trade)
+        _add_closed(version_bucket, trade)
         _add_pnl_to_time(stats, trade)
         _update_best_worst(stats, trade)
         if trade_id:
@@ -466,6 +505,7 @@ def _add_trade(stats, trade, mark_processed=True):
         _add_open(stats['by_symbol'].setdefault(symbol, _empty_bucket()))
         _add_open(stats['by_direction'].setdefault(side, _empty_bucket()))
         _add_open(stats['by_regime'].setdefault(regime, _empty_bucket()))
+        _add_open(version_bucket)
 
 
 def _add_decision(stats, record):
@@ -483,7 +523,8 @@ def _finalise_stats(stats):
     stats['general']['open_trades'] = stats['general']['open']
     stats['general']['closed_trades'] = stats['general']['closed']
     _finalise_bucket(stats['general'])
-    for collection in ('by_symbol', 'by_direction', 'by_regime', 'by_exit_reason'):
+    stats.setdefault('by_bot_version', {}).setdefault(version_history.current_version(), _empty_bucket())
+    for collection in ('by_symbol', 'by_direction', 'by_regime', 'by_exit_reason', 'by_bot_version'):
         for bucket in stats[collection].values():
             _finalise_bucket(bucket)
     for time_group in stats['time'].values():
@@ -700,7 +741,7 @@ def _prepare_incremental_buckets(stats):
         bucket.setdefault('gross_loss', 0.0)
 
     prep(stats['general'])
-    for collection in ('by_symbol', 'by_direction', 'by_regime', 'by_exit_reason'):
+    for collection in ('by_symbol', 'by_direction', 'by_regime', 'by_exit_reason', 'by_bot_version'):
         for bucket in stats.get(collection, {}).values():
             prep(bucket)
     for time_group in stats.get('time', {}).values():
@@ -730,6 +771,7 @@ def _convert_open_to_closed(stats, trade):
         stats.get('by_symbol', {}).get(symbol),
         stats.get('by_direction', {}).get(side),
         stats.get('by_regime', {}).get(regime),
+        stats.get('by_bot_version', {}).get(_bot_version(trade)),
     ):
         _convert_bucket_open_to_closed(bucket)
 

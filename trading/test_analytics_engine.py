@@ -487,5 +487,52 @@ class AnalyticsEngineTests(unittest.TestCase):
             self.assertEqual(after_general[key], baseline_general[key])
 
 
+    def test_bot_version_metrics_use_opening_version_and_keep_general_stats(self):
+        rows = [
+            {'event_type': 'TRADE_OPEN', 'trade_id': 'v1-win', 'status': 'OPEN', 'opened_at': '2026-01-01T00:00:00Z', 'bot_version': 'v1'},
+            {'event_type': 'TRADE_CLOSE', 'trade_id': 'v1-win', 'status': 'CLOSED', 'closed_at': '2026-01-02T00:00:00Z', 'pnl_usdt': 10, 'bot_version': 'v2'},
+            {'event_type': 'TRADE_OPEN', 'trade_id': 'v1-loss', 'status': 'OPEN', 'opened_at': '2026-01-03T00:00:00Z', 'bot_version': 'v1'},
+            {'event_type': 'TRADE_CLOSE', 'trade_id': 'v1-loss', 'status': 'CLOSED', 'closed_at': '2026-01-04T00:00:00Z', 'pnl_usdt': -5, 'bot_version': 'v2'},
+            {'event_type': 'TRADE_OPEN', 'trade_id': 'v2-open', 'status': 'OPEN', 'opened_at': '2026-01-05T00:00:00Z', 'bot_version': 'v2'},
+        ]
+        for row in rows:
+            self.store._append(self.trades, row)
+
+        stats = self._rebuild()
+        v1 = stats['by_bot_version']['v1']
+        v2 = stats['by_bot_version']['v2']
+
+        self.assertEqual((v1['trades'], v1['open'], v1['closed']), (2, 0, 2))
+        self.assertEqual((v1['win'], v1['loss'], v1['win_rate']), (1, 1, 50.0))
+        self.assertEqual((v1['pnl_total'], v1['profit_factor'], v1['expectancy']), (5.0, 2.0, 2.5))
+        self.assertEqual((v1['first_trade'], v1['last_trade']), ('2026-01-01T00:00:00Z', '2026-01-03T00:00:00Z'))
+        self.assertEqual((v2['trades'], v2['open'], v2['closed']), (1, 1, 0))
+        self.assertEqual((stats['general']['trades'], stats['general']['closed'], stats['general']['pnl_total']), (3, 2, 5.0))
+
+    def test_missing_opening_bot_version_is_legacy_unknown(self):
+        self.store._append(self.trades, {
+            'event_type': 'TRADE_OPEN', 'trade_id': 'legacy', 'status': 'OPEN',
+            'opened_at': '2026-01-01T00:00:00Z',
+        })
+        self.store._append(self.trades, {
+            'event_type': 'TRADE_CLOSE', 'trade_id': 'legacy', 'status': 'CLOSED',
+            'closed_at': '2026-01-02T00:00:00Z', 'pnl_usdt': 1, 'bot_version': 'v2',
+        })
+
+        stats = self._rebuild()
+
+        self.assertEqual(stats['by_bot_version']['legacy/unknown']['closed'], 1)
+        self.assertNotIn('v2', stats['by_bot_version'])
+
+    def test_current_bot_version_is_present_without_trades(self):
+        stats = self._rebuild()
+        current = analytics_engine.version_history.current_version()
+
+        self.assertIn(current, stats['by_bot_version'])
+        self.assertEqual(stats['by_bot_version'][current]['trades'], 0)
+        self.assertEqual(stats['by_bot_version'][current]['open'], 0)
+        self.assertEqual(stats['by_bot_version'][current]['closed'], 0)
+
+
 if __name__ == '__main__':
     unittest.main()
