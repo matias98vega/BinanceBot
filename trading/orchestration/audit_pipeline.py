@@ -5,11 +5,136 @@ import logging
 import time
 
 import config
+import decision_timeline
 import residuals
 import utils
 
 
+SPOT_RECONCILIATION_SOURCE = 'automatic_spot_position_reconciliation'
+
+
+def _spot_number(value):
+    try:
+        value = float(value)
+        return value if value == value else None
+    except (TypeError, ValueError):
+        return None
+
+
+def evaluate_spot_position_reconciliation(position, account, trades, open_orders, filters, price):
+    """Classify a managed Spot position from read-only exchange evidence."""
+    symbol = str(position.get('symbol') or '').upper()
+    asset = symbol[:-4] if symbol.endswith('USDT') else symbol
+    managed = _spot_number(position.get('quantity'))
+    entry_time = _spot_number(position.get('entry_time'))
+    step = _spot_number((filters or {}).get('step_size'))
+    min_qty = _spot_number((filters or {}).get('min_qty'))
+    min_notional = _spot_number((filters or {}).get('min_notional'))
+    mark = _spot_number(price)
+    if not symbol or managed is None or entry_time is None or step is None or min_qty is None or min_notional is None or mark is None:
+        return {'classification': 'INSUFFICIENT_EVIDENCE', 'reconcile': False, 'reason': 'missing_position_or_filter_data'}
+    balances = account.get('balances', []) if isinstance(account, dict) else []
+    balance = next((row for row in balances if str(row.get('asset') or '').upper() == asset), {})
+    free = _spot_number(balance.get('free'))
+    locked = _spot_number(balance.get('locked'))
+    if free is None or locked is None or not isinstance(trades, list) or not isinstance(open_orders, list):
+        return {'classification': 'INSUFFICIENT_EVIDENCE', 'reconcile': False, 'reason': 'missing_exchange_evidence'}
+    relevant = [row for row in trades if _spot_number(row.get('time')) is not None and float(row['time']) >= entry_time * 1000 - 1000]
+    bought = sum(float(row.get('qty') or 0) for row in relevant if row.get('isBuyer') is True)
+    sold = sum(float(row.get('qty') or 0) for row in relevant if row.get('isBuyer') is False)
+    fees_asset = sum(float(row.get('commission') or 0) for row in relevant if str(row.get('commissionAsset') or '').upper() == asset)
+    expected = bought - sold - fees_asset
+    observed = free + locked
+    residual_notional = observed * mark
+    tolerance = max(step, 1e-12)
+    evidence = {
+        'total_bought': round(bought, 8), 'total_sold': round(sold, 8),
+        'quantity_paid_as_fee': round(fees_asset, 8),
+        'quantity_expected': round(expected, 8), 'quantity_observed': round(observed, 8),
+        'free_balance': free, 'locked_balance': locked,
+        'difference': round(observed - managed, 8), 'step_size': step,
+        'min_qty': min_qty, 'min_notional': min_notional,
+        'residual_notional': round(residual_notional, 8),
+        'open_orders_count': len(open_orders),
+        'trade_ids': [row.get('id') for row in relevant],
+        'order_ids': [row.get('orderId') for row in relevant],
+    }
+    if open_orders:
+        classification, reconcile, reason = 'POSITION_STILL_OPEN', False, 'open_orders_exist'
+    elif abs(observed - managed) <= tolerance and sold <= tolerance:
+        classification, reconcile, reason = 'POSITION_STILL_OPEN', False, 'managed_and_exchange_aligned'
+    elif observed >= min_qty and residual_notional >= min_notional:
+        classification, reconcile, reason = 'PARTIALLY_CLOSED', False, 'operable_residual_remains'
+    elif sold + tolerance >= managed and observed < min_qty and residual_notional < min_notional:
+        classification, reconcile, reason = 'CLOSED_ON_EXCHANGE_OPEN_IN_STATE', True, 'exchange_sell_fill_and_non_operable_residual'
+    elif observed <= tolerance and sold > tolerance:
+        classification, reconcile, reason = 'CLOSED_ON_EXCHANGE_OPEN_IN_STATE', True, 'exchange_closed_state_open'
+    elif abs(expected - observed) <= tolerance and abs(observed - managed) > tolerance:
+        classification, reconcile, reason = 'STATE_QUANTITY_STALE', True, 'non_operable_exchange_quantity_differs_from_state'
+    else:
+        classification, reconcile, reason = 'INSUFFICIENT_EVIDENCE', False, 'exchange_history_does_not_explain_difference'
+    return {'classification': classification, 'reconcile': reconcile, 'reason': reason, 'evidence': evidence}
+
+
+def reconcile_stale_spot_positions(state, binance, out_fn=lambda _message: None,
+                                   save_state_fn=utils.save_state, timeline_path=None):
+    """Remove only unequivocally closed/stale managed Spot entries; never trade."""
+    results = []
+    for position in list(state.get('positions', [])):
+        if str(position.get('direction') or '').lower() != 'long':
+            continue
+        symbol = str(position.get('symbol') or '').upper()
+        try:
+            account = binance.get_spot_account()
+            trades = binance.my_trades({'symbol': symbol, 'limit': 1000})
+            if hasattr(binance, 'spot_open_orders'):
+                orders = binance.spot_open_orders({'symbol': symbol})
+            else:
+                orders = binance.spot_signed('GET', '/api/v3/openOrders', {'symbol': symbol})
+            filters = binance.get_spot_filters(symbol)
+            price = binance.get_spot_price(symbol)
+            result = evaluate_spot_position_reconciliation(position, account, trades, orders, filters, price)
+        except Exception as exc:
+            result = {'classification': 'BINANCE_OBSERVATION_ERROR', 'reconcile': False, 'reason': str(exc)}
+        result.update({'symbol': symbol, 'trade_id': position.get('id') or position.get('trade_id')})
+        results.append(result)
+        if not result.get('reconcile'):
+            continue
+        trade_id = str(position.get('id') or position.get('trade_id') or '')
+        current = state.get('positions', [])
+        if not any(str(item.get('id') or item.get('trade_id') or '') == trade_id for item in current):
+            continue
+        state['positions'] = [item for item in current if str(item.get('id') or item.get('trade_id') or '') != trade_id]
+        state.setdefault('spot_position_reconciliations', {})[trade_id] = {
+            'source': SPOT_RECONCILIATION_SOURCE,
+            'reason': result['reason'],
+            'classification': result['classification'],
+            'timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+        }
+        save_state_fn(state)
+        ev = result.get('evidence') or {}
+        details = {
+            'source': SPOT_RECONCILIATION_SOURCE, 'reason': result['reason'],
+            'classification': result['classification'],
+            'quantity_managed_before': position.get('quantity'),
+            'quantity_expected': ev.get('quantity_expected'),
+            'quantity_observed': ev.get('quantity_observed'),
+            'residual_quantity': ev.get('quantity_observed'),
+            'residual_notional': ev.get('residual_notional'),
+            'evidence': ev,
+        }
+        kwargs = {'path': timeline_path} if timeline_path else {}
+        decision_timeline.record_event(
+            'spot_position_state_reconciled',
+            f'{symbol} managed position reconciled from read-only exchange evidence',
+            level='WARNING', category='CAPITAL', symbol=symbol, direction='LONG',
+            details=details, related_trade_id=trade_id, **kwargs)
+        out_fn(f'WARNING: {symbol} stale managed position reconciled ({result["classification"]})')
+    return results
+
+
 def audit_orphans(state, binance, out_fn, safe_log_open_fn):
+    reconcile_stale_spot_positions(state, binance, out_fn=out_fn)
     """
     Detecta activos spot con valor > $5 que no tienen posicion registrada en el state.
     Si encuentra uno: intenta colocar un OCO de proteccion y lo agrega al state.

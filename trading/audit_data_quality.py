@@ -526,6 +526,9 @@ class ActiveTradeContext:
         self.symbol_sides = set()
         self.managed_symbols = set()
         self.aligned = False
+        self.reconciled_trade_ids = set()
+        if isinstance(state, dict) and isinstance(state.get('spot_position_reconciliations'), dict):
+            self.reconciled_trade_ids.update(str(item) for item in state['spot_position_reconciliations'])
         self._collect(state)
         self._collect(bot_state)
         self._collect_reconciliation(reconciliation)
@@ -566,6 +569,10 @@ class ActiveTradeContext:
                             self.managed_symbols.add(str(symbol).upper())
                             if side:
                                 self.symbol_sides.add((str(symbol).upper(), str(side).upper()))
+
+    def reconciled_for_open_trade(self, record):
+        trade_id = str(record.get('trade_id') or '')
+        return trade_id in self.reconciled_trade_ids or _base_trade_id(trade_id) in self.reconciled_trade_ids
 
     def evidence_for_open_trade(self, record):
         trade_id = str(record.get('trade_id') or '')
@@ -850,6 +857,8 @@ def _audit_trade_records(path, records, report, active_context=None):
         evidence = active_context.evidence_for_open_trade(record) if active_context else None
         if evidence:
             report.info(path, f'active_open_trade trade_id={trade_id} evidence={evidence}')
+        elif active_context and active_context.reconciled_for_open_trade(record):
+            report.info(path, f'reconciled_open_history_preserved trade_id={trade_id} source=automatic_spot_position_reconciliation')
         elif str(trade_id).lower() == 't1':
             report.warning(path, f'suspicious_test_record trade abierto sin cierre trade_id={trade_id}')
         else:
