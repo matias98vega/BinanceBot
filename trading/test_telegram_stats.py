@@ -1351,5 +1351,32 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertIn('version_diag:1', buttons)
 
 
+    def test_short_diagnostic_pages_are_compact_and_read_only(self):
+        bucket = {'trades': 4, 'open': 0, 'closed': 4, 'win': 1, 'loss': 3, 'win_rate': 25, 'pnl_total': -1, 'profit_factor': 0.5, 'expectancy': -0.25}
+        comparison = {'valid': 4, 'mean_difference': 1, 'cohen_d': 0.5}
+        report = {
+            'version': 'v-test',
+            'universe': {'total': 4, 'open': 0, 'closed': 4, 'winners': 1, 'losers': 3},
+            'summary': bucket,
+            'regimes': {'BULL': bucket, 'BEAR': bucket, 'NEUTRAL': bucket, 'UNKNOWN': {**bucket, 'trades': 0}},
+            'exit_reasons': {key: bucket for key in ('TP', 'SL', 'PREVENTIVE', 'MANUAL', 'RECONCILIATION', 'OTHER_UNKNOWN')},
+            'winner_loser_comparison': {name: comparison for name in ('rsi', 'volume_ratio', 'btc_change_4h')},
+            'data_quality': {'opening_snapshot_found': 4, 'complete': 3, 'partial': 1, 'recovered': 0, 'missingness': {'leverage': {'missing_percent': 100}}},
+            'symbols': {'worst': [{'symbol': 'BAD', **bucket}], 'best': [{'symbol': 'GOOD', **bucket}], 'concentration': {'top1_loss_percent': 40, 'top3_loss_percent': 80, 'top5_loss_percent': 100}},
+            'candidate_rules': [{'name': 'offline', 'retained': 3, 'discarded': 1, 'coverage_percent': 75, 'original': bucket, 'filtered': {**bucket, 'pnl_total': 1, 'profit_factor': 1.2}}],
+            'flags': ['LOW_SAMPLE'],
+        }
+        with patch.object(telegram_commands, '_short_report', return_value=report):
+            pages = [telegram_commands._dispatch_callback(f'short_diag:{page}') for page in range(1, 5)]
+
+        self.assertIn('Regimen', pages[0]['text'])
+        self.assertIn('Ganadores vs perdedores', pages[1]['text'])
+        self.assertIn('Concentracion de perdidas', pages[2]['text'])
+        self.assertIn('Reglas candidatas offline', pages[3]['text'])
+        self.assertTrue(all(len(page['text']) < 3500 for page in pages))
+        buttons = [button['callback_data'] for row in telegram_commands.MENU_PAGES['stats'].keyboard() for button in row]
+        self.assertIn('short_diag:1', buttons)
+
+
 if __name__ == '__main__':
     unittest.main()

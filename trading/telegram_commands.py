@@ -19,6 +19,7 @@ import decision_timeline
 import futures_reconciliation
 import futures_recovery
 import insights_engine
+import short_performance
 import trade_inspector
 import version_history
 
@@ -1537,6 +1538,88 @@ def _render_version_diagnostic_page(page_number=1):
     return {'page_id': 'version_diag', 'text': '\n'.join(lines), 'reply_markup': {'inline_keyboard': keyboard}}
 
 
+
+def _short_report():
+    return short_performance.build_report(version_history.current_version(), min_sample=5, top=10)
+
+
+def _short_bucket_line(label, bucket):
+    return f'{label}: C {_fmt_count(bucket.get("closed"))} | WR {_fmt_stat_pct(bucket.get("win_rate"))} | PnL {_fmt_pnl(bucket.get("pnl_total"))} | PF {_fmt_ratio(bucket.get("profit_factor"))}'
+
+
+def _render_short_diagnostic_page(page_number=1):
+    report = _short_report()
+    page_number = min(max(int(page_number), 1), 4)
+    universe, summary = report['universe'], report['summary']
+    lines = [f'Diagnostico SHORT ({page_number}/4)', str(report['version']), 'Exploratorio; no cambia trading.', '']
+    if page_number == 1:
+        lines.extend([
+            f'Total {_fmt_count(universe["total"])} | A {_fmt_count(universe["open"])} | C {_fmt_count(universe["closed"])}',
+            f'Win {_fmt_count(universe["winners"])} | Loss {_fmt_count(universe["losers"])} | WR {_fmt_stat_pct(summary.get("win_rate"))}',
+            f'PnL {_fmt_pnl(summary.get("pnl_total"))} | PF {_fmt_ratio(summary.get("profit_factor"))} | Exp {_fmt_pnl(summary.get("expectancy"))}',
+            '', 'Regimen',
+        ])
+        for name in ('BULL', 'BEAR', 'NEUTRAL', 'UNKNOWN'):
+            bucket = report['regimes'][name]
+            if bucket.get('trades'):
+                lines.append(_short_bucket_line(name.title(), bucket))
+        lines.extend(['', 'Cierres'])
+        for name in ('TP', 'SL', 'PREVENTIVE', 'MANUAL', 'RECONCILIATION', 'OTHER_UNKNOWN'):
+            bucket = report['exit_reasons'][name]
+            if bucket.get('closed'):
+                lines.append(f'{name}: C {bucket["closed"]} | PnL {_fmt_pnl(bucket.get("pnl_total"))}')
+    elif page_number == 2:
+        comparisons = [
+            (name, data) for name, data in report['winner_loser_comparison'].items()
+            if name not in ('pnl_usdt', 'pnl_pct')
+        ]
+        comparisons.sort(key=lambda item: abs(item[1].get('cohen_d') or 0), reverse=True)
+        lines.append('Ganadores vs perdedores')
+        for name, data in comparisons[:8]:
+            lines.append(f'{name}: n {data["valid"]} | diff {_fmt_number(data.get("mean_difference"), 3)} | d {_fmt_number(data.get("cohen_d"), 2)}')
+        quality = report['data_quality']
+        lines.extend([
+            '', 'Calidad de datos',
+            f'Snapshots: {quality["opening_snapshot_found"]}/{universe["total"]}',
+            f'Completos {quality["complete"]} | Parciales {quality["partial"]} | Recovered {quality["recovered"]}',
+            'Mayor missingness:',
+        ])
+        missing = sorted(quality['missingness'].items(), key=lambda item: item[1].get('missing_percent') or 0, reverse=True)
+        for name, data in missing[:5]:
+            lines.append(f'{name}: {_fmt_stat_pct(data.get("missing_percent"))}')
+    elif page_number == 3:
+        lines.append('Peores simbolos')
+        for item in report['symbols']['worst'][:5]:
+            lines.append(_short_bucket_line(item['symbol'], item))
+        lines.extend(['', 'Mejores simbolos'])
+        for item in report['symbols']['best'][:5]:
+            lines.append(_short_bucket_line(item['symbol'], item))
+        concentration = report['symbols']['concentration']
+        lines.extend([
+            '', 'Concentracion de perdidas',
+            f'Top 1 {_fmt_stat_pct(concentration.get("top1_loss_percent"))}',
+            f'Top 3 {_fmt_stat_pct(concentration.get("top3_loss_percent"))}',
+            f'Top 5 {_fmt_stat_pct(concentration.get("top5_loss_percent"))}',
+        ])
+    else:
+        lines.append('Reglas candidatas offline')
+        for rule in report['candidate_rules']:
+            lines.extend([
+                rule['name'],
+                f'Ret {rule["retained"]} | Desc {rule["discarded"]} | Cob {_fmt_stat_pct(rule.get("coverage_percent"))}',
+                f'PnL {_fmt_pnl(rule["original"].get("pnl_total"))} -> {_fmt_pnl(rule["filtered"].get("pnl_total"))} | PF {_fmt_ratio(rule["filtered"].get("profit_factor"))}',
+            ])
+        lines.extend(['', f'Flags: {", ".join(report["flags"])}', 'No se selecciona ni aplica ninguna regla.'])
+    nav = []
+    if page_number > 1:
+        nav.append(_button('Anterior', f'short_diag:{page_number - 1}'))
+    if page_number < 4:
+        nav.append(_button('Siguiente', f'short_diag:{page_number + 1}'))
+    keyboard = [nav] if nav else []
+    keyboard.extend([[_button('Diagnostico version', 'version_diag:1')], [_button('Actualizar', f'r:short_diag:{page_number}')]])
+    return {'page_id': 'short_diag', 'text': '\n'.join(lines), 'reply_markup': {'inline_keyboard': keyboard}}
+
+
 def _pnl_for_period(stats, key):
     today = datetime.now(UY_TZ)
     if key == 'day':
@@ -2305,6 +2388,7 @@ class StatsMenuPage(MenuPage):
             [_button('\u23F0 Temporal', 'stats_time'), _button('\U0001F6AA Salidas', 'stats_exits')],
             [_button('Historial', 'stats_history'), _button('Versiones', 'stats_versions:1')],
             [_button('Diagnostico version', 'version_diag:1')],
+            [_button('Diagnostico SHORT', 'short_diag:1')],
             [_button('\u25C0 Menu', 'home'), _button('\U0001F504 Actualizar', 'r:stats')],
         ]
 
@@ -2645,6 +2729,12 @@ def _dispatch_callback(data):
         except (TypeError, ValueError):
             page_number = 1
         return _render_version_diagnostic_page(page_number)
+    if data.startswith('short_diag:'):
+        try:
+            page_number = int(data.split(':', 1)[1])
+        except (TypeError, ValueError):
+            page_number = 1
+        return _render_short_diagnostic_page(page_number)
     return _render_page(data if data in MENU_PAGES else 'home')
 
 
