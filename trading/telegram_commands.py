@@ -1432,6 +1432,111 @@ def _render_versions_page(page_number=1, page_size=4):
     keyboard.extend([[_button('Estadisticas', 'stats')], [_button('Actualizar', f'r:stats_versions:{page_number}')]])
     return {'page_id': 'stats_versions', 'text': '\n'.join(lines).rstrip(), 'reply_markup': {'inline_keyboard': keyboard}}
 
+
+def _diag_metric(bucket, key, formatter):
+    return formatter(bucket.get(key)) if bucket.get('closed', 0) else 'N/A'
+
+
+def _diag_bucket_line(label, bucket):
+    return (
+        f'{label}: T {_fmt_count(bucket.get("trades"))} | C {_fmt_count(bucket.get("closed"))} | '
+        f'WR {_diag_metric(bucket, "win_rate", _fmt_stat_pct)} | PnL {_fmt_pnl(bucket.get("pnl_total"))} | '
+        f'PF {_diag_metric(bucket, "profit_factor", _fmt_ratio)} | Exp {_diag_metric(bucket, "expectancy", _fmt_pnl)}'
+    )
+
+
+def _fmt_optional(value, formatter):
+    return formatter(value) if value is not None else 'N/A'
+
+
+def _render_version_diagnostic_page(page_number=1):
+    diagnostic = analytics_engine.get_version_diagnostic()
+    page_number = min(max(int(page_number), 1), 4)
+    summary = diagnostic.get('summary') or {}
+    lines = [f'Diagnostico version ({page_number}/4)', str(diagnostic.get('version')), '']
+    if page_number == 1:
+        lines.extend([
+            f'Trades {_fmt_count(summary.get("trades"))} | A {_fmt_count(summary.get("open"))} | C {_fmt_count(summary.get("closed"))}',
+            f'Win {_fmt_count(summary.get("win"))} | Loss {_fmt_count(summary.get("loss"))} | WR {_diag_metric(summary, "win_rate", _fmt_stat_pct)}',
+            f'PnL {_fmt_pnl(summary.get("pnl_total"))} | PF {_diag_metric(summary, "profit_factor", _fmt_ratio)} | Exp {_diag_metric(summary, "expectancy", _fmt_pnl)}',
+            f'Primera {_fmt_uy(summary.get("first_trade"))}',
+            f'Ultima {_fmt_uy(summary.get("last_trade"))}',
+            '',
+            'Long vs Short',
+        ])
+        for key in ('LONG', 'SHORT', 'UNKNOWN'):
+            bucket = (diagnostic.get('by_side') or {}).get(key)
+            if bucket:
+                lines.append(_diag_bucket_line(key, bucket))
+        lines.append('')
+        lines.append('Regimen')
+        for key in ('BULL', 'BEAR', 'NEUTRAL', 'UNKNOWN'):
+            bucket = (diagnostic.get('by_regime') or {}).get(key)
+            if bucket:
+                lines.append(_diag_bucket_line(key.title(), bucket))
+    elif page_number == 2:
+        lines.append('Motivos de cierre')
+        labels = {
+            'TP': 'TP', 'SL': 'SL', 'PREVENTIVE': 'Preventivo', 'MANUAL': 'Manual',
+            'RECONCILIATION': 'Reconciliacion', 'OTHER_UNKNOWN': 'Otros/Unknown',
+        }
+        for key, label in labels.items():
+            item = (diagnostic.get('by_exit_reason') or {}).get(key) or {}
+            lines.append(
+                f'{label}: C {_fmt_count(item.get("closed"))} | PnL {_fmt_pnl(item.get("pnl_total"))} | '
+                f'Prom {_fmt_optional(item.get("pnl_average"), _fmt_pnl)} | {_fmt_optional(item.get("closed_percent"), _fmt_stat_pct)}'
+            )
+        concentration = diagnostic.get('concentration') or {}
+        lines.extend([
+            '',
+            'Concentracion de perdidas',
+            f'PnL negativo: {_fmt_pnl(-(concentration.get("total_negative_pnl") or 0))}',
+            f'Top 3 simbolos: {_fmt_optional(concentration.get("top3_symbol_loss_percent"), _fmt_stat_pct)}',
+            f'Top 5 simbolos: {_fmt_optional(concentration.get("top5_symbol_loss_percent"), _fmt_stat_pct)}',
+            f'Lado: {_fmt(concentration.get("largest_loss_side"))} {_fmt_optional(concentration.get("largest_loss_side_percent"), _fmt_stat_pct)}',
+            f'Regimen: {_fmt(concentration.get("largest_loss_regime"))} {_fmt_optional(concentration.get("largest_loss_regime_percent"), _fmt_stat_pct)}',
+            f'SL + preventivos: {_fmt_optional(concentration.get("sl_preventive_loss_percent"), _fmt_stat_pct)}',
+            f'Flags: {", ".join(diagnostic.get("flags") or []) or "ninguno"}',
+        ])
+    elif page_number == 3:
+        ranking = diagnostic.get('symbol_ranking') or []
+        lines.append('5 peores simbolos')
+        for item in ranking[:5]:
+            lines.append(_diag_bucket_line(item.get('symbol'), item))
+        lines.extend(['', '5 mejores simbolos'])
+        best = list(reversed(ranking[-5:]))
+        for item in best:
+            lines.append(_diag_bucket_line(item.get('symbol'), item))
+    else:
+        sizing = diagnostic.get('sizing') or {}
+        bounds = sizing.get('tercile_bounds') or {}
+        distribution = sizing.get('distribution')
+        lines.extend([
+            'Tamano y exposicion',
+            f'Muestra: {_fmt_count(sizing.get("sample_size"))}',
+            f'Promedio: {_fmt_optional(sizing.get("average"), _fmt_money)}',
+            f'Ganadores: {_fmt_optional(sizing.get("winner_average"), _fmt_money)}',
+            f'Perdedores: {_fmt_optional(sizing.get("loser_average"), _fmt_money)}',
+            f'PnL/unidad: {_fmt_optional(sizing.get("pnl_per_unit"), lambda value: _fmt_number(value, 6))}',
+        ])
+        if distribution:
+            lines.extend([
+                f'Bandas: pequeno <= {_fmt_money(bounds.get("small_max"))}; medio <= {_fmt_money(bounds.get("medium_max"))}',
+                f'Distribucion: P {distribution.get("SMALL")} | M {distribution.get("MEDIUM")} | G {distribution.get("LARGE")}',
+            ])
+        else:
+            lines.append('Bandas/distribucion: N/A')
+        lines.extend(['', 'Reglas reproducibles:', (diagnostic.get('normalization_rules') or {}).get('size_bands', 'N/A')])
+    nav = []
+    if page_number > 1:
+        nav.append(_button('Anterior', f'version_diag:{page_number - 1}'))
+    if page_number < 4:
+        nav.append(_button('Siguiente', f'version_diag:{page_number + 1}'))
+    keyboard = [nav] if nav else []
+    keyboard.extend([[_button('Estadisticas', 'stats')], [_button('Actualizar', f'r:version_diag:{page_number}')]])
+    return {'page_id': 'version_diag', 'text': '\n'.join(lines), 'reply_markup': {'inline_keyboard': keyboard}}
+
+
 def _pnl_for_period(stats, key):
     today = datetime.now(UY_TZ)
     if key == 'day':
@@ -2199,6 +2304,7 @@ class StatsMenuPage(MenuPage):
             [_button('\U0001F535 Long/Short', 'stats_directions'), _button('\U0001F4C8 Regimen', 'stats_regimes')],
             [_button('\u23F0 Temporal', 'stats_time'), _button('\U0001F6AA Salidas', 'stats_exits')],
             [_button('Historial', 'stats_history'), _button('Versiones', 'stats_versions:1')],
+            [_button('Diagnostico version', 'version_diag:1')],
             [_button('\u25C0 Menu', 'home'), _button('\U0001F504 Actualizar', 'r:stats')],
         ]
 
@@ -2533,6 +2639,12 @@ def _dispatch_callback(data):
         except (TypeError, ValueError):
             page_number = 1
         return _render_versions_page(page_number)
+    if data.startswith('version_diag:'):
+        try:
+            page_number = int(data.split(':', 1)[1])
+        except (TypeError, ValueError):
+            page_number = 1
+        return _render_version_diagnostic_page(page_number)
     return _render_page(data if data in MENU_PAGES else 'home')
 
 

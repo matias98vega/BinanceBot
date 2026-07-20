@@ -13,7 +13,7 @@ import version_history
 
 
 DEFAULT_STATS_FILE = os.path.join(history.DEFAULT_HISTORY_DIR, 'stats.json')
-STATS_SCHEMA_VERSION = 3
+STATS_SCHEMA_VERSION = 4
 
 EXIT_REASONS = ('TP', 'SL', 'TRAILING', 'PARTIAL', 'STALE', 'RECOVERY', 'EMERGENCY', 'MANUAL', 'UNKNOWN')
 DIRECTIONS = ('LONG', 'SHORT', 'UNKNOWN')
@@ -345,8 +345,16 @@ def _merge_trade_events(records):
         elif event_type != 'TRADE_CLOSE' and record.get('bot_version'):
             current['bot_version'] = record.get('bot_version')
             current['_opening_bot_version_known'] = True
-    for trade in trades.values():
+    for trade_id, trade in trades.items():
+        if trade.get('_opening_bot_version_known') is not True:
+            base = trades.get(_base_trade_id(trade_id))
+            if base and base is not trade and base.get('_opening_bot_version_known') is True:
+                trade['bot_version'] = base.get('bot_version')
+                for key in ('regime', 'market_regime', 'btc_regime', 'capital_used', 'capital_at_entry', 'notional'):
+                    if trade.get(key) is None and base.get(key) is not None:
+                        trade[key] = base.get(key)
         trade['bot_version'] = trade.get('bot_version') or LEGACY_BOT_VERSION
+    for trade in trades.values():
         trade.pop('_opening_bot_version_known', None)
     return trades
 
@@ -561,6 +569,223 @@ def _compute_drawdown(stats):
     stats['general']['equity_peak'] = round(peak, 8)
 
 
+
+def _diagnostic_regime(trade):
+    regime = _trade_regime_value(trade)
+    if regime == 'bull':
+        return 'BULL'
+    if regime == 'bear':
+        return 'BEAR'
+    if regime in ('neutral', 'sideways'):
+        return 'NEUTRAL'
+    return 'UNKNOWN'
+
+
+def _diagnostic_exit_reason(value):
+    reason = _normalise_exit_reason(value)
+    if reason == 'TP':
+        return 'TP'
+    if reason == 'SL':
+        return 'SL'
+    if reason in ('STALE', 'EMERGENCY'):
+        return 'PREVENTIVE'
+    if reason == 'MANUAL':
+        return 'MANUAL'
+    if reason == 'RECOVERY':
+        return 'RECONCILIATION'
+    return 'OTHER_UNKNOWN'
+
+
+def _loss_total(trades):
+    return round(sum(abs(_float(trade.get('pnl_usdt'))) for trade in trades if _float(trade.get('pnl_usdt')) < 0), 8)
+
+
+def _diagnostic_bucket(trades):
+    bucket = _empty_bucket()
+    for trade in trades:
+        if str(trade.get('status') or '').upper() == 'CLOSED':
+            _add_closed(bucket, trade)
+        else:
+            _add_open(bucket)
+    return _finalise_bucket(bucket)
+
+
+def _sizing_value(trade):
+    for key in ('capital_used', 'capital_at_entry', 'notional'):
+        value = trade.get(key)
+        if value is not None and _float(value) > 0:
+            return _float(value)
+    quantity = trade.get('quantity')
+    entry_price = trade.get('entry_price')
+    if quantity is not None and entry_price is not None:
+        value = abs(_float(quantity) * _float(entry_price))
+        return value if value > 0 else None
+    return None
+
+
+def _average(values):
+    return round(sum(values) / len(values), 8) if values else None
+
+
+def _sizing_diagnostic(trades):
+    samples = [(trade, _sizing_value(trade)) for trade in trades]
+    samples = [(trade, value) for trade, value in samples if value is not None]
+    closed = [(trade, value) for trade, value in samples if str(trade.get('status') or '').upper() == 'CLOSED']
+    winners = [value for trade, value in closed if _float(trade.get('pnl_usdt')) > 0]
+    losers = [value for trade, value in closed if _float(trade.get('pnl_usdt')) < 0]
+    pnl_per_unit = [
+        _float(trade.get('pnl_usdt')) / value
+        for trade, value in closed if value > 0 and trade.get('pnl_usdt') is not None
+    ]
+    distribution = {'SMALL': 0, 'MEDIUM': 0, 'LARGE': 0}
+    lower = upper = None
+    values = sorted(value for _trade, value in samples)
+    if len(values) >= 3:
+        lower = values[(len(values) - 1) // 3]
+        upper = values[((len(values) - 1) * 2) // 3]
+        for value in values:
+            if value <= lower:
+                distribution['SMALL'] += 1
+            elif value <= upper:
+                distribution['MEDIUM'] += 1
+            else:
+                distribution['LARGE'] += 1
+    return {
+        'sample_size': len(samples),
+        'average': _average(values),
+        'winner_average': _average(winners),
+        'loser_average': _average(losers),
+        'pnl_per_unit': _average(pnl_per_unit),
+        'tercile_bounds': {'small_max': lower, 'medium_max': upper},
+        'distribution': distribution if len(values) >= 3 else None,
+    }
+
+
+def _build_version_diagnostic_from_trades(trades, version):
+    selected = [trade for trade in trades if _bot_version(trade) == version]
+    summary = _diagnostic_bucket(selected)
+    summary['version'] = version
+    for trade in selected:
+        _update_version_bounds(summary, trade)
+
+    by_side = {}
+    for side in ('LONG', 'SHORT', 'UNKNOWN'):
+        group = [trade for trade in selected if _normalise_direction(trade.get('side')) == side]
+        if group or side != 'UNKNOWN':
+            by_side[side] = _diagnostic_bucket(group)
+
+    by_regime = {}
+    for regime in ('BULL', 'BEAR', 'NEUTRAL', 'UNKNOWN'):
+        group = [trade for trade in selected if _diagnostic_regime(trade) == regime]
+        if group or regime != 'UNKNOWN':
+            by_regime[regime] = _diagnostic_bucket(group)
+
+    closed = [trade for trade in selected if str(trade.get('status') or '').upper() == 'CLOSED']
+    by_exit_reason = {}
+    for reason in ('TP', 'SL', 'PREVENTIVE', 'MANUAL', 'RECONCILIATION', 'OTHER_UNKNOWN'):
+        group = [trade for trade in closed if _diagnostic_exit_reason(trade.get('exit_reason')) == reason]
+        pnl = round(sum(_float(trade.get('pnl_usdt')) for trade in group), 8)
+        by_exit_reason[reason] = {
+            'closed': len(group),
+            'pnl_total': pnl,
+            'pnl_average': round(pnl / len(group), 8) if group else None,
+            'closed_percent': round(len(group) / len(closed) * 100, 4) if closed else None,
+            'gross_loss': _loss_total(group),
+        }
+
+    by_symbol = {}
+    for symbol in sorted({trade.get('symbol') or 'UNKNOWN' for trade in selected}):
+        group = [trade for trade in selected if (trade.get('symbol') or 'UNKNOWN') == symbol]
+        by_symbol[symbol] = _diagnostic_bucket(group)
+    symbol_ranking = [
+        {'symbol': symbol, **bucket}
+        for symbol, bucket in sorted(by_symbol.items(), key=lambda item: (item[1].get('pnl_total', 0), item[0]))
+    ]
+
+    total_loss = _loss_total(closed)
+    symbol_losses = sorted(
+        ({'name': name, 'loss': bucket.get('gross_loss', 0.0)} for name, bucket in by_symbol.items()),
+        key=lambda item: item['loss'], reverse=True,
+    )
+    side_losses = {name: bucket.get('gross_loss', 0.0) for name, bucket in by_side.items()}
+    regime_losses = {name: bucket.get('gross_loss', 0.0) for name, bucket in by_regime.items()}
+    exit_losses = {name: bucket.get('gross_loss', 0.0) for name, bucket in by_exit_reason.items()}
+
+    def share(value):
+        return round(value / total_loss * 100, 4) if total_loss else None
+
+    worst_side = max(side_losses.items(), key=lambda item: item[1]) if side_losses else (None, 0)
+    worst_regime = max(regime_losses.items(), key=lambda item: item[1]) if regime_losses else (None, 0)
+    sl_preventive_loss = exit_losses.get('SL', 0) + exit_losses.get('PREVENTIVE', 0)
+    concentration = {
+        'total_negative_pnl': total_loss,
+        'top3_symbol_loss': round(sum(item['loss'] for item in symbol_losses[:3]), 8),
+        'top3_symbol_loss_percent': share(sum(item['loss'] for item in symbol_losses[:3])),
+        'top5_symbol_loss': round(sum(item['loss'] for item in symbol_losses[:5]), 8),
+        'top5_symbol_loss_percent': share(sum(item['loss'] for item in symbol_losses[:5])),
+        'largest_loss_side': worst_side[0],
+        'largest_loss_side_percent': share(worst_side[1]),
+        'largest_loss_regime': worst_regime[0],
+        'largest_loss_regime_percent': share(worst_regime[1]),
+        'sl_preventive_loss': round(sl_preventive_loss, 8),
+        'sl_preventive_loss_percent': share(sl_preventive_loss),
+    }
+    flags = []
+    if summary.get('closed', 0) < 30:
+        flags.append('LOW_SAMPLE')
+    if summary.get('closed', 0) and summary.get('expectancy', 0) < 0:
+        flags.append('NEGATIVE_EXPECTANCY')
+    if summary.get('profit_factor') is not None and summary.get('profit_factor') < 1:
+        flags.append('PROFIT_FACTOR_BELOW_1')
+    if (concentration.get('top3_symbol_loss_percent') or 0) > 50:
+        flags.append('LOSS_CONCENTRATION_BY_SYMBOL')
+    if (concentration.get('largest_loss_side_percent') or 0) > 50:
+        flags.append('LOSS_CONCENTRATION_BY_SIDE')
+    if (concentration.get('largest_loss_regime_percent') or 0) > 50:
+        flags.append('LOSS_CONCENTRATION_BY_REGIME')
+
+    return {
+        'version': version,
+        'summary': summary,
+        'by_side': by_side,
+        'by_regime': by_regime,
+        'by_exit_reason': by_exit_reason,
+        'symbol_ranking': symbol_ranking,
+        'concentration': concentration,
+        'sizing': _sizing_diagnostic(selected),
+        'flags': flags,
+        'flag_rules': {
+            'LOW_SAMPLE': 'closed trades < 30',
+            'NEGATIVE_EXPECTANCY': 'closed trades > 0 and expectancy < 0',
+            'PROFIT_FACTOR_BELOW_1': 'profit factor is available and < 1',
+            'LOSS_CONCENTRATION_BY_SYMBOL': 'top 3 symbols explain > 50% of gross losses',
+            'LOSS_CONCENTRATION_BY_SIDE': 'one side explains > 50% of gross losses',
+            'LOSS_CONCENTRATION_BY_REGIME': 'one regime explains > 50% of gross losses',
+        },
+        'normalization_rules': {
+            'regime': 'bull/bullish=BULL; bear/bearish=BEAR; neutral/sideways/range=NEUTRAL; missing=UNKNOWN',
+            'exit_reason': 'TP; SL; STALE/EMERGENCY=PREVENTIVE; MANUAL=MANUAL; RECOVERY=RECONCILIATION; remainder=OTHER_UNKNOWN',
+            'size_bands': 'sample terciles using deterministic sorted index cutoffs; N/A below 3 samples',
+        },
+    }
+
+
+def analyze_version_performance(version=None, trades_file=history.DEFAULT_TRADES_FILE):
+    version = version or version_history.current_version()
+    trade_events, invalid = _iter_jsonl(trades_file)
+    if invalid:
+        logging.warning('version diagnostic ignored invalid trade lines=%s path=%s', invalid, trades_file)
+    merged = _merge_trade_events(trade_events)
+    return _build_version_diagnostic_from_trades(list(merged.values()), version)
+
+
+def get_version_diagnostic(version=None, stats_file=DEFAULT_STATS_FILE):
+    version = version or version_history.current_version()
+    stats = load_stats(stats_file)
+    diagnostic = (stats.get('version_diagnostics') or {}).get(version)
+    return diagnostic or analyze_version_performance(version)
+
+
 def _stats_from_sources(trades_file, decisions_file, snapshots_file, features_file=feature_store.DEFAULT_FEATURES_FILE):
     stats = _empty_stats()
     stats['source']['trades_file'] = trades_file
@@ -587,6 +812,11 @@ def _stats_from_sources(trades_file, decisions_file, snapshots_file, features_fi
 
     feature_lookup = _feature_index(feature_events)
     merged = _merge_trade_events(trade_events)
+    versions = {_bot_version(trade) for trade in merged.values()} | {version_history.current_version()}
+    stats['version_diagnostics'] = {
+        version: _build_version_diagnostic_from_trades(list(merged.values()), version)
+        for version in versions
+    }
     stats['_closed_for_drawdown'] = []
     for trade in merged.values():
         trade = _enrich_trade_regime(trade, feature_lookup)
@@ -715,6 +945,13 @@ def update_trade(trade, stats_file=DEFAULT_STATS_FILE, trades_file=history.DEFAU
         if was_open:
             _convert_open_to_closed(stats, merged_trade)
         _update_incremental_drawdown(stats, merged_trade)
+        version_events, _invalid_versions = _iter_jsonl(trades_file)
+        version_trades = _merge_trade_events(version_events)
+        versions = {_bot_version(item) for item in version_trades.values()} | {version_history.current_version()}
+        stats['version_diagnostics'] = {
+            version: _build_version_diagnostic_from_trades(list(version_trades.values()), version)
+            for version in versions
+        }
         stats = _finalise_stats(stats)
         save_stats(stats, stats_file)
         return stats

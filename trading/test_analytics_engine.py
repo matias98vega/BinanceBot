@@ -534,5 +534,52 @@ class AnalyticsEngineTests(unittest.TestCase):
         self.assertEqual(stats['by_bot_version'][current]['closed'], 0)
 
 
+    def test_version_diagnostic_breakdowns_concentration_and_sizing(self):
+        rows = [
+            {'event_type': 'TRADE_OPEN', 'trade_id': 'long-a', 'status': 'OPEN', 'symbol': 'AAA', 'side': 'LONG', 'opened_at': '2026-01-01T00:00:00Z', 'bot_version': 'diag', 'regime': 'bullish', 'capital_used': 10},
+            {'event_type': 'TRADE_CLOSE', 'trade_id': 'long-a', 'status': 'CLOSED', 'symbol': 'AAA', 'side': 'LONG', 'closed_at': '2026-01-01T01:00:00Z', 'bot_version': 'new', 'exit_reason': 'TP', 'pnl_usdt': 4},
+            {'event_type': 'TRADE_OPEN', 'trade_id': 'short-b', 'status': 'OPEN', 'symbol': 'BBB', 'side': 'SHORT', 'opened_at': '2026-01-02T00:00:00Z', 'bot_version': 'diag', 'regime': 'sideways', 'capital_used': 20},
+            {'event_type': 'TRADE_CLOSE', 'trade_id': 'short-b', 'status': 'CLOSED', 'symbol': 'BBB', 'side': 'SHORT', 'closed_at': '2026-01-02T01:00:00Z', 'exit_reason': 'SL', 'pnl_usdt': -6},
+            {'event_type': 'TRADE_OPEN', 'trade_id': 'long-c', 'status': 'OPEN', 'symbol': 'CCC', 'side': 'LONG', 'opened_at': '2026-01-03T00:00:00Z', 'bot_version': 'diag', 'regime': 'bear', 'capital_used': 30},
+            {'event_type': 'TRADE_CLOSE', 'trade_id': 'long-c', 'status': 'CLOSED', 'symbol': 'CCC', 'side': 'LONG', 'closed_at': '2026-01-03T01:00:00Z', 'exit_reason': 'STALE', 'pnl_usdt': -2},
+        ]
+        for row in rows:
+            self.store._append(self.trades, row)
+
+        report = analytics_engine.analyze_version_performance('diag', self.trades)
+
+        self.assertEqual((report['summary']['trades'], report['summary']['closed']), (3, 3))
+        self.assertEqual(report['by_side']['LONG']['closed'], 2)
+        self.assertEqual(report['by_side']['SHORT']['pnl_total'], -6)
+        self.assertEqual(report['by_regime']['BULL']['closed'], 1)
+        self.assertEqual(report['by_regime']['NEUTRAL']['closed'], 1)
+        self.assertEqual(report['by_exit_reason']['PREVENTIVE']['closed'], 1)
+        self.assertEqual(report['by_exit_reason']['SL']['closed_percent'], 33.3333)
+        self.assertEqual(report['symbol_ranking'][0]['symbol'], 'BBB')
+        self.assertEqual(report['concentration']['largest_loss_side'], 'SHORT')
+        self.assertEqual(report['sizing']['distribution'], {'SMALL': 1, 'MEDIUM': 1, 'LARGE': 1})
+        self.assertIn('LOW_SAMPLE', report['flags'])
+        self.assertIn('NEGATIVE_EXPECTANCY', report['flags'])
+
+    def test_partial_close_inherits_opening_version_regime_and_capital(self):
+        self.store._append(self.trades, {
+            'event_type': 'TRADE_OPEN', 'trade_id': 'base', 'status': 'OPEN',
+            'symbol': 'AAA', 'side': 'LONG', 'bot_version': 'diag',
+            'regime': 'bull', 'capital_used': 25, 'opened_at': '2026-01-01T00:00:00Z',
+        })
+        self.store._append(self.trades, {
+            'event_type': 'TRADE_CLOSE', 'trade_id': 'base:partial', 'status': 'CLOSED',
+            'symbol': 'AAA', 'side': 'LONG', 'exit_reason': 'PARTIAL', 'pnl_usdt': 1,
+            'closed_at': '2026-01-01T01:00:00Z', 'bot_version': 'later',
+        })
+
+        report = analytics_engine.analyze_version_performance('diag', self.trades)
+
+        self.assertEqual(report['summary']['trades'], 2)
+        self.assertEqual(report['by_regime']['BULL']['trades'], 2)
+        self.assertEqual(report['sizing']['sample_size'], 2)
+        self.assertEqual(report['by_exit_reason']['OTHER_UNKNOWN']['closed'], 1)
+
+
 if __name__ == '__main__':
     unittest.main()
