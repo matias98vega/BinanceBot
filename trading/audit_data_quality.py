@@ -14,6 +14,7 @@ import version_history
 TRADING_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(TRADING_DIR)
 MAX_APPEND_GAP_SECONDS = 6 * 60 * 60
+GAP_RECENT_WINDOW = timedelta(hours=48)
 VALID_SIDES = {'LONG', 'SHORT'}
 VALID_STATUS = {'OPEN', 'CLOSED'}
 VALID_REGIMES = {'bull', 'bear', 'sideways', 'neutral', 'unknown', 'bullish', 'bearish'}
@@ -37,6 +38,9 @@ class AuditReport:
         self.operational_warnings = []
         self.legacy_warnings = []
         self.accepted_warnings = []
+        self.informational_warnings = []
+        self.incidents = []
+        self.reference_time = None
         self.optional_recommendations = set()
         self.missing_fields = defaultdict(Counter)
         self.complete_records = defaultdict(int)
@@ -55,19 +59,43 @@ class AuditReport:
         item = f'{_display_path(path)}: {message}'
         self.warnings.append(item)
         self.operational_warnings.append(item)
+        self.explain_incident(path, "operational", "existing_operational_rule", "classified_by_existing_audit_rule", None, True)
 
     def legacy_warning(self, path, message):
         item = f'{_display_path(path)}: {message}'
         self.warnings.append(item)
         self.legacy_warnings.append(item)
+        self.explain_incident(path, "legacy", "existing_legacy_rule", "classified_by_existing_audit_rule", None, False)
 
     def accepted_warning(self, path, message):
         item = f'{_display_path(path)}: {message}'
         self.warnings.append(item)
         self.accepted_warnings.append(item)
+        self.explain_incident(path, "accepted", "existing_accepted_rule", "classified_by_existing_audit_rule", None, False)
+
+    def informational_warning(self, path, message):
+        item = f"{_display_path(path)}: {message}"
+        self.warnings.append(item)
+        self.informational_warnings.append(item)
+        self.explain_incident(path, "informational", "existing_informational_rule", "classified_by_existing_audit_rule", None, False)
 
     def info(self, path, message):
-        self.accepted_warning(path, f'INFO {message}')
+        self.informational_warning(path, f"INFO {message}")
+
+    def explain_incident(self, path, category, rule, evidence, timestamp, affects_operational_state):
+        display_path = _display_path(path)
+        if (not rule.startswith("existing_") and self.incidents and self.incidents[-1]["path"] == display_path
+                and self.incidents[-1]["category"] == category
+                and self.incidents[-1]["rule"].startswith("existing_")):
+            self.incidents.pop()
+        self.incidents.append({
+            "path": display_path,
+            "category": category,
+            "rule": rule,
+            "evidence": evidence,
+            "timestamp": timestamp or "N-D",
+            "affects_operational_state": bool(affects_operational_state),
+        })
 
     def record_version(self, record):
         classified = version_history.classify_record(record)
@@ -126,6 +154,58 @@ class AuditReport:
             'trade_id': _get_nested(record, 'identification.trade_id') or record.get('trade_id'),
             'symbol': _get_nested(record, 'identification.symbol') or record.get('symbol'),
         })
+
+
+
+
+def _latest_project_timestamp(project_dir):
+    latest = None
+    paths = (
+        glob.glob(_project_path(project_dir, 'data', 'history', '*.jsonl'))
+        + glob.glob(_project_path(project_dir, 'trading', '*.jsonl'))
+    )
+    for path in paths:
+        try:
+            with open(path, encoding='utf-8') as file:
+                for line in file:
+                    try:
+                        record = json.loads(line)
+                    except Exception:
+                        continue
+                    dt, _error = _parse_ts(_timestamp_value(record))
+                    if dt and (latest is None or dt > latest):
+                        latest = dt
+        except Exception:
+            continue
+    for path in (
+        _project_path(project_dir, 'trading', 'state.json'),
+        _project_path(project_dir, 'trading', 'bot_state.json'),
+        _project_path(project_dir, 'data', 'history', 'rebalance_status.json'),
+    ):
+        try:
+            with open(path, encoding='utf-8') as file:
+                record = json.load(file)
+            candidates = [record]
+            if isinstance(record, dict):
+                candidates.extend(value for value in record.values() if isinstance(value, dict))
+            for candidate in candidates:
+                dt, _error = _parse_ts(_timestamp_value(candidate))
+                if dt and (latest is None or dt > latest):
+                    latest = dt
+        except Exception:
+            continue
+    return latest
+
+
+def _gap_classification(report, record, gap_end):
+    reference = report.reference_time
+    recent = bool(reference and gap_end and timedelta(0) <= reference - gap_end <= GAP_RECENT_WINDOW)
+    evidence = record.get('_audit_active_runtime_evidence') if isinstance(record, dict) else None
+    if not recent:
+        return 'legacy', 'gap_historical_outside_recent_window', f'reference={reference.isoformat() if reference else None}; active_runtime_evidence={evidence}', False
+    if evidence:
+        return 'operational', 'gap_recent_with_active_runtime_evidence', f'reference={reference.isoformat()}; active_runtime_evidence={evidence}', True
+    return 'informational', 'gap_recent_runtime_evidence_unknown', f'reference={reference.isoformat()}; active_runtime_evidence={evidence}', False
 
 
 def _display_path(path):
@@ -246,10 +326,23 @@ def _validate_timestamp(report, path, record, previous_dt=None, previous_record=
         gap_hours = round((dt - previous_dt).total_seconds() / 3600, 2)
         message = _timestamp_warning_message(f'gap grande entre registros: {gap_hours}h', prev_value, value, record, previous_record)
         coverage = _pause_coverage_for_gap(pause_context, previous_dt, dt)
-        if coverage:
-            report.accepted_warning(path, f'{message} justified_by={coverage}')
+        accepted_record = _is_accepted_warning_record(record, message)
+        if coverage or accepted_record:
+            report.accepted_warning(path, f"{message} justified_by={coverage}" if coverage else f"{message} accepted_by=record_context")
+            report.explain_incident(
+                path, "accepted", ("gap_explained_by_pause_or_circuit_breaker" if coverage else "gap_accepted_record_context"),
+                f"pause_or_circuit_breaker={coverage}" if coverage else "accepted_record_metadata_or_closed_trade", value, False,
+            )
         else:
-            report.record_warning(path, message, record)
+            category, rule, evidence, affects = _gap_classification(report, record, dt)
+            classified_message = f"{message} classification={category} rule={rule}"
+            if category == "operational":
+                report.warning(path, classified_message)
+            elif category == "legacy":
+                report.legacy_warning(path, classified_message)
+            else:
+                report.informational_warning(path, classified_message)
+            report.explain_incident(path, category, rule, evidence, value, affects)
     return dt
 
 
@@ -901,10 +994,28 @@ def _audit_rebalance(path, data, report):
         report.error(path, 'pending=true con attempts=0 sin blocked_reason')
         report.missing(path, 'blocked_reason')
     if _looks_binance_error(data):
-        for field in ('last_http_status', 'last_binance_code', 'last_raw_body'):
-            if data.get(field) in (None, ''):
-                report.warning(path, f'error Binance sin {field}')
-                report.missing(path, field)
+        missing = [
+            field for field in ("last_http_status", "last_binance_code", "last_raw_body")
+            if data.get(field) in (None, "")
+        ]
+        for field in missing:
+            report.missing(path, field)
+        if missing:
+            timestamp = _timestamp_value(data)
+            dt, _error = _parse_ts(timestamp)
+            reference = report.reference_time
+            recent = bool(reference and dt and timedelta(0) <= reference - dt <= GAP_RECENT_WINDOW)
+            fields = ",".join(missing)
+            evidence = f"pending=true; missing_fields={fields}; reference={reference.isoformat() if reference else None}"
+            if recent:
+                category = "operational"
+                rule = "rebalance_recent_active_error_incomplete"
+                report.warning(path, f"error Binance incompleto missing_fields={fields} classification={category} rule={rule}")
+            else:
+                category = "legacy"
+                rule = "rebalance_historical_error_incomplete"
+                report.legacy_warning(path, f"error Binance incompleto missing_fields={fields} classification={category} rule={rule}")
+            report.explain_incident(path, category, rule, evidence, timestamp, recent)
 
 
 def _collect_trade_ids(records):
@@ -927,6 +1038,7 @@ def _collect_closed_trade_ids(records):
 
 def audit_project(project_dir=PROJECT_DIR):
     report = AuditReport()
+    report.reference_time = _latest_project_timestamp(project_dir)
     trading_dir = _project_path(project_dir, 'trading')
     history_dir = _project_path(project_dir, 'data', 'history')
 
@@ -1009,7 +1121,13 @@ def audit_project(project_dir=PROJECT_DIR):
     return report
 
 
-def format_report(report):
+def format_report(report, explain=False):
+    if report.errors:
+        operational_state = "CRITICO"
+    elif report.operational_warnings:
+        operational_state = "REVISAR"
+    else:
+        operational_state = "OK"
     lines = [
         'DATA QUALITY AUDIT',
         '',
@@ -1018,9 +1136,11 @@ def format_report(report):
         f'Errores criticos: {len(report.errors)}',
         f'Warnings operativos recientes: {len(report.operational_warnings)}',
         f'Warnings legacy/historicos: {len(report.legacy_warnings)}',
+        f"Warnings informativos: {len(report.informational_warnings)}",
         f'Warnings conocidos aceptados: {len(report.accepted_warnings)}',
         f'Warnings totales: {len(report.warnings)}',
-        f'Estado operativo: {"OK" if not report.errors and not report.operational_warnings else "REVISAR"}',
+        f"Incidentes consolidados: {len(report.incidents)}",
+        f"Estado operativo: {operational_state}",
         '',
         'Campos faltantes:',
     ]
@@ -1091,6 +1211,10 @@ def format_report(report):
     lines.extend([f'- {item}' for item in report.legacy_warnings[:50]] or ['- ninguno'])
     if len(report.legacy_warnings) > 50:
         lines.append(f'- ... {len(report.legacy_warnings) - 50} warnings legacy adicionales')
+    lines.extend(["", "Warnings informativos:"])
+    lines.extend([f"- {item}" for item in report.informational_warnings[:50]] or ["- ninguno"])
+    if len(report.informational_warnings) > 50:
+        lines.append(f"- ... {len(report.informational_warnings) - 50} warnings informativos adicionales")
     lines.extend(['', 'Warnings conocidos aceptados:'])
     lines.extend([f'- {item}' for item in report.accepted_warnings[:50]] or ['- ninguno'])
     if len(report.accepted_warnings) > 50:
@@ -1108,15 +1232,28 @@ def format_report(report):
         lines.append('- sin registros con version clasificable')
     lines.extend(['', 'Recomendaciones:'])
     lines.extend([f'- {item}' for item in sorted(report.recommendations)] or ['- ninguna'])
+    if explain:
+        lines.extend(["", "EXPLAIN WARNING CLASSIFICATION"])
+        if report.incidents:
+            for incident in report.incidents:
+                lines.append(
+                    f"- path={incident['path']} category={incident['category']} "
+                    f"rule={incident['rule']} timestamp={incident['timestamp']} "
+                    f"affects_operational_state={incident['affects_operational_state']} "
+                    f"evidence={incident['evidence']}"
+                )
+        else:
+            lines.append("- sin incidentes clasificados")
     return '\n'.join(lines)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Audit BinanceBot collected data quality.')
     parser.add_argument('--project-dir', default=PROJECT_DIR, help='Project root directory')
+    parser.add_argument("--explain", action="store_true", help="Explain warning classification rules and evidence")
     args = parser.parse_args(argv)
     report = audit_project(args.project_dir)
-    print(format_report(report))
+    print(format_report(report, explain=args.explain))
     return 1 if report.errors else 0
 
 

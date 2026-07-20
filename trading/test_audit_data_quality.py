@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import hashlib
 import os
 import sys
 import tempfile
@@ -213,13 +214,14 @@ class AuditDataQualityTests(unittest.TestCase):
             {'timestamp': '2026-06-03T00:00:00Z', 'bot_version': 'v1.0-alpha'},
         ])
         self.write_jsonl('trading/trade_analytics.jsonl', [])
+        self.write_json("data/history/rebalance_status.json", {"pending": False, "last_check": "2026-06-10T00:00:00Z"})
 
         report = audit_data_quality.audit_project(self.project)
 
         self.assertTrue(any('gap grande' in item for item in report.legacy_warnings))
-        self.assertFalse(any('gap grande' in item for item in report.operational_warnings))
+        self.assertFalse(any('gap grande' in item for item in report.informational_warnings))
 
-    def test_recent_gap_is_operational_warning(self):
+    def test_recent_gap_without_runtime_evidence_is_informational(self):
         self.valid_bot_state()
         self.write_jsonl('trading/decision_snapshots.jsonl', [
             {'timestamp': '2026-07-08T00:00:00Z', 'bot_version': 'v1.1-observability-hardening'},
@@ -229,7 +231,7 @@ class AuditDataQualityTests(unittest.TestCase):
 
         report = audit_data_quality.audit_project(self.project)
 
-        self.assertTrue(any('gap grande' in item for item in report.operational_warnings))
+        self.assertTrue(any('gap grande' in item for item in report.informational_warnings))
 
     def test_recent_gap_covered_by_circuit_breaker_pause_is_accepted(self):
         self.valid_bot_state()
@@ -259,7 +261,7 @@ class AuditDataQualityTests(unittest.TestCase):
         self.assertTrue(any('gap grande' in item and 'justified_by=safety_pause:daily_stop_loss_limit' in item for item in report.accepted_warnings))
         self.assertFalse(any('gap grande' in item for item in report.operational_warnings))
 
-    def test_recent_gap_without_pause_evidence_stays_operational(self):
+    def test_recent_gap_without_pause_or_runtime_evidence_is_informational(self):
         self.valid_bot_state()
         self.write_jsonl('trading/decision_snapshots.jsonl', [
             {'timestamp': '2026-07-11T23:10:00Z', 'bot_version': 'v1.2-sizing-v2'},
@@ -269,9 +271,9 @@ class AuditDataQualityTests(unittest.TestCase):
 
         report = audit_data_quality.audit_project(self.project)
 
-        self.assertTrue(any('gap grande' in item for item in report.operational_warnings))
+        self.assertTrue(any('gap grande' in item for item in report.informational_warnings))
 
-    def test_recent_gap_partially_covered_by_pause_stays_operational(self):
+    def test_recent_gap_partially_covered_without_runtime_evidence_is_informational(self):
         self.valid_bot_state()
         self.write_jsonl('trading/decision_snapshots.jsonl', [
             {'timestamp': '2026-07-11T23:10:00Z', 'bot_version': 'v1.2-sizing-v2'},
@@ -293,7 +295,7 @@ class AuditDataQualityTests(unittest.TestCase):
 
         report = audit_data_quality.audit_project(self.project)
 
-        self.assertTrue(any('gap grande' in item for item in report.operational_warnings))
+        self.assertTrue(any('gap grande' in item for item in report.informational_warnings))
 
     def test_only_legacy_warnings_keep_operational_status_ok(self):
         self.valid_bot_state()
@@ -527,7 +529,7 @@ class AuditDataQualityTests(unittest.TestCase):
 
         report = audit_data_quality.audit_project(self.project)
 
-        self.assertTrue(any('active_open_trade trade_id=long_WLDUSDT_1783549149' in item for item in report.accepted_warnings))
+        self.assertTrue(any('active_open_trade trade_id=long_WLDUSDT_1783549149' in item for item in report.informational_warnings))
         self.assertFalse(any('long_WLDUSDT_1783549149' in item for item in report.operational_warnings))
 
     def test_open_trade_present_in_futures_reconciliation_is_active_info(self):
@@ -553,7 +555,7 @@ class AuditDataQualityTests(unittest.TestCase):
 
         report = audit_data_quality.audit_project(self.project)
 
-        self.assertTrue(any('active_open_trade trade_id=short_CRCLUSDT_1783540416' in item for item in report.accepted_warnings))
+        self.assertTrue(any('active_open_trade trade_id=short_CRCLUSDT_1783540416' in item for item in report.informational_warnings))
         self.assertFalse(any('short_CRCLUSDT_1783540416' in item for item in report.operational_warnings))
 
     def test_open_trade_without_current_evidence_stays_operational_warning(self):
@@ -827,7 +829,7 @@ class AuditDataQualityTests(unittest.TestCase):
         self.assertTrue(any('gap grande' in item and 'whether_trade_closed_in_history=True' in item for item in report.accepted_warnings))
         self.assertFalse(any('gap grande' in item for item in report.operational_warnings))
 
-    def test_feature_gap_without_closed_trade_stays_operational(self):
+    def test_feature_gap_without_runtime_evidence_is_informational(self):
         self.valid_bot_state()
         self.write_jsonl('trading/decision_snapshots.jsonl', [{'timestamp': '2026-07-08T01:00:00Z'}])
         self.write_jsonl('trading/trade_analytics.jsonl', [])
@@ -852,7 +854,7 @@ class AuditDataQualityTests(unittest.TestCase):
 
         report = audit_data_quality.audit_project(self.project)
 
-        self.assertTrue(any('gap grande' in item for item in report.operational_warnings))
+        self.assertTrue(any('gap grande' in item for item in report.informational_warnings))
 
     def test_historical_feature_missing_fields_are_legacy_not_operational(self):
         self.valid_bot_state()
@@ -1067,7 +1069,7 @@ class AuditDataQualityTests(unittest.TestCase):
 
         self.assertTrue(any('pending=true sin pending_reason' in item for item in report.errors))
         self.assertTrue(any('pending=true con attempts=0 sin blocked_reason' in item for item in report.errors))
-        self.assertTrue(any('error Binance sin last_http_status' in item for item in report.warnings))
+        self.assertTrue(any('error Binance incompleto' in item and 'last_http_status' in item for item in report.warnings))
 
     def test_rebalance_without_binance_error_does_not_require_http_details(self):
         self.minimal_runtime_files()
@@ -1083,7 +1085,7 @@ class AuditDataQualityTests(unittest.TestCase):
 
         report = audit_data_quality.audit_project(self.project)
 
-        self.assertFalse(any('error Binance sin last_http_status' in item for item in report.warnings))
+        self.assertFalse(any('error Binance incompleto' in item and 'last_http_status' in item for item in report.warnings))
         self.assertFalse(any('error Binance sin last_binance_code' in item for item in report.warnings))
         self.assertFalse(any('error Binance sin last_raw_body' in item for item in report.warnings))
 
@@ -1093,10 +1095,97 @@ class AuditDataQualityTests(unittest.TestCase):
         text = audit_data_quality.format_report(ok_report)
         self.assertIn('DATA QUALITY AUDIT', text)
         self.assertIn('Archivos revisados:', text)
+        for label in ("Errores criticos:", "Warnings operativos recientes:", "Warnings legacy/historicos:", "Warnings conocidos aceptados:", "Warnings totales:", "Estado operativo:"):
+            self.assertIn(label, text)
         self.assertEqual(0, 1 if ok_report.errors else 0)
 
         self.write_jsonl('trading/decision_snapshots.jsonl', ['{bad json'])
         self.assertEqual(1, audit_data_quality.main(['--project-dir', self.project]))
+
+
+    def test_recent_gap_with_active_runtime_evidence_is_operational(self):
+        report = audit_data_quality.AuditReport()
+        report.reference_time = datetime(2026, 7, 20, 12, tzinfo=timezone.utc)
+        previous = datetime(2026, 7, 20, 1, tzinfo=timezone.utc)
+        record = {
+            "timestamp": "2026-07-20T10:00:00Z",
+            "_audit_active_runtime_evidence": "managed_symbol_side",
+        }
+
+        audit_data_quality._validate_timestamp(report, "events.jsonl", record, previous_dt=previous)
+
+        self.assertEqual(1, len(report.operational_warnings))
+        self.assertEqual("gap_recent_with_active_runtime_evidence", report.incidents[0]["rule"])
+        self.assertTrue(report.incidents[0]["affects_operational_state"])
+
+    def test_rebalance_incomplete_error_is_one_consolidated_incident(self):
+        report = audit_data_quality.AuditReport()
+        report.reference_time = datetime(2026, 7, 20, 12, tzinfo=timezone.utc)
+        data = {
+            "pending": True, "pending_reason": "retry", "last_check": "2026-07-20T11:00:00Z",
+            "direction": "SPOT_TO_FUTURES", "amount": 1, "attempts": 1, "last_error": "HTTP Error 400",
+        }
+
+        audit_data_quality._audit_rebalance("rebalance_status.json", data, report)
+
+        self.assertEqual(1, len(report.operational_warnings))
+        self.assertIn("last_http_status,last_binance_code,last_raw_body", report.operational_warnings[0])
+        self.assertEqual(1, len(report.incidents))
+
+    def test_historical_rebalance_error_is_non_operational(self):
+        report = audit_data_quality.AuditReport()
+        report.reference_time = datetime(2026, 7, 20, 12, tzinfo=timezone.utc)
+        data = {
+            "pending": True, "pending_reason": "retry", "last_check": "2026-07-10T11:00:00Z",
+            "direction": "SPOT_TO_FUTURES", "amount": 1, "attempts": 1, "last_error": "HTTP Error 400",
+        }
+
+        audit_data_quality._audit_rebalance("rebalance_status.json", data, report)
+
+        self.assertEqual([], report.operational_warnings)
+        self.assertEqual(1, len(report.legacy_warnings))
+        self.assertEqual("rebalance_historical_error_incomplete", report.incidents[0]["rule"])
+
+    def test_resolved_rebalance_with_old_error_does_not_warn(self):
+        report = audit_data_quality.AuditReport()
+        report.reference_time = datetime(2026, 7, 20, 12, tzinfo=timezone.utc)
+        data = {"pending": False, "last_check": "2026-07-20T11:00:00Z", "last_error": "HTTP Error 400"}
+
+        audit_data_quality._audit_rebalance("rebalance_status.json", data, report)
+
+        self.assertEqual([], report.warnings)
+        self.assertEqual([], report.incidents)
+
+
+    def test_report_state_and_explain_output(self):
+        report = audit_data_quality.AuditReport()
+        self.assertIn("Estado operativo: OK", audit_data_quality.format_report(report))
+        report.informational_warning("events.jsonl", "sin evidencia runtime")
+        self.assertIn("Estado operativo: OK", audit_data_quality.format_report(report))
+        report.warning("events.jsonl", "incidente reciente")
+        report.explain_incident("events.jsonl", "operational", "test_rule", "test_evidence", "2026-07-20T11:00:00Z", True)
+        explained = audit_data_quality.format_report(report, explain=True)
+        self.assertIn("Estado operativo: REVISAR", explained)
+        self.assertIn("rule=test_rule", explained)
+        report.error("events.jsonl", "corrupcion")
+        self.assertIn("Estado operativo: CRITICO", audit_data_quality.format_report(report))
+
+    def test_audit_does_not_modify_runtime_files(self):
+        self.minimal_runtime_files()
+        paths = [
+            os.path.join(self.project, "trading", "bot_state.json"),
+            os.path.join(self.project, "trading", "decision_snapshots.jsonl"),
+            os.path.join(self.project, "trading", "trade_analytics.jsonl"),
+        ]
+        def digest(path):
+            with open(path, "rb") as file:
+                return hashlib.sha256(file.read()).hexdigest()
+        before = {path: digest(path) for path in paths}
+
+        audit_data_quality.audit_project(self.project)
+
+        after = {path: digest(path) for path in paths}
+        self.assertEqual(before, after)
 
 
 if __name__ == '__main__':
