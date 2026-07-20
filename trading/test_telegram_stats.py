@@ -905,6 +905,28 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertNotIn('Spot objetivo: 25.16 USDT', text)
         self.assertNotIn('Futures objetivo: 25.16 USDT', text)
 
+    def test_capital_pending_hides_unreliable_targets(self):
+        metrics = self._metrics()
+        metrics.update({
+            'spot_target': None,
+            'rebalance': {
+                'status': 'PENDING',
+                'direction': 'SPOT_TO_FUTURES',
+                'amount_pending': 10,
+                'last_check': '2026-07-20T12:00:00Z',
+                'pending_reason': 'capital_outside_tolerance',
+            },
+        })
+
+        with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics), \
+             patch.object(telegram_commands, '_bot_state', return_value={}):
+            text = telegram_commands._render_page('capital')['text']
+
+        self.assertIn('Pendiente', text)
+        self.assertIn('Objetivo: No disponible', text)
+        self.assertNotIn('Spot objetivo:', text)
+
+
     def test_capital_incomplete_pending_rebalance_does_not_show_long_unknown_block(self):
         metrics = self._metrics()
         metrics['rebalance'] = {

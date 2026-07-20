@@ -19,8 +19,8 @@ Filosofía de cambio de tendencia:
   para saber hacia dónde ir, pero solo transfiere lo que está disponible ahora.
 """
 
-import sys, os, logging, json
-from datetime import datetime, timezone
+import sys, os, logging, json, math
+from datetime import datetime, timezone, timedelta
 sys.path.insert(0, os.path.dirname(__file__))
 import utils, config, market, capital_manager, decision_timeline, binance_client
 from config_loader import PROJECT_DIR
@@ -49,6 +49,8 @@ REBALANCE_MIN_USDT         = 2.0    # no transferir menos de $2
 REBALANCE_MIN_WALLET       = _env_float('REBALANCE_MIN_WALLET_USDT', 0.0)  # reserva minima opcional por wallet
 REBALANCE_TRANSFER_BUFFER_USDT = _env_float('REBALANCE_TRANSFER_BUFFER_USDT', 0.10)  # colchon para evitar -5013 por saldo libre exacto
 REBALANCE_ALIGNMENT_TOLERANCE_USDT = _env_float('REBALANCE_ALIGNMENT_TOLERANCE_USDT', 0.20)  # tolerancia para reconciliar estado pendiente
+REBALANCE_ALIGNMENT_TOLERANCE_PCT = _env_float('REBALANCE_ALIGNMENT_TOLERANCE_PCT', 0.0)  # fraccion opcional sobre equity total
+REBALANCE_OBSERVATION_MAX_AGE_SECONDS = _env_float('REBALANCE_OBSERVATION_MAX_AGE_SECONDS', 300.0)  # balances observados en el ciclo actual
 _LAST_FUTURES_CAPITAL_DETAILS = {}
 
 
@@ -364,91 +366,190 @@ def _record_rebalance_failure(direction, amount, error, payload, extra=None):
     return status, details
 
 
-def _alignment_tolerance(tolerance=None):
-    value = REBALANCE_ALIGNMENT_TOLERANCE_USDT if tolerance is None else tolerance
+def _alignment_tolerance(total_equity, tolerance=None, percentage_tolerance=None):
+    absolute = REBALANCE_ALIGNMENT_TOLERANCE_USDT if tolerance is None else tolerance
+    percentage = REBALANCE_ALIGNMENT_TOLERANCE_PCT if percentage_tolerance is None else percentage_tolerance
     try:
-        return max(0.0, float(value or 0))
+        absolute = max(0.0, float(absolute or 0))
+        percentage = max(0.0, float(percentage or 0))
+        equity = float(total_equity)
     except (TypeError, ValueError):
-        return 0.0
+        return None
+    if not math.isfinite(equity) or equity < 0:
+        return None
+    return max(absolute, equity * percentage)
 
 
-def reconcile_rebalance_status_if_aligned(spot_actual, fut_actual, target_spot, target_fut, tolerance=None):
+def _valid_rebalance_number(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number < 0:
+        return None
+    return number
+
+
+def _observation_time(value):
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _reconciliation_block_reason(status, observed_at, transfer_in_progress, critical_error_active, now=None):
+    status_name = str(status.get('status') or '').upper()
+    if transfer_in_progress or status.get('transfer_in_progress') or status_name in {'IN_PROGRESS', 'ATTEMPT'}:
+        return 'transfer_in_progress'
+    if critical_error_active or status.get('critical_error_active') or status.get('critical_error'):
+        return 'critical_error_active'
+    if status_name == 'BLOCKED' or status.get('blocked_reason'):
+        return 'blocked_pending_state'
+    observed = _observation_time(observed_at)
+    current = now or datetime.now(timezone.utc)
+    if observed is None:
+        return 'missing_observation_timestamp'
+    age = current - observed
+    if age < timedelta(seconds=-5) or age.total_seconds() > REBALANCE_OBSERVATION_MAX_AGE_SECONDS:
+        return 'stale_observation'
+    return None
+
+
+def reconcile_rebalance_status_if_aligned(
+    spot_actual,
+    fut_actual,
+    target_spot,
+    target_fut,
+    tolerance=None,
+    percentage_tolerance=None,
+    observed_at=None,
+    transfer_in_progress=False,
+    critical_error_active=False,
+    now=None,
+):
     status = read_rebalance_status()
     if not isinstance(status, dict) or not status.get('pending'):
         return None
-    tol = _alignment_tolerance(tolerance)
-    diff_spot = abs(float(spot_actual or 0) - float(target_spot or 0))
-    diff_fut = abs(float(fut_actual or 0) - float(target_fut or 0))
-    aligned = diff_spot <= tol and diff_fut <= tol
-    log_fn = logging.info if aligned else logging.warning
-    log_fn(
-        'REBALANCE RECONCILE CHECK target_spot=%s target_futures=%s real_spot=%s real_futures=%s diff_spot=%s diff_futures=%s tolerance=%s aligned=%s',
-        target_spot, target_fut, spot_actual, fut_actual, diff_spot, diff_fut, tol, aligned,
+
+    block_reason = _reconciliation_block_reason(
+        status,
+        observed_at,
+        transfer_in_progress,
+        critical_error_active,
+        now=now,
+    )
+    if block_reason:
+        log_fn = logging.warning if block_reason in {'critical_error_active', 'missing_observation_timestamp', 'stale_observation'} else logging.info
+        log_fn('REBALANCE RECONCILE SKIP reason=%s', block_reason)
+        return None
+
+    values = [_valid_rebalance_number(value) for value in (spot_actual, fut_actual, target_spot, target_fut)]
+    if any(value is None for value in values):
+        logging.warning(
+            'REBALANCE RECONCILE SKIP reason=invalid_or_missing_capital real_spot=%s real_futures=%s target_spot=%s target_futures=%s',
+            spot_actual, fut_actual, target_spot, target_fut,
+        )
+        return None
+    spot_real, futures_real, spot_target, futures_target = values
+    real_total = spot_real + futures_real
+    target_total = spot_target + futures_target
+    tol = _alignment_tolerance(target_total, tolerance, percentage_tolerance)
+    if tol is None or target_total <= 0:
+        logging.warning('REBALANCE RECONCILE SKIP reason=invalid_equity target_total=%s tolerance=%s', target_total, tol)
+        return None
+
+    diff_spot = abs(spot_real - spot_target)
+    diff_fut = abs(futures_real - futures_target)
+    diff_equity = abs(real_total - target_total)
+    aligned = diff_spot <= tol and diff_fut <= tol and diff_equity <= tol
+    logging.info(
+        'REBALANCE RECONCILE CHECK target_spot=%s target_futures=%s real_spot=%s real_futures=%s diff_spot=%s diff_futures=%s diff_equity=%s tolerance=%s aligned=%s',
+        spot_target, futures_target, spot_real, futures_real, diff_spot, diff_fut, diff_equity, tol, aligned,
     )
     if not aligned:
-        _record_rebalance_pending_check(
-            status.get('direction'),
-            status.get('amount'),
-            'Capital aun fuera de tolerancia de alineacion',
-            context={
-                'spot_real': _safe_float(spot_actual),
-                'futures_real': _safe_float(fut_actual),
-                'target_spot': _safe_float(target_spot),
-                'target_futures': _safe_float(target_fut),
-                'diff_spot': _safe_float(diff_spot),
-                'diff_futures': _safe_float(diff_fut),
-                'tolerance': _safe_float(tol),
-            },
-            only_existing=True,
+        logging.info(
+            'REBALANCE PENDING NOT ALIGNED direction=%s amount=%s diff_spot=%s diff_futures=%s diff_equity=%s tolerance=%s',
+            status.get('direction'), status.get('amount'), diff_spot, diff_fut, diff_equity, tol,
         )
         return None
 
-    now = _now_iso()
-    resolved = {
+    reconciled_at = _now_iso()
+    previous_reference = {
+        key: status.get(key)
+        for key in (
+            'status', 'direction', 'amount', 'pending_reason', 'blocked_reason',
+            'first_failure', 'last_attempt', 'attempts', 'last_http_status',
+            'last_binance_code', 'last_message', 'last_error', 'last_raw_body',
+        )
+        if key in status
+    }
+    resolved = dict(status)
+    resolved.update({
         'pending': False,
-        'direction': None,
-        'amount': None,
-        'first_failure': status.get('first_failure'),
-        'last_attempt': status.get('last_attempt'),
-        'attempts': 0,
-        'last_http_status': None,
-        'last_binance_code': None,
-        'last_message': None,
-        'last_raw_body': None,
-        'last_resolved_at': now,
-        'resolved_reason': 'capital_already_aligned',
+        'status': 'RECONCILED',
+        'reconciled': True,
+        'reconciled_at': reconciled_at,
+        'last_resolved_at': reconciled_at,
+        'resolved_reason': 'already_aligned_within_tolerance',
+        'reconciliation_source': 'automatic_observed_alignment',
+        'reconciliation_observed_at': str(observed_at),
         'last_direction': status.get('direction'),
         'last_amount': status.get('amount'),
         'last_attempts': status.get('attempts'),
-        'reconciled': True,
-        'reconciled_at': now,
+        'tolerance': _safe_float(tol),
+        'absolute_tolerance_usdt': _safe_float(
+            max(0.0, float(REBALANCE_ALIGNMENT_TOLERANCE_USDT if tolerance is None else tolerance))
+        ),
+        'percentage_tolerance': _safe_float(
+            max(0.0, float(REBALANCE_ALIGNMENT_TOLERANCE_PCT if percentage_tolerance is None else percentage_tolerance))
+        ),
+        'spot_real': _safe_float(spot_real),
+        'futures_real': _safe_float(futures_real),
+        'spot_target': _safe_float(spot_target),
+        'target_spot': _safe_float(spot_target),
+        'futures_target': _safe_float(futures_target),
+        'target_futures': _safe_float(futures_target),
         'diff_spot': _safe_float(diff_spot),
         'diff_futures': _safe_float(diff_fut),
-        'tolerance': _safe_float(tol),
-        'spot_actual': _safe_float(spot_actual),
-        'futures_actual': _safe_float(fut_actual),
-        'target_spot': _safe_float(target_spot),
-        'target_futures': _safe_float(target_fut),
-    }
-    _write_rebalance_status(resolved)
+        'diff_equity': _safe_float(diff_equity),
+        'previous_pending': previous_reference,
+    })
+    if not _write_rebalance_status(resolved):
+        return None
+
     logging.info(
-        'REBALANCE RECONCILED reason=capital_already_aligned target_spot=%s target_futures=%s real_spot=%s real_futures=%s diff_spot=%s diff_futures=%s tolerance=%s',
-        target_spot, target_fut, spot_actual, fut_actual, diff_spot, diff_fut, tol,
+        'REBALANCE RECONCILED source=automatic_observed_alignment reason=already_aligned_within_tolerance target_spot=%s target_futures=%s real_spot=%s real_futures=%s diff_spot=%s diff_futures=%s diff_equity=%s tolerance=%s',
+        spot_target, futures_target, spot_real, futures_real, diff_spot, diff_fut, diff_equity, tol,
     )
     try:
         decision_timeline.record_rebalance_event(
             'rebalance_reconciled',
-            'Rebalance reconciliado: capital ya alineado.',
+            'Capital already aligned within tolerance.',
             level='INFO',
             details={
-                'reason': 'capital_already_aligned',
+                'source': 'automatic_observed_alignment',
+                'reason': 'already_aligned_within_tolerance',
+                'before_status': str(status.get('status') or 'PENDING').upper(),
+                'after_status': 'RECONCILED',
+                'pending_reason': status.get('pending_reason'),
+                'direction': status.get('direction'),
+                'amount': status.get('amount'),
+                'tolerance': _safe_float(tol),
+                'absolute_tolerance_usdt': resolved.get('absolute_tolerance_usdt'),
+                'percentage_tolerance': resolved.get('percentage_tolerance'),
+                'spot_real': _safe_float(spot_real),
+                'futures_real': _safe_float(futures_real),
+                'spot_target': _safe_float(spot_target),
+                'futures_target': _safe_float(futures_target),
                 'diff_spot': _safe_float(diff_spot),
                 'diff_futures': _safe_float(diff_fut),
-                'tolerance': _safe_float(tol),
-                'spot_actual': _safe_float(spot_actual),
-                'futures_actual': _safe_float(fut_actual),
-                'target_spot': _safe_float(target_spot),
-                'target_futures': _safe_float(target_fut),
+                'diff_equity': _safe_float(diff_equity),
+                'observed_at': str(observed_at),
             },
         )
     except Exception:
@@ -817,6 +918,7 @@ def rebalance(state, btc_ctx=None):
         fut_actual=fut_actual,
         target_spot=target_spot,
         target_fut=target_fut,
+        observed_at=_now_iso(),
     )
 
     if abs(diff_fut) < REBALANCE_MIN_USDT:

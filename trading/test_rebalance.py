@@ -7,6 +7,7 @@ import json
 import tempfile
 import urllib.error
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 os.environ.setdefault('BINANCE_API_KEY', 'test')
@@ -563,21 +564,22 @@ class RebalanceDiagnosticsTests(unittest.TestCase):
                 target_spot=0.0,
                 target_fut=54.01,
                 tolerance=0.20,
+                observed_at=rebalance._now_iso(),
             )
 
         saved = self.read_status()
         self.assertIsNotNone(resolved)
         self.assertFalse(saved['pending'])
-        self.assertEqual(saved['resolved_reason'], 'capital_already_aligned')
+        self.assertEqual(saved['resolved_reason'], 'already_aligned_within_tolerance')
         self.assertIn('last_resolved_at', saved)
         self.assertEqual(saved['last_direction'], 'SPOT_TO_FUTURES')
         self.assertEqual(saved['last_amount'], 26.94)
         self.assertEqual(saved['last_attempts'], 1)
-        self.assertIsNone(saved['last_binance_code'])
+        self.assertEqual(saved['last_binance_code'], -5013)
         timeline.assert_called_once()
         args, kwargs = timeline.call_args
         self.assertEqual(args[0], 'rebalance_reconciled')
-        self.assertIn('capital ya alineado', args[1])
+        self.assertIn('aligned within tolerance', args[1])
         self.assertEqual(kwargs['details']['diff_futures'], 0.1)
         self.assertEqual(kwargs['details']['tolerance'], 0.2)
 
@@ -599,6 +601,7 @@ class RebalanceDiagnosticsTests(unittest.TestCase):
                 target_spot=0.0,
                 target_fut=54.01,
                 tolerance=0.20,
+                observed_at=rebalance._now_iso(),
             )
 
         self.assertIsNotNone(resolved)
@@ -625,16 +628,14 @@ class RebalanceDiagnosticsTests(unittest.TestCase):
                 target_spot=0.0,
                 target_fut=54.0,
                 tolerance=0.20,
+                observed_at=rebalance._now_iso(),
             )
 
         saved = self.read_status()
         self.assertIsNone(resolved)
         self.assertTrue(saved['pending'])
         self.assertEqual(saved['last_binance_code'], -5013)
-        timeline.assert_called_once()
-        args, kwargs = timeline.call_args
-        self.assertEqual(args[0], 'rebalance_pending_check')
-        self.assertEqual(kwargs['details']['diff_futures'], 4.0)
+        timeline.assert_not_called()
 
     def test_reconciliation_does_not_change_targets(self):
         with patch.object(rebalance.decision_timeline, 'record_rebalance_event'):
@@ -648,6 +649,7 @@ class RebalanceDiagnosticsTests(unittest.TestCase):
             target_spot=target_spot,
             target_fut=target_fut,
             tolerance=0.20,
+            observed_at=rebalance._now_iso(),
         )
 
         self.assertEqual(target_spot, 0.0)
@@ -684,7 +686,7 @@ class RebalanceDiagnosticsTests(unittest.TestCase):
         with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics):
             text = telegram_commands._render_page('capital')['text']
 
-        self.assertIn('Rebalance reconciliado autom', text)
+        self.assertIn('Rebalance reconciliado automáticamente por alineación observada', text)
         self.assertIn('Capital alineado dentro de la tolerancia.', text)
         self.assertNotIn('Rebalance pendiente', text)
         self.assertNotIn('Intentos:', text)
@@ -705,6 +707,146 @@ class RebalanceDiagnosticsTests(unittest.TestCase):
 
         self.assertFalse(payload['pending'])
         self.assertEqual(payload['resolved_reason'], 'capital_already_aligned')
+
+
+    def test_reconcile_rejects_missing_and_non_numeric_capital(self):
+        observed_at = '2026-07-20T12:00:00Z'
+        now = datetime(2026, 7, 20, 12, 1, tzinfo=timezone.utc)
+        cases = [
+            (None, 50, 50, 50),
+            (50, None, 50, 50),
+            (50, 50, None, 50),
+            (50, 50, 50, None),
+            ('N/A', 50, 50, 50),
+            (50, float('nan'), 50, 50),
+        ]
+        for values in cases:
+            with self.subTest(values=values):
+                rebalance._write_rebalance_status({'pending': True, 'direction': 'SPOT_TO_FUTURES', 'amount': 1})
+                with patch.object(rebalance.decision_timeline, 'record_rebalance_event') as timeline:
+                    result = rebalance.reconcile_rebalance_status_if_aligned(
+                        *values, observed_at=observed_at, now=now,
+                    )
+                self.assertIsNone(result)
+                self.assertTrue(self.read_status()['pending'])
+                timeline.assert_not_called()
+
+    def test_reconcile_requires_both_sides_and_consistent_equity(self):
+        observed_at = '2026-07-20T12:00:00Z'
+        now = datetime(2026, 7, 20, 12, 1, tzinfo=timezone.utc)
+        cases = [
+            (50.1, 55.0, 50.0, 50.0, 0.2),
+            (55.0, 45.0, 50.0, 50.0, 0.2),
+            (50.2001, 49.7999, 50.0, 50.0, 0.2),
+            (50.15, 50.15, 50.0, 50.0, 0.2),
+        ]
+        for spot, futures, spot_target, futures_target, tolerance in cases:
+            with self.subTest(spot=spot, futures=futures):
+                rebalance._write_rebalance_status({'pending': True, 'direction': 'SPOT_TO_FUTURES', 'amount': 1})
+                result = rebalance.reconcile_rebalance_status_if_aligned(
+                    spot, futures, spot_target, futures_target,
+                    tolerance=tolerance, observed_at=observed_at, now=now,
+                )
+                self.assertIsNone(result)
+                self.assertTrue(self.read_status()['pending'])
+
+    def test_reconcile_rejects_unsafe_or_stale_pending_state(self):
+        fresh = '2026-07-20T12:00:00Z'
+        stale = '2026-07-20T10:00:00Z'
+        now = datetime(2026, 7, 20, 12, 1, tzinfo=timezone.utc)
+        cases = [
+            ({'pending': False, 'status': 'RECONCILED'}, fresh, {}),
+            ({'pending': True, 'status': 'IN_PROGRESS'}, fresh, {}),
+            ({'pending': True, 'status': 'PENDING'}, fresh, {'transfer_in_progress': True}),
+            ({'pending': True, 'status': 'PENDING'}, fresh, {'critical_error_active': True}),
+            ({'pending': True, 'status': 'PENDING', 'critical_error': 'unsafe'}, fresh, {}),
+            ({'pending': True, 'status': 'BLOCKED', 'blocked_reason': 'active_shorts'}, fresh, {}),
+            ({'pending': True, 'status': 'PENDING'}, stale, {}),
+        ]
+        for status, observed_at, kwargs in cases:
+            with self.subTest(status=status, observed_at=observed_at, kwargs=kwargs):
+                rebalance._write_rebalance_status(status)
+                with patch.object(rebalance.decision_timeline, 'record_rebalance_event') as timeline:
+                    result = rebalance.reconcile_rebalance_status_if_aligned(
+                        50, 50, 50, 50, observed_at=observed_at, now=now, **kwargs,
+                    )
+                self.assertIsNone(result)
+                self.assertEqual(status, self.read_status())
+                timeline.assert_not_called()
+
+    def test_percentage_tolerance_preserves_trace_and_timeline(self):
+        rebalance._write_rebalance_status({
+            'pending': True,
+            'status': 'ERROR',
+            'direction': 'SPOT_TO_FUTURES',
+            'amount': 10,
+            'attempts': 2,
+            'pending_reason': 'Transferencia externa pendiente de observar',
+            'last_error': 'Insufficient balance',
+            'last_http_status': 400,
+            'last_binance_code': -5013,
+            'last_raw_body': '{"code":-5013}',
+        })
+        observed_at = '2026-07-20T12:00:00Z'
+        now = datetime(2026, 7, 20, 12, 1, tzinfo=timezone.utc)
+
+        with patch.object(rebalance.decision_timeline, 'record_rebalance_event') as timeline:
+            result = rebalance.reconcile_rebalance_status_if_aligned(
+                500.5, 499.5, 500, 500,
+                tolerance=0.2,
+                percentage_tolerance=0.001,
+                observed_at=observed_at,
+                now=now,
+            )
+
+        self.assertIsNotNone(result)
+        saved = self.read_status()
+        self.assertFalse(saved['pending'])
+        self.assertEqual(saved['status'], 'RECONCILED')
+        self.assertEqual(saved['resolved_reason'], 'already_aligned_within_tolerance')
+        self.assertEqual(saved['reconciliation_source'], 'automatic_observed_alignment')
+        self.assertEqual(saved['tolerance'], 1.0)
+        self.assertEqual(saved['last_binance_code'], -5013)
+        self.assertEqual(saved['attempts'], 2)
+        self.assertEqual(saved['direction'], 'SPOT_TO_FUTURES')
+        self.assertEqual(saved['previous_pending']['pending_reason'], 'Transferencia externa pendiente de observar')
+        details = timeline.call_args.kwargs['details']
+        self.assertEqual(details['source'], 'automatic_observed_alignment')
+        self.assertEqual(details['before_status'], 'ERROR')
+        self.assertEqual(details['after_status'], 'RECONCILED')
+        self.assertEqual(details['diff_spot'], 0.5)
+        self.assertEqual(details['diff_futures'], 0.5)
+
+    def test_reconciliation_is_idempotent_and_accepts_new_pending(self):
+        observed_at = '2026-07-20T12:00:00Z'
+        now = datetime(2026, 7, 20, 12, 1, tzinfo=timezone.utc)
+        rebalance._write_rebalance_status({'pending': True, 'status': 'PENDING', 'direction': 'SPOT_TO_FUTURES', 'amount': 1})
+
+        with patch.object(rebalance.decision_timeline, 'record_rebalance_event') as timeline:
+            first = rebalance.reconcile_rebalance_status_if_aligned(
+                50, 50, 50, 50, observed_at=observed_at, now=now,
+            )
+            second = rebalance.reconcile_rebalance_status_if_aligned(
+                50, 50, 50, 50, observed_at=observed_at, now=now,
+            )
+            rebalance._write_rebalance_status({
+                'pending': True,
+                'status': 'PENDING',
+                'direction': 'FUTURES_TO_SPOT',
+                'amount': 2,
+                'pending_reason': 'new_pending',
+            })
+            third = rebalance.reconcile_rebalance_status_if_aligned(
+                50, 50, 50, 50, observed_at=observed_at, now=now,
+            )
+
+        self.assertIsNotNone(first)
+        self.assertIsNone(second)
+        self.assertIsNotNone(third)
+        self.assertEqual(2, timeline.call_count)
+        self.assertEqual('FUTURES_TO_SPOT', self.read_status()['direction'])
+        self.assertEqual('new_pending', self.read_status()['previous_pending']['pending_reason'])
+
 
 
 if __name__ == '__main__':

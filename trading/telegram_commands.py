@@ -954,6 +954,7 @@ def _rebalance_label(status):
         'NOT_REQUIRED': '\u2705 Alineado',
         'IN_PROGRESS': '\U0001F504 En progreso',
         'DONE': '\u2705 Completado',
+        'RECONCILED': '✅ Alineado',
         'BLOCKED': '\u26d4 Bloqueado',
     }
     return labels.get(str(status or '').upper(), f'\u26aa {status or "UNKNOWN"}')
@@ -1155,6 +1156,13 @@ def _capital_target_tolerance(rebalance):
     return 0.20
 
 
+def _capital_targets_available(metrics):
+    return all(
+        _to_float(metrics.get(key)) is not None
+        for key in ("spot_real", "futures_real", "spot_target", "futures_target")
+    )
+
+
 def _capital_targets_consistent(metrics, rebalance):
     spot_real = _to_float(metrics.get('spot_real'))
     futures_real = _to_float(metrics.get('futures_real'))
@@ -1177,11 +1185,14 @@ def _capital_target_lines(metrics, rebalance, display_status):
             'Objetivo: No disponible',
             'Detalle: objetivo reportado no coincide con el estado actual.',
         ]
-    if display_status in {'pending', 'blocked'} and _rebalance_has_context(rebalance):
+    if (display_status in {'pending', 'blocked'} and _rebalance_has_context(rebalance)
+            and _capital_targets_available(metrics)):
         return [
             f'Spot objetivo: {_fmt_money(metrics.get("spot_target"))}',
             f'Futures objetivo: {_fmt_money(metrics.get("futures_target"))}',
         ]
+    if display_status in {'pending', 'blocked'}:
+        return ['Objetivo: No disponible']
     if display_status == 'incomplete':
         return ['Objetivo: No disponible']
     return [
@@ -1257,7 +1268,7 @@ def _rebalance_recovered_lines(rebalance):
 
 def _rebalance_reconciled_lines(rebalance):
     return [
-        '\u2705 Rebalance reconciliado autom\u00e1ticamente.',
+        '✅ Rebalance reconciliado automáticamente por alineación observada.',
         'Capital alineado dentro de la tolerancia.',
     ]
 
