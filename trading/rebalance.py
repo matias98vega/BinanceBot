@@ -22,11 +22,12 @@ Filosofía de cambio de tendencia:
 import sys, os, logging, json, math
 from datetime import datetime, timezone, timedelta
 sys.path.insert(0, os.path.dirname(__file__))
-import utils, config, market, capital_manager, decision_timeline, binance_client
+import utils, config, market, capital_manager, decision_timeline, binance_client, capital_ledger
 from config_loader import PROJECT_DIR
 
 BINANCE = binance_client.get_default_client()
 REBALANCE_STATUS_FILE = os.path.join(PROJECT_DIR, 'data', 'history', 'rebalance_status.json')
+REBALANCE_LEDGER_FILE = capital_ledger.DEFAULT_LEDGER_FILE
 
 
 def _env_float(name, default):
@@ -616,6 +617,19 @@ def _record_rebalance_recovered(direction, original_amount, final_amount, buffer
         pass
 
 
+def _record_internal_rebalance(direction, amount, response=None):
+    response = response if isinstance(response, dict) else {}
+    reference = response.get("tranId") or response.get("id") or f"{direction}:{amount}:{_now_iso()}"
+    capital_ledger.register_rebalance(
+        amount,
+        source="binance_internal_transfer",
+        reference_id=str(reference),
+        description="Internal Spot/Futures rebalance; excluded from external flow and trading PnL",
+        metadata={"direction": direction, "related_rebalance_id": str(reference)},
+        ledger_file=REBALANCE_LEDGER_FILE,
+    )
+
+
 def _transfer_with_recovery(direction, calculated_amount, context=None):
     buffer = _transfer_buffer()
     attempt_1 = round(float(calculated_amount or 0), 2)
@@ -629,7 +643,8 @@ def _transfer_with_recovery(direction, calculated_amount, context=None):
     )
     _record_rebalance_attempt(direction, attempt_1, 1, context=context)
     try:
-        BINANCE.spot_signed('POST', '/sapi/v1/asset/transfer', payload)
+        response = BINANCE.spot_signed('POST', '/sapi/v1/asset/transfer', payload)
+        _record_internal_rebalance(direction, attempt_1, response)
         clear_rebalance_status()
         logging.info(
             'REBALANCE TRANSFER result=success direction=%s calculated_amount=%s buffer=%s attempt_1=%s final_amount=%s',
@@ -671,7 +686,8 @@ def _transfer_with_recovery(direction, calculated_amount, context=None):
         )
         _record_rebalance_attempt(direction, attempt_2, 2, context=context)
         try:
-            BINANCE.spot_signed('POST', '/sapi/v1/asset/transfer', payload_2)
+            response = BINANCE.spot_signed('POST', '/sapi/v1/asset/transfer', payload_2)
+            _record_internal_rebalance(direction, attempt_2, response)
             clear_rebalance_status({
                 'direction': direction,
                 'attempt': 2,

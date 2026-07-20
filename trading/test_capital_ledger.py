@@ -161,5 +161,14 @@ class CapitalLedgerTests(unittest.TestCase):
         self.assertEqual(record['type'], 'external_deposit')
 
 
+    def test_event_id_is_deterministic_and_append_is_idempotent(self):
+        first = capital_ledger.register_external_deposit(10, reference_id="binance-1", timestamp="2026-07-20T12:00:00Z", ledger_file=self.ledger_file)
+        second = capital_ledger.register_external_deposit(10, reference_id="binance-1", timestamp="2026-07-20T12:00:00Z", ledger_file=self.ledger_file)
+        self.assertEqual(first["event_id"], second["event_id"])
+        self.assertTrue(second["duplicate"])
+        self.assertEqual(len(self._lines()), 1)
+        self.assertEqual(first["accounting_convention"], "realized_pnl_net_of_trading_fees_v1")
+
+
 if __name__ == '__main__':
     unittest.main()

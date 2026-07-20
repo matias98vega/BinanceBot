@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Passive append-only ledger for capital movements."""
+import hashlib
 import json
 import logging
 import math
@@ -7,6 +8,7 @@ import os
 from datetime import datetime, timezone
 
 import history
+import version_history
 
 
 DEFAULT_LEDGER_FILE = os.path.join(history.DEFAULT_HISTORY_DIR, 'capital_ledger.jsonl')
@@ -17,6 +19,11 @@ TYPE_REBALANCE = 'rebalance'
 TYPE_REALIZED_PNL = 'realized_pnl'
 TYPE_COMMISSION = 'commission'
 TYPE_FUNDING_FEE = 'funding_fee'
+TYPE_INITIAL_CAPITAL = 'initial_capital'
+TYPE_MANUAL_ADJUSTMENT = 'manual_adjustment'
+TYPE_RECONCILIATION = 'reconciliation'
+TYPE_UNKNOWN_CAPITAL_FLOW = 'unknown_capital_flow'
+ACCOUNTING_CONVENTION = 'realized_pnl_net_of_trading_fees_v1'
 
 SUPPORTED_TYPES = {
     TYPE_EXTERNAL_DEPOSIT,
@@ -25,6 +32,10 @@ SUPPORTED_TYPES = {
     TYPE_REALIZED_PNL,
     TYPE_COMMISSION,
     TYPE_FUNDING_FEE,
+    TYPE_INITIAL_CAPITAL,
+    TYPE_MANUAL_ADJUSTMENT,
+    TYPE_RECONCILIATION,
+    TYPE_UNKNOWN_CAPITAL_FLOW,
 }
 
 SENSITIVE_MARKERS = ('key', 'secret', 'token', 'signature', 'header', 'cookie', 'authorization')
@@ -89,17 +100,47 @@ def _movement_record(movement_type, amount, asset='USDT', source=None, descripti
     amount_f = _float_or_none(amount)
     if amount_f is None:
         raise ValueError('amount must be numeric')
+    movement_type = _normalise_type(movement_type)
+    if movement_type in {TYPE_INITIAL_CAPITAL, TYPE_EXTERNAL_DEPOSIT, TYPE_EXTERNAL_WITHDRAWAL, TYPE_COMMISSION} and amount_f < 0:
+        raise ValueError('amount must be non-negative for this event type')
     return {
-        'schema_version': 1,
+        'schema_version': 2,
+        'accounting_convention': ACCOUNTING_CONVENTION,
+        'recorded_at': _now_iso(),
         'timestamp': _iso(timestamp),
-        'type': _normalise_type(movement_type),
+        'type': movement_type,
+        'event_type': movement_type.upper(),
         'amount': amount_f,
+        'amount_usdt': amount_f if str(asset or 'USDT').upper() == 'USDT' else None,
+        'wallet': (metadata or {}).get('wallet'),
+        'direction': (metadata or {}).get('direction'),
+        'reason': description,
+        'related_trade_id': (metadata or {}).get('related_trade_id'),
+        'related_rebalance_id': (metadata or {}).get('related_rebalance_id'),
+        'binance_reference': (metadata or {}).get('binance_reference'),
+        'balance_before': (metadata or {}).get('balance_before'),
+        'balance_after': (metadata or {}).get('balance_after'),
+        'equity_before': (metadata or {}).get('equity_before'),
+        'equity_after': (metadata or {}).get('equity_after'),
         'asset': str(asset or 'USDT').upper(),
         'source': source,
         'description': description,
         'reference_id': reference_id,
         'metadata': _sanitize(metadata or {}),
+        'bot_version': version_history.current_version(),
     }
+
+def _event_id(record):
+    identity = record.get("reference_id") or record.get("metadata", {}).get("binance_reference")
+    payload = {key: record.get(key) for key in ("type", "timestamp", "asset", "amount", "source")}
+    payload["identity"] = identity
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return f"capital-{digest[:24]}"
+
+
+def _event_exists(path, event_id):
+    return any(record.get("event_id") == event_id for record in read_history(path))
+
 
 
 def _append(path, record):
@@ -125,6 +166,10 @@ def record_movement(movement_type, amount, asset='USDT', source=None, descriptio
         metadata=metadata,
         timestamp=timestamp,
     )
+    record["event_id"] = _event_id(record)
+    if _event_exists(ledger_file, record["event_id"]):
+        record["duplicate"] = True
+        return record
     _append(ledger_file, record)
     return record
 

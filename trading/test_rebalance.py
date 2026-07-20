@@ -97,9 +97,13 @@ class RebalanceDiagnosticsTests(unittest.TestCase):
         self.status_file = os.path.join(self.tmpdir.name, 'rebalance_status.json')
         self.status_patch = patch.object(rebalance, 'REBALANCE_STATUS_FILE', self.status_file)
         self.status_patch.start()
+        self.ledger_file = os.path.join(self.tmpdir.name, "capital_ledger.jsonl")
+        self.ledger_patch = patch.object(rebalance, "REBALANCE_LEDGER_FILE", self.ledger_file)
+        self.ledger_patch.start()
 
     def tearDown(self):
         self.status_patch.stop()
+        self.ledger_patch.stop()
         self.tmpdir.cleanup()
 
     def read_status(self):

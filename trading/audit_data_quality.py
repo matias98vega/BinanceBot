@@ -26,6 +26,10 @@ CAPITAL_LEDGER_TYPES = {
     'realized_pnl',
     'commission',
     'funding_fee',
+    'initial_capital',
+    'manual_adjustment',
+    'reconciliation',
+    'unknown_capital_flow',
 }
 
 
@@ -1093,7 +1097,9 @@ def audit_project(project_dir=PROJECT_DIR):
     ledger_path = _project_path(history_dir, 'capital_ledger.jsonl')
     if ledger_path in history_records:
         _audit_capital_ledger(ledger_path, history_records[ledger_path], report)
-
+    else:
+        report.informational_warning(ledger_path, 'capital accounting incomplete: ledger no inicializado; PnL Trading y ROI Trading deben mostrarse N/A')
+        report.recommendations.add('Capital accounting: ejecutar reconcile_capital_ledger.py --dry-run antes de un bootstrap explícito.')
     _audit_bot_state(_project_path(trading_dir, 'bot_state.json'), bot_state, report)
 
     for rebalance_path in (

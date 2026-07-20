@@ -138,5 +138,35 @@ class CapitalAccountingTests(unittest.TestCase):
         self.assertEqual(after['general']['profit_factor'], baseline['general']['profit_factor'])
 
 
+    def test_net_pnl_convention_does_not_double_subtract_fees(self):
+        capital_ledger.record_movement(capital_ledger.TYPE_INITIAL_CAPITAL, 100, reference_id="initial", ledger_file=self.ledger_file)
+        capital_ledger.register_realized_pnl(10, reference_id="pnl", ledger_file=self.ledger_file)
+        capital_ledger.register_commission(2, reference_id="fee", ledger_file=self.ledger_file)
+        capital_ledger.register_funding_fee(1, reference_id="funding", ledger_file=self.ledger_file)
+        summary = capital_accounting.get_accounting_summary(111, ledger_file=self.ledger_file)
+        self.assertEqual(summary["realized_pnl_net_of_fees"], 10)
+        self.assertEqual(summary["trading_fees_informational"], 2)
+        self.assertEqual(summary["funding_net"], 1)
+        self.assertEqual(summary["trading_pnl_net"], 11)
+        self.assertEqual(summary["trading_roi_pct"], 11)
+
+    def test_negative_funding_reduces_net_pnl_once(self):
+        capital_ledger.record_movement(capital_ledger.TYPE_INITIAL_CAPITAL, 100, reference_id="initial", ledger_file=self.ledger_file)
+        capital_ledger.register_realized_pnl(10, reference_id="pnl", ledger_file=self.ledger_file)
+        capital_ledger.register_funding_fee(-1.5, reference_id="funding", ledger_file=self.ledger_file)
+        summary = capital_accounting.get_accounting_summary(108.5, ledger_file=self.ledger_file)
+        self.assertEqual(summary["trading_pnl_net"], 8.5)
+        self.assertEqual(summary["trading_roi_pct"], 8.5)
+
+
+    def test_unrealized_pnl_and_noise_are_not_deposits(self):
+        explained = capital_accounting.classify_observed_capital_change(5, unrealized_pnl_change=5, reference_capital=100)
+        noise = capital_accounting.classify_observed_capital_change(0.1, unrealized_pnl_change=0, reference_capital=100)
+        unknown = capital_accounting.classify_observed_capital_change(10, unrealized_pnl_change=0, reference_capital=100)
+        self.assertEqual(explained["classification"], "NO_MATERIAL_FLOW")
+        self.assertEqual(noise["classification"], "NO_MATERIAL_FLOW")
+        self.assertEqual(unknown["classification"], "UNKNOWN_CAPITAL_FLOW")
+
+
 if __name__ == '__main__':
     unittest.main()

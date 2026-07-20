@@ -1760,6 +1760,15 @@ def _capital_accounting_payload(metrics=None):
         'adjusted_equity': summary.get('adjusted_equity') if current_equity is not None else None,
         'adjusted_pnl': summary.get('adjusted_pnl') if current_equity is not None and has_reliable_baseline else None,
         'adjusted_roi': summary.get('adjusted_roi') if current_equity is not None and has_reliable_baseline else None,
+        'initial_capital': summary.get('initial_capital'),
+        'net_contributed_capital': summary.get('net_contributed_capital'),
+        'realized_pnl_net_of_fees': summary.get('realized_pnl_net_of_fees'),
+        'trading_fees_informational': summary.get('trading_fees_informational'),
+        'funding_net': summary.get('funding_net'),
+        'trading_pnl_net': summary.get('trading_pnl_net'),
+        'trading_roi_pct': summary.get('trading_roi_pct'),
+        'accounting_status': summary.get('accounting_status', 'INCOMPLETE_DATA'),
+        'accounting_complete': bool(summary.get('accounting_complete')),
         'has_reliable_baseline': has_reliable_baseline,
     }
     return payload
@@ -1783,9 +1792,13 @@ def _capital_accounting_lines(metrics=None, compact=False):
         return lines
     return [
         'Contabilidad:',
+        f'Capital inicial: {_fmt_money_or_unavailable(accounting.get("initial_capital"))}',
         f'Depositos externos: {_fmt_money_or_unavailable(accounting.get("external_deposits"))}',
         f'Retiros externos: {_fmt_money_or_unavailable(accounting.get("external_withdrawals"))}',
         f'Flujo externo neto: {_fmt_money_or_unavailable(accounting.get("net_external_flows"))}',
+        f'PnL Trading neto: {_fmt_money_or_unavailable(accounting.get("trading_pnl_net"))}',
+        f'ROI Trading: {_fmt_pct_or_unavailable(accounting.get("trading_roi_pct"))}',
+        f'Estado contable: {accounting.get("accounting_status") or "INCOMPLETE_DATA"}',
         f'Equity ajustado: {_fmt_money_or_unavailable(accounting.get("adjusted_equity"))}',
         f'PnL ajustado: {_fmt_money_or_unavailable(accounting.get("adjusted_pnl"))}',
         f'ROI ajustado: {_fmt_pct_or_unavailable(accounting.get("adjusted_roi"))}',
