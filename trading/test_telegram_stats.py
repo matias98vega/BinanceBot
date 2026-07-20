@@ -431,6 +431,15 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertIn('PnL ajustado: -75.00 USDT', text)
         self.assertIn('ROI ajustado: -138.89%', text)
 
+    def test_capital_accounting_shows_bootstrap_date_and_unrealized_change(self):
+        metrics = self._metrics()
+        metrics['unrealized_pnl'] = 2.0
+        with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics), patch.object(telegram_commands, '_bot_state', return_value={}), patch.object(telegram_commands.analytics_engine, 'get_capital_accounting_stats', return_value=self._accounting(accounting_start_timestamp='2026-07-20T12:00:00Z', baseline_unrealized_pnl=10, unrealized_change_since_bootstrap=-8, initial_capital=100, trading_pnl_net=2, trading_roi_pct=2, accounting_status='ALIGNED')):
+            text = telegram_commands._render_page('capital')['text']
+        self.assertIn('Contabilidad desde: 2026-07-20T12:00:00Z', text)
+        self.assertIn('PnL no realizado inicial: 10.00 USDT', text)
+        self.assertIn('Cambio no realizado: -8.00 USDT', text)
+
     def test_capital_accounting_is_safe_without_ledger(self):
         with patch.object(telegram_commands, '_exposure_metrics', return_value=self._metrics()), \
              patch.object(telegram_commands, '_bot_state', return_value={}), \

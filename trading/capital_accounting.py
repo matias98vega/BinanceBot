@@ -102,49 +102,59 @@ def classify_observed_capital_change(equity_change, realized_pnl_net_of_fees=0.0
     return {"classification": "UNKNOWN_CAPITAL_FLOW", "amount": residual, "tolerance": tolerance}
 
 
-def get_accounting_summary(current_equity=None, starting_equity=0.0,
-                           ledger_file=capital_ledger.DEFAULT_LEDGER_FILE, asset=None, unrealized_pnl=0.0, tolerance=0.20):
-    summary = {
-        'external_deposits': get_external_deposits(ledger_file, asset),
-        'external_withdrawals': get_external_withdrawals(ledger_file, asset),
-        'net_external_flows': get_net_external_flows(ledger_file, asset),
-        'commissions': get_total_commissions(ledger_file, asset),
-        'funding': get_total_funding(ledger_file, asset),
-        'realized_trading_pnl': get_realized_trading_pnl(ledger_file, asset),
-    }
-    totals = _totals(ledger_file, asset)
-    initial = _round(totals.get(capital_ledger.TYPE_INITIAL_CAPITAL, 0.0))
-    realized = summary["realized_trading_pnl"]
-    funding = summary["funding"]
+def _records_since_bootstrap(ledger_file, asset=None):
+    records = capital_ledger.read_history(ledger_file=ledger_file, asset=asset)
+    initials = [r for r in records if str(r.get('type') or '').lower() == capital_ledger.TYPE_INITIAL_CAPITAL]
+    if len(initials) != 1:
+        return records, initials, None, records
+    initial = initials[0]
+    metadata = initial.get('metadata') if isinstance(initial.get('metadata'), dict) else {}
+    start = metadata.get('accounting_start_timestamp') or initial.get('timestamp')
+    selected = [r for r in records if r is initial or (start and str(r.get('timestamp') or '') >= str(start))]
+    return records, initials, start, selected
+
+
+def _selected_totals(records):
+    totals = {}
+    for record in records:
+        kind = str(record.get('type') or '').lower()
+        totals[kind] = _round(totals.get(kind, 0.0) + (_float_or_none(record.get('amount')) or 0.0))
+    return totals
+
+
+def get_accounting_summary(current_equity=None, starting_equity=0.0, ledger_file=capital_ledger.DEFAULT_LEDGER_FILE, asset=None, unrealized_pnl=None, tolerance=0.20):
+    """Formula: initial + flows + realized(net fees) + funding + current uPnL - baseline uPnL + adjustments."""
+    _records, initials, start, selected = _records_since_bootstrap(ledger_file, asset)
+    totals = _selected_totals(selected)
+    deposits = _round(totals.get(capital_ledger.TYPE_EXTERNAL_DEPOSIT, 0))
+    withdrawals = _round(totals.get(capital_ledger.TYPE_EXTERNAL_WITHDRAWAL, 0))
+    fees = _round(totals.get(capital_ledger.TYPE_COMMISSION, 0))
+    funding = _round(totals.get(capital_ledger.TYPE_FUNDING_FEE, 0))
+    realized = _round(totals.get(capital_ledger.TYPE_REALIZED_PNL, 0))
+    initial = _round(totals.get(capital_ledger.TYPE_INITIAL_CAPITAL, 0))
+    net_flow = _round(deposits - withdrawals)
     trading_pnl = _round(realized + funding)
-    net_flow = summary["net_external_flows"]
     contributed = _round(initial + net_flow)
-    unknown = _round(totals.get(capital_ledger.TYPE_UNKNOWN_CAPITAL_FLOW, 0.0))
-    adjustment = _round(totals.get(capital_ledger.TYPE_MANUAL_ADJUSTMENT, 0.0))
-    ledger_exists = os.path.isfile(ledger_file)
-    complete = bool(ledger_exists and initial > 0 and unknown == 0)
-    summary.update({
-        "initial_capital": initial if ledger_exists else None,
-        "net_external_flow": net_flow,
-        "net_contributed_capital": contributed if ledger_exists else None,
-        "realized_pnl_net_of_fees": realized,
-        "trading_fees_informational": summary["commissions"],
-        "funding_net": funding,
-        "trading_pnl_net": trading_pnl if complete else None,
-        "trading_roi_pct": _round(trading_pnl / contributed * 100) if complete and contributed > 0 else None,
-        "accounting_complete": complete,
-        "accounting_convention": capital_ledger.ACCOUNTING_CONVENTION,
-    })
+    unknown = _round(totals.get(capital_ledger.TYPE_UNKNOWN_CAPITAL_FLOW, 0))
+    adjustment = _round(totals.get(capital_ledger.TYPE_MANUAL_ADJUSTMENT, 0))
+    exists = os.path.isfile(ledger_file)
+    initial_record = initials[0] if len(initials) == 1 else {}
+    metadata = initial_record.get('metadata') if isinstance(initial_record.get('metadata'), dict) else {}
+    baseline = _float_or_none(metadata.get('baseline_unrealized_pnl'))
+    current = _float_or_none(unrealized_pnl)
+    if baseline is None and len(initials) == 1 and not metadata.get('open_positions_at_bootstrap'):
+        baseline = 0.0
+    complete = bool(exists and len(initials) == 1 and initial > 0 and start and unknown == 0 and baseline is not None)
+    summary = {'external_deposits': deposits, 'external_withdrawals': withdrawals, 'net_external_flows': net_flow, 'commissions': fees, 'funding': funding, 'realized_trading_pnl': realized, 'initial_capital': initial if exists else None, 'net_external_flow': net_flow, 'net_contributed_capital': contributed if exists else None, 'realized_pnl_net_of_fees': realized, 'trading_fees_informational': fees, 'funding_net': funding, 'trading_pnl_net': trading_pnl if complete else None, 'trading_roi_pct': _round(trading_pnl / contributed * 100) if complete and contributed > 0 else None, 'accounting_complete': complete, 'accounting_convention': capital_ledger.ACCOUNTING_CONVENTION, 'baseline_unrealized_pnl': baseline, 'current_unrealized_pnl': current, 'unrealized_change_since_bootstrap': _round(current - baseline) if current is not None and baseline is not None else None, 'accounting_start_timestamp': start, 'pre_bootstrap_activity_excluded': bool(start and metadata.get('pre_bootstrap_pnl_excluded'))}
     equity = _float_or_none(current_equity)
-    unrealized = _float_or_none(unrealized_pnl)
-    if equity is not None and unrealized is not None and ledger_exists:
-        expected = _round(initial + net_flow + trading_pnl + unrealized + adjustment)
+    if equity is not None and current is not None and complete:
+        expected = _round(initial + net_flow + trading_pnl + current - baseline + adjustment)
         difference = _round(equity - expected)
-        effective_tolerance = max(float(tolerance or 0), abs(expected) * 0.001)
-        status = "ALIGNED" if difference == 0 else ("WITHIN_TOLERANCE" if abs(difference) <= effective_tolerance else "UNEXPLAINED_DIFFERENCE")
-        summary.update({"expected_equity": expected, "unexplained_difference": difference, "accounting_status": status, "accounting_tolerance": effective_tolerance})
+        effective_tolerance = max(float(tolerance or 0), abs(expected) * .001)
+        status = 'ALIGNED' if difference == 0 else ('WITHIN_TOLERANCE' if abs(difference) <= effective_tolerance else 'UNEXPLAINED_DIFFERENCE')
+        summary.update({'expected_equity': expected, 'unexplained_difference': difference, 'accounting_status': status, 'accounting_tolerance': effective_tolerance})
     else:
-        summary.update({"expected_equity": None, "unexplained_difference": None, "accounting_status": "INCOMPLETE_DATA", "accounting_tolerance": None})
+        summary.update({'expected_equity': None, 'unexplained_difference': None, 'accounting_status': 'INCOMPLETE_DATA', 'accounting_tolerance': None})
     if current_equity is not None:
         summary['adjusted_equity'] = get_adjusted_equity(current_equity, ledger_file, asset)
         summary['adjusted_pnl'] = get_adjusted_pnl(current_equity, starting_equity, ledger_file, asset)

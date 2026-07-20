@@ -921,6 +921,9 @@ def _audit_feature_records(path, records, report, trade_ids=None):
 
 
 def _audit_capital_ledger(path, records, report):
+    initials = [r for r in records if str(r.get('type') or '').lower() == 'initial_capital']
+    if len(initials) > 1:
+        report.error(path, f'INITIAL_CAPITAL duplicado: {len(initials)}')
     for record in records:
         complete = True
         movement_type = str(record.get('type') or '').lower()
@@ -949,6 +952,27 @@ def _audit_capital_ledger(path, records, report):
             report.warning(path, f'timestamp faltante type={movement_type}')
             report.missing(path, 'timestamp')
             complete = False
+        if movement_type == 'initial_capital':
+            metadata = record.get('metadata') if isinstance(record.get('metadata'), dict) else {}
+            required = ('baseline_unrealized_pnl', 'baseline_spot_unrealized_pnl', 'baseline_futures_unrealized_pnl', 'open_positions_at_bootstrap', 'accounting_start_timestamp', 'pre_bootstrap_pnl_excluded')
+            for field in required:
+                if field not in metadata:
+                    report.error(path, f'INITIAL_CAPITAL metadata faltante: {field}')
+                    complete = False
+            spot = metadata.get('spot_real'); futures = metadata.get('futures_real'); equity = metadata.get('observed_equity')
+            if all(_is_number(v) for v in (spot, futures, equity)) and abs(float(spot) + float(futures) - float(equity)) > 0.20:
+                report.error(path, 'INITIAL_CAPITAL Spot + Futures no coincide con equity')
+                complete = False
+            positions = metadata.get('open_positions_at_bootstrap')
+            baseline = metadata.get('baseline_unrealized_pnl')
+            if isinstance(positions, list) and _is_number(baseline):
+                values = [p.get('unrealized_pnl') for p in positions if isinstance(p, dict)]
+                if not all(_is_number(v) for v in values) or abs(sum(float(v) for v in values) - float(baseline)) > 0.01:
+                    report.error(path, 'INITIAL_CAPITAL desglose de posiciones no suma baseline')
+                    complete = False
+            if metadata.get('pre_bootstrap_pnl_excluded') is not True:
+                report.error(path, 'INITIAL_CAPITAL no excluye PnL pre-bootstrap')
+                complete = False
         if _has_sensitive_metadata(record.get('metadata')):
             report.error(path, 'metadata contiene datos sensibles')
             complete = False

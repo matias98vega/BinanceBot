@@ -23,7 +23,9 @@ TYPE_INITIAL_CAPITAL = 'initial_capital'
 TYPE_MANUAL_ADJUSTMENT = 'manual_adjustment'
 TYPE_RECONCILIATION = 'reconciliation'
 TYPE_UNKNOWN_CAPITAL_FLOW = 'unknown_capital_flow'
-ACCOUNTING_CONVENTION = 'realized_pnl_net_of_trading_fees_v1'
+# REALIZED_PNL is already net of trading fees. COMMISSION is informational;
+# gross PnL requires a new schema/convention and explicit migration.
+ACCOUNTING_CONVENTION = 'realized_pnl_net_of_fees_plus_signed_funding'
 
 SUPPORTED_TYPES = {
     TYPE_EXTERNAL_DEPOSIT,

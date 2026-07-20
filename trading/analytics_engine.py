@@ -1135,7 +1135,8 @@ def get_trading_equity(current_equity, ledger_file=capital_accounting.capital_le
 
 
 def get_capital_accounting_stats(current_equity=None, starting_equity=0.0,
-                                 ledger_file=capital_accounting.capital_ledger.DEFAULT_LEDGER_FILE, asset=None):
+                                 ledger_file=capital_accounting.capital_ledger.DEFAULT_LEDGER_FILE, asset=None,
+                                 unrealized_pnl=None):
     """Return passive accounting metrics without changing historical analytics."""
     return _safe_accounting(
         {
@@ -1151,4 +1152,5 @@ def get_capital_accounting_stats(current_equity=None, starting_equity=0.0,
         starting_equity,
         ledger_file,
         asset,
+        unrealized_pnl,
     )

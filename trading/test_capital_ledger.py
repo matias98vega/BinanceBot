@@ -167,7 +167,7 @@ class CapitalLedgerTests(unittest.TestCase):
         self.assertEqual(first["event_id"], second["event_id"])
         self.assertTrue(second["duplicate"])
         self.assertEqual(len(self._lines()), 1)
-        self.assertEqual(first["accounting_convention"], "realized_pnl_net_of_trading_fees_v1")
+        self.assertEqual(first["accounting_convention"], "realized_pnl_net_of_fees_plus_signed_funding")
 
 
 if __name__ == '__main__':

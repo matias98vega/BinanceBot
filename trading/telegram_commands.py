@@ -1747,6 +1747,7 @@ def _capital_accounting_payload(metrics=None):
         summary = analytics_engine.get_capital_accounting_stats(
             current_equity=current_equity,
             starting_equity=starting_equity,
+            unrealized_pnl=metrics.get('unrealized_pnl'),
         ) or {}
     except Exception:
         summary = {}
@@ -1769,6 +1770,10 @@ def _capital_accounting_payload(metrics=None):
         'trading_roi_pct': summary.get('trading_roi_pct'),
         'accounting_status': summary.get('accounting_status', 'INCOMPLETE_DATA'),
         'accounting_complete': bool(summary.get('accounting_complete')),
+        'accounting_start_timestamp': summary.get('accounting_start_timestamp'),
+        'baseline_unrealized_pnl': summary.get('baseline_unrealized_pnl'),
+        'current_unrealized_pnl': summary.get('current_unrealized_pnl'),
+        'unrealized_change_since_bootstrap': summary.get('unrealized_change_since_bootstrap'),
         'has_reliable_baseline': has_reliable_baseline,
     }
     return payload
@@ -1792,12 +1797,15 @@ def _capital_accounting_lines(metrics=None, compact=False):
         return lines
     return [
         'Contabilidad:',
+        f'Contabilidad desde: {accounting.get("accounting_start_timestamp") or "N/A"}',
         f'Capital inicial: {_fmt_money_or_unavailable(accounting.get("initial_capital"))}',
         f'Depositos externos: {_fmt_money_or_unavailable(accounting.get("external_deposits"))}',
         f'Retiros externos: {_fmt_money_or_unavailable(accounting.get("external_withdrawals"))}',
         f'Flujo externo neto: {_fmt_money_or_unavailable(accounting.get("net_external_flows"))}',
         f'PnL Trading neto: {_fmt_money_or_unavailable(accounting.get("trading_pnl_net"))}',
         f'ROI Trading: {_fmt_pct_or_unavailable(accounting.get("trading_roi_pct"))}',
+        f'PnL no realizado inicial: {_fmt_money_or_unavailable(accounting.get("baseline_unrealized_pnl"))}',
+        f'Cambio no realizado: {_fmt_money_or_unavailable(accounting.get("unrealized_change_since_bootstrap"))}',
         f'Estado contable: {accounting.get("accounting_status") or "INCOMPLETE_DATA"}',
         f'Equity ajustado: {_fmt_money_or_unavailable(accounting.get("adjusted_equity"))}',
         f'PnL ajustado: {_fmt_money_or_unavailable(accounting.get("adjusted_pnl"))}',
