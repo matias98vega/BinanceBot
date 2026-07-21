@@ -1,3 +1,9 @@
+# 2026-07-21 — Telegram presentation polish
+
+- Home compacta, Diagnóstico con detalle técnico y gate AUDIT_ONLY explícito.
+- Neutral/Sideways consolidado sólo en presentación; símbolos paginados y progreso schema v2 liviano.
+- Sistema usa estado persistido y Timeline mantiene Operativo por defecto con hora UY.
+
 # 2026-07-21 — Biblioteca sanitizada de incidentes Replay
 
 - Seis regresiones offline permanentes: ADA stale Spot, SOL orphan Futures, ONDO→XRP parcial, OCO post-fill, cierre Spot externo con dust y timeout incierto.

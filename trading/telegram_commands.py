@@ -249,7 +249,11 @@ def _fmt_count(value):
 
 
 def _fmt_ratio(value):
-    return 'N/A' if value is None else _fmt_number(value, 2)
+    if value is None: return "N/A"
+    try:
+        if float(value) == float("inf"): return "∞"
+    except (TypeError, ValueError): pass
+    return _fmt_number(value, 2)
 
 
 def _fmt_stat_pct(value):
@@ -991,7 +995,7 @@ def _market_regime_label(value):
         'bullish': 'Bull',
         'bear': 'Bear',
         'bearish': 'Bear',
-        'sideways': 'Sideways',
+        'sideways': 'Neutral',
         'neutral': 'Neutral',
         'unknown': 'Unknown',
     }
@@ -1005,6 +1009,73 @@ def _market_regime_label(value):
         'unknown': '\u26AA',
     }
     return icons.get(key, '\u26AA'), labels.get(key, str(value or 'No disponible').capitalize())
+
+
+def _presentation_regime(value):
+    key = str(value or 'unknown').strip().lower()
+    return 'neutral' if key in {'neutral', 'sideways', 'sideway'} else key
+
+
+def _merge_visual_buckets(*buckets):
+    rows = [bucket for bucket in buckets if isinstance(bucket, dict)]
+    merged = {}
+    for key in ('trades', 'open', 'closed', 'win', 'loss', 'breakeven', 'pnl_total', 'gross_profit', 'gross_loss'):
+        values = [_to_float(row.get(key)) for row in rows]
+        merged[key] = sum(value for value in values if value is not None)
+    closed = merged['closed'] or merged['win'] + merged['loss'] + merged['breakeven']
+    merged['closed'] = closed
+    merged['win_rate'] = (100.0 * merged['win'] / closed) if closed else None
+    merged['expectancy'] = (merged['pnl_total'] / closed) if closed else None
+    gross_loss = abs(merged['gross_loss'])
+    merged['profit_factor'] = (merged['gross_profit'] / gross_loss) if gross_loss else (float('inf') if merged['gross_profit'] > 0 else None)
+    return merged
+
+
+FEATURES_HISTORY_FILE = os.path.join(PROJECT_DIR, 'data', 'history', 'features.jsonl')
+TRADES_HISTORY_FILE = os.path.join(PROJECT_DIR, 'data', 'history', 'trades.jsonl')
+
+
+def _feature_schema_progress(features_file=FEATURES_HISTORY_FILE, trades_file=TRADES_HISTORY_FILE):
+    if not os.path.exists(features_file) or not os.path.exists(trades_file):
+        return {"schema": "v2", "status": "BLOQUEADO POR CALIDAD", "available": False}
+    if _is_test_mode() and features_file == FEATURES_HISTORY_FILE and trades_file == TRADES_HISTORY_FILE:
+        return {"schema": "v2", "captures": 0, "closed": 0, "long_closed": 0, "short_closed": 0, "days": 0, "available": True, "status": "ACUMULANDO DATOS"}
+    features, feature_errors = _read_jsonl(features_file)
+    if feature_errors:
+        return {'schema': 'v2', 'status': 'BLOQUEADO POR CALIDAD', 'available': False}
+    v2 = [row for row in features if _to_int(row.get('feature_schema_version') or row.get('schema_version')) >= 2]
+    ids = {str((row.get('identification') or {}).get('trade_id') or row.get('trade_id')) for row in v2}
+    ids.discard('None')
+    trades, trade_errors = _read_jsonl(trades_file)
+    closed = {}
+    for row in trades:
+        trade_id = str(row.get('trade_id') or '')
+        if trade_id in ids and str(row.get('status') or '').upper() == 'CLOSED':
+            closed[trade_id] = str(row.get('side') or row.get('direction') or '').upper()
+    timestamps = [_parse_time((row.get('identification') or {}).get('timestamp') or row.get('recorded_at')) for row in v2]
+    timestamps = [value for value in timestamps if value]
+    days = max(0, int((max(timestamps) - min(timestamps)).total_seconds() / 86400)) if len(timestamps) > 1 else 0
+    long_closed = sum(side == 'LONG' for side in closed.values())
+    short_closed = sum(side == 'SHORT' for side in closed.values())
+    unavailable = bool(feature_errors or trade_errors)
+    ready = not unavailable and len(closed) >= 150 and long_closed >= 50 and short_closed >= 50 and days >= 28
+    status = 'BLOQUEADO POR CALIDAD' if unavailable else 'LISTO PARA REEVALUAR' if ready else 'ACUMULANDO DATOS'
+    return {'schema': 'v2', 'captures': len(v2), 'closed': len(closed), 'long_closed': long_closed,
+            'short_closed': short_closed, 'days': days, 'available': not unavailable, 'status': status}
+
+
+def _feature_progress_lines(progress=None):
+    progress = progress if isinstance(progress, dict) else _feature_schema_progress()
+    if not progress.get('available'):
+        return ['Schema features: v2', 'Datos v2: N/A', 'Estado: ' + str(progress.get('status') or 'BLOQUEADO POR CALIDAD')]
+    return [
+        'Schema features: ' + str(progress.get('schema', 'v2')),
+        'Capturas: ' + str(progress.get('captures', 0)),
+        'Cierres: ' + str(progress.get('closed', 0)) + ' / 150',
+        'LONG: ' + str(progress.get('long_closed', 0)) + ' / 50 | SHORT: ' + str(progress.get('short_closed', 0)) + ' / 50',
+        'Tiempo: ' + str(progress.get('days', 0)) + ' / 28 dias',
+        'Estado: ' + str(progress.get('status', 'ACUMULANDO DATOS')),
+    ]
 
 
 def _market_info(snapshot=None):
@@ -1938,8 +2009,13 @@ def _timeline_text(filter_text=None):
     if not events:
         lines.append('Sin eventos registrados.')
     for event in events:
-        lines.append(decision_timeline.compact_event_for_telegram(event))
-        lines.append('')
+        timestamp = event.get("occurred_at") or event.get("timestamp") or event.get("recorded_at")
+        label = str(event.get("message") or event.get("summary") or event.get("event_type") or event.get("event") or "Evento").replace("_", " ")
+        reason = event.get("reason_code") or (event.get("details") or {}).get("reason")
+        lines.append(f"{_fmt_uy_time(timestamp)} — {label}")
+        if reason:
+            lines.append(str(reason).replace("_", " ").lower())
+        lines.append("")
     return '\n'.join(lines).rstrip()
 
 
@@ -1990,68 +2066,23 @@ class HomePage(MenuPage):
     page_id = 'home'
 
     def render(self):
-        state = _state()
         snapshot = _bot_state()
         system = snapshot.get('system') if isinstance(snapshot.get('system'), dict) else {}
-        pnl = _analytics_pnl_summary(snapshot)
-        health, _, _ = _health_summary()
-        if system.get('health'):
-            health = system.get('health')
-        bot = _bot_status()
-        guardian = _guardian_status()
-        metrics = _exposure_metrics()
-        max_longs = _display_capacity(metrics["long_count"], metrics["max_longs"])
+        pnl, metrics = _analytics_pnl_summary(snapshot), _exposure_metrics()
+        bot, guardian = _bot_status(), _guardian_status()
         reconciliation = metrics.get('futures_reconciliation') or {}
-        reconciliation_risk = _futures_reconciliation_has_risk(metrics, reconciliation)
-        permitted_shorts = _reconciliation_allowed_count(metrics, reconciliation)
-        observed_shorts = _reconciliation_observed_count(metrics, reconciliation)
-        compact_short_count = metrics["short_count"]
-        compact_max_shorts = metrics["max_shorts"]
-        max_shorts = _display_capacity(metrics["short_count"], metrics["max_shorts"])
-        if reconciliation and reconciliation_risk:
-            short_lines = [
-                '📉 Shorts:',
-                f'- Observadas: {observed_shorts}',
-                f'- Gestionadas: {_to_int(reconciliation.get("managed_count"))}',
-                f'- Permitidas ahora: {permitted_shorts}',
-                f'- Sin proteccion: {_to_int(reconciliation.get("unprotected_count"))}',
-                f'- Estado: {_reconciliation_status_label(reconciliation)}',
-            ]
-        elif reconciliation:
-            short_lines = [f'📉 Shorts: {compact_short_count}/{compact_max_shorts}']
-        else:
-            short_lines = [f'📉 Shorts: {metrics["short_count"]}/{max_shorts}']
-        lines = [
-            f'{_status_icon(bot)} Bot {bot}',
-            f'{_status_icon(guardian)} Guardian {guardian}',
-            f'\u2764\ufe0f Healthcheck {health}',
-            '',
-            f'\U0001F4B0 Equity: {_fmt_equity(metrics)}',
-            f'\U0001F4C8 Hoy: {_fmt_pnl(pnl.get("today"))}',
-            f'\U0001F4CA Total: {_fmt_pnl(pnl.get("total"))}',
-            '',
-            f'📈 Longs: {metrics["long_count"]}/{max_longs}',
-            f'Spot: {_fmt_money(metrics["spot_used"])} / {_fmt_money(metrics["spot_real"])}',
-            '',
-            *short_lines,
-            f'Futures margen: {_fmt_money(metrics["futures_used"])} / {_fmt_money(metrics["futures_real"])}',
-            '',
-            *_market_home_lines(snapshot),
-            '',
-            f'\U0001F552 Ultimo ciclo: {_fmt_uy_time(system.get("last_execution")) if system.get("last_execution") else _mtime_uy_time(CONFIG.state_file)}',
-        ]
-        return '\n'.join(lines)
+        shorts = f"{_reconciliation_observed_count(metrics, reconciliation)} obs / {_to_int(reconciliation.get('managed_count'))} gest ⚠️" if _futures_reconciliation_has_risk(metrics, reconciliation) else f"{metrics['short_count']}/{_display_capacity(metrics['short_count'], metrics['max_shorts'])}"
+        return '\n'.join(['🤖 BinanceBot', f'Bot: {_status_icon(bot)} {bot} | Guardian: {_status_icon(guardian)} {guardian}', '',
+            f'💰 Equity: {_fmt_equity(metrics)}', f'Hoy: {_fmt_pnl(pnl.get("today"))} | Total: {_fmt_pnl(pnl.get("total"))}', '',
+            f'📈 Longs: {metrics["long_count"]}/{_display_capacity(metrics["long_count"], metrics["max_longs"])}', f'📉 Shorts: {shorts}', '',
+            f'💼 Spot: {_fmt_money(metrics["spot_used"])} / {_fmt_money(metrics["spot_real"])}', f'💼 Futures: {_fmt_money(metrics["futures_used"])} / {_fmt_money(metrics["futures_real"])}', '',
+            '🌐 Mercado: ' + _current_market_regime(snapshot)[1], f'BTC 4h: {_fmt_signed_pct(_market_info(snapshot).get("btc_change_4h"))} | BTC: {_fmt_usd_price(_market_info(snapshot).get("btc_price"))}', '',
+            f'🕒 Ultimo ciclo: {_fmt_uy_time(system.get("last_execution")) if system.get("last_execution") else _mtime_uy_time(CONFIG.state_file)}'])
 
     def keyboard(self):
-        return [
-            [_button('\U0001F4B0 Capital', 'capital'), _button('\U0001F4C2 Posiciones', 'positions')],
-            [_button('\U0001F4C8 Trades', 'trades'), _button('\U0001F50D Inspeccionar Trade', 'inspect')],
-            [_button('\u2764\ufe0f Salud', 'health')],
-            [_button('\U0001FA7A Diagnostico', 'diagnostics'), _button('\U0001F4F8 Snapshots', 'snapshots')],
-            [_button('\U0001F4DC Timeline', 'timeline'), _button('\U0001F4A1 Insights', 'insights')],
-            [_button('\U0001F4CA Estadisticas', 'stats'), _button('\u2699 Sistema', 'system')],
-            [_button('\U0001F504 Actualizar', 'r:home')],
-        ]
+        return [[_button('💰 Capital', 'capital'), _button('📂 Posiciones', 'positions')], [_button('📈 Trades', 'trades'), _button('🔎 Inspeccionar Trade', 'inspect')],
+            [_button('❤️ Salud', 'health')], [_button('🩺 Diagnostico', 'diagnostics'), _button('📸 Snapshots', 'snapshots')],
+            [_button('📜 Timeline', 'timeline'), _button('💡 Insights', 'insights')], [_button('📊 Estadisticas', 'stats'), _button('⚙ Sistema', 'system')], [_button('🔄 Actualizar', 'r:home')]]
 
 
 class CapitalPage(MenuPage):
@@ -2223,67 +2254,43 @@ class DiagnosticsPage(MenuPage):
     page_id = 'diagnostics'
 
     def render(self):
-        diagnostics = _diagnostics()
-        metrics = _exposure_metrics()
-        rebalance = diagnostics.get('rebalance') or {}
-        direction_label = _direction_label(rebalance.get('direction'))
-        max_longs = _display_capacity(metrics["long_count"], metrics["max_longs"])
-        max_shorts = _display_capacity(metrics["short_count"], metrics["max_shorts"])
-        return '\n'.join([
-            '\U0001FA7A Diagnostico',
-            '',
-            'Version:',
-            *_version_metadata_lines(),
-            '',
-            'Mercado:',
-            *_market_summary_lines(),
-            '',
-            'Capacidad',
-            '',
-            'Spot:',
-            f'{_fmt_money(metrics["spot_used"])} / {_fmt_money(metrics["spot_target"])}',
-            '',
-            'Futures:',
-            f'{_fmt_money(metrics["futures_used"])} / {_fmt_money(metrics["futures_target"])}',
-            '',
-            'Posiciones posibles:',
-            '',
-            'Longs:',
-            f'{metrics["long_count"]}/{max_longs}',
-            f'Objetivo: {metrics.get("target_max_longs") if metrics.get("target_max_longs") is not None else "N/D"} | Nuevas: {"si" if metrics.get("long_new_entries_allowed") else "no"}',
-            f'Estado objetivo: {metrics.get("long_capacity_status") or "N/D"}',
-            '',
-            'Shorts:',
-            f'{metrics["short_count"]}/{max_shorts}',
-            '',
-            'Entradas',
-            _entries_label(diagnostics.get('entries_status'), diagnostics.get('entries_allowed')),
-            diagnostics.get('entries_reason'),
-            '',
-            'Longs',
-            _side_label(diagnostics.get('long_entries_status')),
-            _compact_waiting_reason(diagnostics.get('long_entries_reason')),
-            '',
-            'Shorts',
-            _side_label(diagnostics.get('short_entries_status')),
-            _compact_waiting_reason(diagnostics.get('short_entries_reason')),
-            '',
-            'Rebalance',
-            _rebalance_label(diagnostics.get('rebalance_status')),
-            direction_label,
-            f'Pendiente: {_fmt_money(rebalance.get("amount_pending"))}',
-            '',
-            'Proxima accion:',
-            str(diagnostics.get('next_expected_action') or 'N/D').replace('->', '\u2192'),
-            '',
-            'Info:',
-            'Ninguno',
-            '',
-            'Error:',
-            diagnostics.get('last_error'),
-            '',
-            '\u2500' * 12,
-        ])
+        snapshot, metrics = _bot_state(), _exposure_metrics()
+        gate = snapshot.get('pre_entry_safety_summary') if isinstance(snapshot.get('pre_entry_safety_summary'), dict) else {}
+        mode, status, safe = str(gate.get('mode') or 'N/A').upper(), str(gate.get('status') or 'N/A').upper(), gate.get('safe_to_enter')
+        reasons = gate.get('blocking_reasons') or []
+        reason = str(reasons[0]).replace('BLOCKED_', '').replace('_', ' ').lower() if reasons else 'sin bloqueo'
+        reconciliation = metrics.get('futures_reconciliation') or {}
+        positions = _state().get('positions') or []
+        protected = all(p.get('direction') != 'long' or p.get('oco_order_list_id') for p in positions) and _to_int(reconciliation.get('unprotected_count')) == 0
+        health = str((snapshot.get('system') or {}).get('health') or 'UNKNOWN').upper()
+        return '\n'.join(['🩺 Diagnostico', '', f'Sistema: {"✅" if health == "OK" else "⚠️"} {health}', f'Pre-entry: {"🟡" if mode == "AUDIT_ONLY" else "❔"} {mode}',
+            f'Evaluacion: {"✅ SAFE" if safe is True else "⚠️ " + status if safe is False else "❔ N/A"}',
+            f'Entrada real: {"permitida por modo auditoria" if mode == "AUDIT_ONLY" else "permitida" if safe else "bloqueada"}', f'Motivo: {reason}', '',
+            f'Posiciones: {"✅ Protegidas" if protected else "⛔ Revisar proteccion"}',
+            f'Reconciliacion: {"✅ Alineada" if not _futures_reconciliation_has_risk(metrics, reconciliation) else "🟡 Pendiente"}',
+            f'Capacidad: L {metrics["long_count"]}/{metrics["max_longs"]} | S {metrics["short_count"]}/{metrics["max_shorts"]}',
+            f'Auditor: {"⚠️ REVISAR" if safe is False or snapshot.get("operational_state") == "BLOCKED_RECONCILIATION" else "N/A"}', '', *_feature_progress_lines(), '',
+            f'Actualizado: {_fmt_uy(snapshot.get("last_successful_cycle") or (snapshot.get("system") or {}).get("last_execution"))}'])
+
+    def keyboard(self):
+        return [[_button('Detalle tecnico', 'diagnostics_detail')], [_button('◀ Menu', 'home'), _button('🔄 Actualizar', 'r:diagnostics')]]
+
+
+class DiagnosticsDetailPage(MenuPage):
+    page_id = 'diagnostics_detail'
+
+    def render(self):
+        snapshot = _bot_state()
+        gate = snapshot.get('pre_entry_safety_summary') if isinstance(snapshot.get('pre_entry_safety_summary'), dict) else {}
+        freshness = gate.get('freshness') or {}
+        return '\n'.join(['🧰 Detalle tecnico', '', f'Gate: {gate.get("status") or "N/A"}', f'Modo: {gate.get("mode") or "N/A"}',
+            f'safe_to_enter: {gate.get("safe_to_enter") if "safe_to_enter" in gate else "N/A"}', f'entry_allowed: {True if gate.get("mode") == "AUDIT_ONLY" else gate.get("safe_to_enter")}',
+            'Razones: ' + (', '.join(gate.get('blocking_reasons') or []) or 'ninguna'), f'Simbolo/lado: {gate.get("symbol") or "N/A"} {gate.get("side") or ""}'.rstrip(),
+            f'Freshness: {freshness.get("exchange") or "N/A"}', f'Observado: {_fmt_uy(gate.get("observed_at"))}',
+            f'Operational state: {snapshot.get("operational_state") or "N/A"}', f'Operational reason: {snapshot.get("operational_reason") or "N/A"}'])
+
+    def keyboard(self):
+        return [[_button('◀ Diagnostico', 'diagnostics')], [_button('🔄 Actualizar', 'r:diagnostics_detail')]]
 
 
 class TradesPage(MenuPage):
@@ -2496,22 +2503,38 @@ class StatsGeneralPage(MenuPage):
         return [[_button('\u25C0 Estadisticas', 'stats')], [_button('\U0001F504 Actualizar', f'r:{self.page_id}')]]
 
 
+def _render_stats_symbols_page(page_number=1, page_size=7):
+    stats, warning = _stats_payload()
+    ranking = sorted(stats.get('symbol_ranking') or [], key=lambda item: (-_to_int(item.get('trades')), -(_to_float(item.get('pnl_total')) or 0), str(item.get('symbol') or '')))
+    total_pages = max(1, (len(ranking) + page_size - 1) // page_size)
+    page_number = min(max(1, _to_int(page_number, 1)), total_pages)
+    start = (page_number - 1) * page_size
+    lines = [f'🪙 Por simbolo ({page_number}/{total_pages})', '']
+    lines.extend(_stats_warning_lines(warning))
+    if not ranking:
+        lines.append('Sin estadisticas por simbolo.')
+    for item in ranking[start:start + page_size]:
+        symbol = str(item.get('symbol') or 'UNKNOWN')[:24]
+        lines.extend([f'{symbol} — {_fmt_count(item.get("trades"))} trades',
+                      f'WR {_fmt_stat_pct(item.get("win_rate"))} | PnL {_fmt_pnl(item.get("pnl_total"))} | PF {_fmt_ratio(item.get("profit_factor"))}', ''])
+    nav = []
+    if page_number > 1:
+        nav.append(_button('Anterior', f'stats_symbols:{page_number - 1}'))
+    if page_number < total_pages:
+        nav.append(_button('Siguiente', f'stats_symbols:{page_number + 1}'))
+    keyboard = [nav] if nav else []
+    keyboard.extend([[_button('◀ Estadisticas', 'stats')], [_button('🔄 Actualizar', f'stats_symbols:{page_number}')]])
+    return {'page_id': 'stats_symbols', 'text': '\n'.join(lines).rstrip(), 'reply_markup': {'inline_keyboard': keyboard}}
+
+
 class StatsSymbolsPage(MenuPage):
     page_id = 'stats_symbols'
 
     def render(self):
-        stats, warning = _stats_payload()
-        ranking = stats.get('symbol_ranking') or []
-        lines = ['\U0001FA99 Por simbolo', '']
-        lines.extend(_stats_warning_lines(warning))
-        if not ranking:
-            lines.append('Sin estadisticas por simbolo.')
-        for item in ranking:
-            lines.append(_bucket_line(item.get('symbol') or 'UNKNOWN', item))
-        return '\n'.join(lines)
+        return _render_stats_symbols_page(1)['text']
 
     def keyboard(self):
-        return [[_button('\u25C0 Estadisticas', 'stats')], [_button('\U0001F504 Actualizar', f'r:{self.page_id}')]]
+        return _render_stats_symbols_page(1)['reply_markup']['inline_keyboard']
 
 
 class StatsDirectionsPage(MenuPage):
@@ -2536,16 +2559,19 @@ class StatsRegimesPage(MenuPage):
     def render(self):
         stats, warning = _stats_payload()
         data = stats.get('by_regime') or {}
-        labels = [('bull', 'Bull'), ('bear', 'Bear'), ('sideways', 'Sideways'), ('neutral', 'Neutral'), ('unknown', 'Unknown')]
-        lines = ['\U0001F4C8 Por regimen', '']
+        def buckets(*names):
+            return [value for key, value in data.items() if _presentation_regime(key) in names]
+        groups = [('Bull', buckets('bull', 'bullish')), ('Bear', buckets('bear', 'bearish')),
+                  ('Neutral', buckets('neutral')), ('Unknown', [value for key, value in data.items() if _presentation_regime(key) not in {'bull', 'bullish', 'bear', 'bearish', 'neutral'}])]
+        lines = ['📈 Por regimen', '']
         lines.extend(_stats_warning_lines(warning))
-        for key, label in labels:
-            bucket = data.get(key) or data.get(key.upper()) or {}
-            lines.append(f'{label}: Trades {_fmt_count(bucket.get("trades"))} | WR {_fmt_stat_pct(bucket.get("win_rate"))} | PnL {_fmt_pnl(bucket.get("pnl_total"))}')
+        for label, items in groups:
+            bucket = _merge_visual_buckets(*items)
+            lines.append(f'{label}: Trades {_fmt_count(bucket.get("trades"))} | WR {_fmt_stat_pct(bucket.get("win_rate"))} | PnL {_fmt_pnl(bucket.get("pnl_total"))} | PF {_fmt_ratio(bucket.get("profit_factor"))}')
         return '\n'.join(lines)
 
     def keyboard(self):
-        return [[_button('\u25C0 Estadisticas', 'stats')], [_button('\U0001F504 Actualizar', f'r:{self.page_id}')]]
+        return [[_button('◀ Estadisticas', 'stats')], [_button('🔄 Actualizar', f'r:{self.page_id}')]]
 
 
 class StatsTimePage(MenuPage):
@@ -2618,32 +2644,13 @@ class SystemPage(MenuPage):
 
     def render(self):
         snapshot = _bot_state()
-        bot = _bot_status()
-        guardian = _guardian_status()
-        dashboard = _dashboard_status()
-        telegram = _telegram_service_status()
-        dashboard_since = _systemd_active_since('binancebot-dashboard.service')
-        telegram_since = _systemd_active_since('binancebot-telegram.service')
-        lines = [
-            '\u2699 Sistema',
-            '',
-            f'{_status_icon(bot)} Bot: {bot}',
-            f'{_status_icon(guardian)} Guardian: {guardian}',
-            f'{_status_icon(dashboard)} Dashboard: {dashboard}',
-            f'{_status_icon(telegram)} Telegram: {telegram}',
-        ]
-        lines.extend(_safety_pause_lines(snapshot))
-        lines.extend([
-            *_version_metadata_lines(),
-            f'Commit: {_git_commit()}',
-            f'Deploy: {_git_deploy_time()}',
-            f'Dashboard desde: {dashboard_since}',
-            f'Telegram desde: {telegram_since}',
-            f'Servidor uptime: {_server_uptime()}',
-            '',
-            '\u2500' * 12,
-        ])
-        return '\n'.join(lines)
+        system = snapshot.get('system') if isinstance(snapshot.get('system'), dict) else {}
+        gate = snapshot.get('pre_entry_safety_summary') if isinstance(snapshot.get('pre_entry_safety_summary'), dict) else {}
+        return '\n'.join(['⚙ Sistema', '', f'{_status_icon(_bot_status())} Bot: {_bot_status()}',
+            f'{_status_icon(_guardian_status())} Guardian: {_guardian_status()}',
+            f'Ciclo: {system.get("health") or "N/A"}', f'Ultimo ciclo: {_fmt_uy(system.get("last_execution") or snapshot.get("last_successful_cycle"))}',
+            f'Operational state: {snapshot.get("operational_state") or "N/A"}', f'Gate mode: {gate.get("mode") or "N/A"}', *_safety_pause_lines(snapshot),
+            *_feature_progress_lines(), *_version_metadata_lines()])
 
 
 MENU_PAGES = {
@@ -2652,6 +2659,7 @@ MENU_PAGES = {
     'positions': PositionsPage(),
     'health': HealthPage(),
     'diagnostics': DiagnosticsPage(),
+    'diagnostics_detail': DiagnosticsDetailPage(),
     'trades': TradesPage(),
     'inspect': TradeInspectorPage(),
     'snapshots': SnapshotsPage(),
@@ -2762,7 +2770,14 @@ def _dispatch_callback(data):
         data = data.split(':', 1)[1] or 'home'
     if data == 'refresh':
         data = 'home'
+    if data.startswith('stats_symbols:'):
+        try:
+            page_number = int(data.split(':', 1)[1])
+        except (TypeError, ValueError):
+            page_number = 1
+        return _render_stats_symbols_page(page_number)
     if data.startswith("timeline:"):
+
         timeline_filter = data.split(":", 1)[1] or "OPERATIONAL"
         return {
             "page_id": "timeline",

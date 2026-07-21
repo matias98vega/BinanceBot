@@ -202,7 +202,7 @@ class TelegramStatsTests(unittest.TestCase):
 
         self.assertIn('Bull: Trades 1', text)
         self.assertIn('Bear: Trades 1', text)
-        self.assertIn('Sideways: Trades 0', text)
+        self.assertNotIn('Sideways:', text)
         self.assertIn('Neutral: Trades 0', text)
         self.assertIn('Unknown: Trades 1', text)
 
@@ -244,12 +244,13 @@ class TelegramStatsTests(unittest.TestCase):
 
         self.assertIn('Hoy: +1.23 USDT', text)
         self.assertIn('Total: +12.34 USDT', text)
-        self.assertIn('Bear | BTC 4h -1.23%', text)
+        self.assertIn('Mercado: Bear', text)
+        self.assertIn('BTC 4h: -1.23%', text)
         self.assertIn('BTC: $61,234.56', text)
         self.assertIn('📈 Longs: 1/2', text)
         self.assertIn('Spot: 8.40 USDT / 26.90 USDT', text)
         self.assertIn('📉 Shorts: 1/2', text)
-        self.assertIn('Futures margen: 18.20 USDT / 27.10 USDT', text)
+        self.assertIn('💼 Futures: 18.20 USDT / 27.10 USDT', text)
         self.assertIn('Ultimo ciclo: 09:00 UY', text)
         self.assertNotIn('Spot: 8.40 USDT / 25.00 USDT', text)
         self.assertNotIn('Futures margen: 18.20 USDT / 30.00 USDT', text)
@@ -543,11 +544,7 @@ class TelegramStatsTests(unittest.TestCase):
             home = telegram_commands._render_page('home')['text']
 
         self.assertIn('Shorts:', home)
-        self.assertIn('- Observadas: 5', home)
-        self.assertIn('- Gestionadas: 1', home)
-        self.assertIn('- Permitidas ahora: 0', home)
-        self.assertIn('- Sin proteccion: 5', home)
-        self.assertIn('- Estado: EXCESO FUTURES', home)
+        self.assertIn('Shorts: 5 obs / 1 gest ⚠️', home)
         self.assertNotIn('Shorts: 5/5', home)
 
     def test_home_compacts_healthy_futures_reconciliation(self):
@@ -577,7 +574,7 @@ class TelegramStatsTests(unittest.TestCase):
 
         self.assertIn('Shorts: 0/0', home)
         self.assertNotIn('Shorts: 0/2', home)
-        self.assertIn('Futures margen: 0.00 USDT / 0.10 USDT', home)
+        self.assertIn('💼 Futures: 0.00 USDT / 0.10 USDT', home)
         self.assertNotIn('- Observadas:', home)
         self.assertNotIn('- Gestionadas:', home)
         self.assertNotIn('- Sin proteccion:', home)
@@ -609,7 +606,7 @@ class TelegramStatsTests(unittest.TestCase):
             home = telegram_commands._render_page('home')['text']
 
         self.assertIn('Shorts: 2/2', home)
-        self.assertIn('Futures margen: 17.72 USDT / 23.72 USDT', home)
+        self.assertIn('💼 Futures: 17.72 USDT / 23.72 USDT', home)
         self.assertNotIn('- Observadas:', home)
         self.assertNotIn('- Gestionadas:', home)
         self.assertNotIn('- Permitidas ahora:', home)
@@ -636,13 +633,9 @@ class TelegramStatsTests(unittest.TestCase):
              patch.object(telegram_commands, '_market_summary_lines', return_value=['Regimen actual: Neutral']):
             text = telegram_commands._render_page('diagnostics')['text']
 
-        self.assertIn('Bot version: v1.2-sizing-v2', text)
-        self.assertIn('Strategy version: current', text)
-        self.assertIn('Schema version: v1', text)
-        self.assertIn('Entradas\n', text)
-        self.assertIn('Longs\n', text)
-        self.assertIn('Shorts\n', text)
-        self.assertIn('Rebalance\n', text)
+        self.assertIn("Diagnostico", text)
+        self.assertIn("Pre-entry:", text)
+        self.assertIn("Schema features: v2", text)
 
     def test_home_expands_futures_reconciliation_when_unmanaged(self):
         metrics = self._metrics(short_count=1)
@@ -667,10 +660,7 @@ class TelegramStatsTests(unittest.TestCase):
             home = telegram_commands._render_page('home')['text']
 
         self.assertIn('Shorts:', home)
-        self.assertIn('- Observadas: 1', home)
-        self.assertIn('- Gestionadas: 0', home)
-        self.assertIn('- Permitidas ahora: 2', home)
-        self.assertIn('- Estado: RIESGO NO GESTIONADAS', home)
+        self.assertIn('Shorts: 1 obs / 0 gest ⚠️', home)
 
     def test_live_open_positions_do_not_change_historical_stats(self):
         stats = sample_stats()
@@ -1412,5 +1402,130 @@ class TelegramStatsTests(unittest.TestCase):
         self.assertIn('short_diag:1', buttons)
 
 
-if __name__ == '__main__':
+class TelegramPresentationPolishTests(unittest.TestCase):
+    def _stats(self, ranking=None, regimes=None):
+        data = sample_stats()
+        data['symbol_ranking'] = ranking or []
+        if regimes is not None:
+            data['by_regime'] = regimes
+        return data
+
+    def test_regime_presentation_consolidates_neutral_sideways_variants(self):
+        regimes = {
+            'Neutral': {'trades': 2, 'closed': 2, 'win': 1, 'loss': 1, 'pnl_total': 2, 'gross_profit': 3, 'gross_loss': 1},
+            'SIDEWAYS': {'trades': 3, 'closed': 3, 'win': 2, 'loss': 1, 'pnl_total': 4, 'gross_profit': 6, 'gross_loss': 2},
+            'mystery': {'trades': 1, 'closed': 1, 'pnl_total': -1},
+        }
+        with patch.object(telegram_commands, '_stats_payload', return_value=(self._stats(regimes=regimes), None)):
+            text = telegram_commands._render_page('stats_regimes')['text']
+        self.assertIn('Neutral: Trades 5 | WR 60.0% | PnL +6.00 USDT | PF 3.00', text)
+        self.assertNotIn('Sideways:', text)
+        self.assertEqual(telegram_commands._market_regime_label('SIDEWAYS')[1], 'Neutral')
+        self.assertEqual(telegram_commands._market_regime_label('mystery')[1], 'Mystery')
+
+    def test_regime_presentation_handles_only_neutral_or_only_sideways(self):
+        for key in ('neutral', 'sideways'):
+            with self.subTest(key=key), patch.object(telegram_commands, '_stats_payload', return_value=(self._stats(regimes={key: {'trades': 1, 'closed': 1, 'win': 1, 'pnl_total': 1, 'gross_profit': 1}}), None)):
+                text = telegram_commands._render_page('stats_regimes')['text']
+                self.assertIn('Neutral: Trades 1', text)
+
+    def test_home_is_compact_and_keeps_unified_values(self):
+        snapshot = {'system': {'last_execution': '2026-01-01T12:00:00Z'}, 'market': {'regime': 'sideways', 'btc_change_4h': 1, 'btc_price': 60000}}
+        metrics = {'long_count': 1, 'short_count': 0, 'max_longs': 2, 'max_shorts': 2, 'spot_used': 10, 'spot_real': 30, 'futures_used': 0, 'futures_real': 20, 'total_real': 50, 'futures_reconciliation': {}}
+        with patch.object(telegram_commands, '_bot_state', return_value=snapshot), patch.object(telegram_commands, '_analytics_pnl_summary', return_value={'today': None, 'total': 2}), patch.object(telegram_commands, '_exposure_metrics', return_value=metrics), patch.object(telegram_commands, '_bot_status', return_value='ONLINE'), patch.object(telegram_commands, '_guardian_status', return_value='ONLINE'):
+            text = telegram_commands._render_page('home')['text']
+        self.assertLess(len(text), 650)
+        self.assertIn('🤖 BinanceBot', text)
+        self.assertIn('Hoy: N/A | Total: +2.00 USDT', text)
+        self.assertIn('💼 Spot: 10.00 USDT / 30.00 USDT', text)
+        self.assertIn('Mercado: Neutral', text)
+        self.assertNotIn('target', text.lower())
+        self.assertNotIn('Pre-entry', text)
+
+    def test_diagnostics_distinguishes_audit_mode_from_blocking_result(self):
+        snapshot = {'system': {'health': 'OK', 'last_execution': '2026-07-21T20:00:00Z'}, 'pre_entry_safety_summary': {'mode': 'AUDIT_ONLY', 'status': 'BLOCKED_POSITION_MISMATCH', 'safe_to_enter': False, 'blocking_reasons': ['BLOCKED_POSITION_MISMATCH'], 'freshness': {'exchange': 'FRESH'}, 'symbol': 'ETHUSDT', 'side': 'LONG', 'observed_at': '2026-07-21T19:00:00Z'}, 'operational_state': 'BLOCKED_RECONCILIATION', 'operational_reason': 'BLOCKED_POSITION_MISMATCH'}
+        metrics = {'long_count': 2, 'short_count': 0, 'max_longs': 2, 'max_shorts': 2, 'futures_reconciliation': {'aligned': True}}
+        with patch.object(telegram_commands, '_bot_state', return_value=snapshot), patch.object(telegram_commands, '_state', return_value={'positions': [{'direction': 'long', 'oco_order_list_id': 1}]}), patch.object(telegram_commands, '_exposure_metrics', return_value=metrics), patch.object(telegram_commands, '_feature_schema_progress', return_value={'schema': 'v2', 'captures': 2, 'closed': 0, 'long_closed': 0, 'short_closed': 0, 'days': 0, 'available': True, 'status': 'ACUMULANDO DATOS'}):
+            main = telegram_commands._render_page('diagnostics')
+            detail = telegram_commands._dispatch_callback('diagnostics_detail')
+        self.assertIn('Pre-entry: 🟡 AUDIT_ONLY', main['text'])
+        self.assertIn('Evaluacion: ⚠️ BLOCKED_POSITION_MISMATCH', main['text'])
+        self.assertIn('Entrada real: permitida por modo auditoria', main['text'])
+        self.assertNotIn('LOCAL_STATE_VALID', main['text'])
+        self.assertIn('safe_to_enter: False', detail['text'])
+        self.assertIn('entry_allowed: True', detail['text'])
+        self.assertIn('Freshness: FRESH', detail['text'])
+
+    def test_diagnostics_safe_gate_and_pending_reconciliation(self):
+        snapshot = {'system': {'health': 'OK'}, 'pre_entry_safety_summary': {'mode': 'AUDIT_ONLY', 'status': 'SAFE_TO_ENTER', 'safe_to_enter': True}}
+        metrics = {'long_count': 0, 'short_count': 1, 'max_longs': 2, 'max_shorts': 2, 'futures_reconciliation': {'unmanaged_count': 1}}
+        with patch.object(telegram_commands, '_bot_state', return_value=snapshot), patch.object(telegram_commands, '_state', return_value={'positions': []}), patch.object(telegram_commands, '_exposure_metrics', return_value=metrics):
+            text = telegram_commands._render_page('diagnostics')['text']
+        self.assertIn('Evaluacion: ✅ SAFE', text)
+        self.assertIn('Reconciliacion: 🟡 Pendiente', text)
+
+    def test_symbol_pages_are_stable_compact_and_paginated(self):
+        ranking = [{'symbol': 'VERYVERYLONGSYMBOLUSDT' if i == 0 else f'S{i}USDT', 'trades': 10 - i // 2, 'pnl_total': -i, 'win_rate': 50, 'profit_factor': float('inf') if i == 0 else None} for i in range(9)]
+        with patch.object(telegram_commands, '_stats_payload', return_value=(self._stats(ranking=ranking), None)):
+            first = telegram_commands._render_stats_symbols_page(1, page_size=7)
+            second = telegram_commands._dispatch_callback('stats_symbols:2')
+        self.assertIn('(1/2)', first['text'])
+        self.assertEqual(first['text'].count(' trades'), 7)
+        self.assertIn('PF ∞', first['text'])
+        self.assertIn('PnL -1.00 USDT', first['text'])
+        self.assertIn('(2/2)', second['text'])
+        self.assertLess(len(first['text']), 1200)
+
+    def test_symbol_page_empty_and_one_symbol(self):
+        with patch.object(telegram_commands, '_stats_payload', return_value=(self._stats(), None)):
+            self.assertIn('Sin estadisticas', telegram_commands._render_stats_symbols_page()['text'])
+        with patch.object(telegram_commands, '_stats_payload', return_value=(self._stats(ranking=[{'symbol': 'BTCUSDT', 'trades': 1, 'pnl_total': 0, 'win_rate': None, 'profit_factor': None}]), None)):
+            text = telegram_commands._render_stats_symbols_page()['text']
+        self.assertIn('BTCUSDT — 1 trades', text)
+        self.assertIn('PF N/A', text)
+
+    def test_feature_progress_empty_open_closed_ready_and_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            features = os.path.join(tmp, 'features.jsonl'); trades = os.path.join(tmp, 'trades.jsonl')
+            open(features, 'w').close(); open(trades, 'w').close()
+            self.assertEqual(telegram_commands._feature_schema_progress(features, trades)['captures'], 0)
+            rows = []
+            trade_rows = []
+            for i in range(150):
+                side = 'LONG' if i < 75 else 'SHORT'
+                timestamp = '2026-01-01T00:00:00Z' if i == 0 else '2026-02-01T00:00:00Z'
+                rows.append({'feature_schema_version': 2, 'identification': {'trade_id': f't{i}', 'timestamp': timestamp}})
+                trade_rows.append({'trade_id': f't{i}', 'status': 'CLOSED', 'side': side})
+            self._write_rows(features, rows); self._write_rows(trades, trade_rows)
+            ready = telegram_commands._feature_schema_progress(features, trades)
+            self.assertEqual((ready['closed'], ready['long_closed'], ready['short_closed']), (150, 75, 75))
+            self.assertEqual(ready['status'], 'LISTO PARA REEVALUAR')
+            os.unlink(features)
+            missing = telegram_commands._feature_schema_progress(features, trades)
+            self.assertFalse(missing['available'])
+            self.assertEqual(missing['status'], 'BLOQUEADO POR CALIDAD')
+
+    @staticmethod
+    def _write_rows(path, rows):
+        with open(path, 'w', encoding='utf-8') as handle:
+            for row in rows:
+                handle.write(json.dumps(row) + '\n')
+
+    def test_system_uses_persisted_state_without_systemd(self):
+        snapshot = {'system': {'health': 'OK', 'last_execution': '2026-01-01T00:00:00Z'}, 'operational_state': 'RUNNING', 'pre_entry_safety_summary': {'mode': 'AUDIT_ONLY'}}
+        with patch.object(telegram_commands, '_bot_state', return_value=snapshot), patch.object(telegram_commands, '_bot_status', return_value='ONLINE'), patch.object(telegram_commands, '_guardian_status', return_value='ONLINE'), patch.object(telegram_commands, '_systemd_active_since', side_effect=AssertionError('systemd called')):
+            text = telegram_commands._render_page('system')['text']
+        self.assertIn('Operational state: RUNNING', text)
+        self.assertIn('Gate mode: AUDIT_ONLY', text)
+
+    def test_timeline_defaults_operational_and_formats_uy(self):
+        event = {'timestamp': '2026-01-01T03:00:00Z', 'event_type': 'cycle_completed', 'summary': 'Cycle completed', 'event_category': 'OPERATIONAL'}
+        with patch.object(telegram_commands.decision_timeline, 'read_recent_events', return_value=[event]) as reader:
+            text = telegram_commands._render_page('timeline')['text']
+        reader.assert_called_once_with(limit=10, category='OPERATIONAL', symbol=None)
+        self.assertIn('OPERATIVO', text)
+        self.assertIn('00:00', text)
+
+
+if __name__ == "__main__":
     unittest.main()
