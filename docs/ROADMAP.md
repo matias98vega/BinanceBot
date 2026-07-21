@@ -82,7 +82,7 @@ Este documento es la hoja de ruta canónica. No autoriza cambios de estrategia n
 |---|---|---|---|---|---|
 | Export tabular versionado | PENDIENTE | auditoría produce manifiesto/fingerprint, pero no dataset de entrenamiento | Exportar sólo TRUSTED con schema, checksum y lineage | Baseline aprobado | Alta |
 | Split temporal reproducible | PENDIENTE | no existe pipeline ML | Train/validation/test sin mezcla temporal | Export tabular | Alta |
-| XGBoost offline | BLOQUEADO | no hay modelo conectado ni dependencia requerida | Entrenamiento offline reproducible | Baseline y split temporal | Media |
+| XGBoost offline | COMPLETADO | experimento CPU reproducible, sin conexión live | Repetir con más datos y mejores features estables | Baseline y split temporal | Media |
 | Comparación contra baseline | BLOQUEADO | baseline pendiente | Métricas predictivas, económicas y de riesgo | XGBoost offline | Alta |
 | Análisis de leakage | PENDIENTE | features históricas mezclan fuentes y tiempos | Verificar disponibilidad estrictamente pre-entry | Auditoría formal | Alta |
 | Importancia estable de features | BLOQUEADO | requiere folds temporales | Estabilidad, SHAP/importance y sensibilidad | Walk-forward ML | Media |

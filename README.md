@@ -104,6 +104,7 @@ python trading/analyze_short_performance.py
 python trading/audit_ml_dataset.py --explain
 .venv/bin/python trading/run_statistical_baseline.py --explain
 .venv/bin/python trading/run_statistical_baseline.py --walk-forward
+.venv/bin/python trading/run_xgboost_experiment.py --explain
 python trading/analyze_capital_accounting.py --explain
 python trading/audit_data_quality.py
 python trading/validate_observability.py

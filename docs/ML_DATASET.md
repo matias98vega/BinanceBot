@@ -158,3 +158,5 @@ Generated artifacts are analysis outputs and must not be committed without a sep
 ## Next step
 
 The reproducible statistical baseline now consumes only `TRUSTED` closed samples; see `STATISTICAL_BASELINE.md`. It establishes grouped temporal, feature-stability and version-aware evidence before XGBoost.
+
+The CPU-only comparison in `XGBOOST_EXPERIMENT.md` remains offline and cannot change trading or authorize shadow mode.

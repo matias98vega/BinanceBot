@@ -415,6 +415,19 @@ def _baseline_artifact_status(dataset_fingerprint):
     return status
 
 
+def _xgboost_artifact_status(dataset_fingerprint):
+    path=os.path.join(PROJECT_DIR, 'data', 'analysis', 'xgboost_experiment', 'summary.json')
+    status={'experiment_generated':False,'experiment_stale':False,'ready_for_shadow_mode':False}
+    if not os.path.exists(path): return status
+    try:
+        with open(path,encoding='utf-8') as f: value=json.load(f)
+        status['experiment_generated']=True
+        status['experiment_stale']=value.get('dataset_fingerprint') != dataset_fingerprint or value.get('experiment_schema_version') != 1
+        status['ready_for_shadow_mode']=not status['experiment_stale'] and bool(value.get('ready_for_shadow_mode'))
+    except (OSError,ValueError,TypeError): status['experiment_stale']=True
+    return status
+
+
 def _logical(result):
     value=dict(result); value.pop('generated_at',None); return value
 

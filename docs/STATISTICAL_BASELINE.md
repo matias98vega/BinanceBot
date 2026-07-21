@@ -16,4 +16,4 @@ Stability reports PSI with train-derived bins, KS and unseen categories. Evaluat
 .venv/bin/python trading/run_statistical_baseline.py --output /tmp/binancebot_statistical_baseline
 ```
 
-XGBoost and live scoring remain outside this tool.
+XGBoost and live scoring remain outside this tool. `XGBOOST_EXPERIMENT.md` reuses this exact split without mutating it.
