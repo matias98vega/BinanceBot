@@ -1,3 +1,10 @@
+# 2026-07-21 — ReplayClient offline determinístico
+
+- Tapes schema v1 inmutables, fingerprint canónico y cursor monotónico.
+- Replay fixture, observación grabada e historia parcial con faltantes explícitos.
+- Reutilización de FakeExchangeState para precios, balances, posiciones, órdenes, fills, OCO, errores, pausas, reconciliación y eventos operativos.
+- Runner/CLI sin red, sin fallback productivo y sin integración live.
+
 # 2026-07-21 — Passive pre-entry feature context v2
 
 - Added forward-only feature schema/capture versioning.

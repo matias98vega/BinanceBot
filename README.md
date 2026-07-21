@@ -277,3 +277,8 @@ VERSION             Version runtime vigente
 - Logs, caches, `state.json`, JSONL operativos y reportes generados estan ignorados.
 - Usar API keys con permisos minimos y restriccion por IP si es posible.
 - No ejecutar el bot como `root` en VPS.
+
+
+## Replay offline
+
+El harness de tests incluye `FakeBinanceClient` y `ReplayClient`. Replay aplica tapes temporales versionados sobre el mismo motor fake, sin credenciales, red ni fallback productivo. Ver `docs/REPLAY_CLIENT.md` o ejecutar `.venv/bin/python trading/testing/run_replay_scenario.py --list`.

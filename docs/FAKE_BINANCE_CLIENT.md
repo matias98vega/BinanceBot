@@ -45,6 +45,6 @@ Los mocks locales existentes permanecen cuando prueban una secuencia muy estrech
 
 `test_pre_entry_safety_gate_e2e.py` reutiliza el fake para comprobar aperturas seguras y cero escrituras exchange ante bloqueos. El gate productivo nunca importa el fake.
 
-## Limitaciones y siguiente fase
+## ReplayClient
 
-El siguiente paso posible es un `ReplayClient` que reproduzca respuestas sanitizadas y versionadas. No está implementado ni se considera completado.
+La capa temporal offline ya está implementada sobre este mismo fake. Usa tapes versionados, cursor monotónico y tres niveles explícitos de fidelidad; no agrega un segundo motor de órdenes ni una ruta al cliente productivo. Ver `REPLAY_CLIENT.md`.

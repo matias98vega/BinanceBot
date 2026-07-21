@@ -54,7 +54,7 @@ Este documento es la hoja de ruta canónica. No autoriza cambios de estrategia n
 | Ítem | Estado | Evidencia | Pendiente real | Dependencia | Prioridad |
 |---|---|---|---|---|---|
 | Auditoría unificada state-vs-exchange pre-entry | PARCIAL | gate unificado, CLI, Fake E2E e integración AUDIT_ONLY | Observar varios ciclos y autorizar ENFORCE por separado | Evidencia productiva sin falsos positivos | Alta |
-| FakeBinanceClient o ReplayClient | PARCIAL | FakeBinanceClient reusable y escenarios A-L completados | ReplayClient sigue pendiente | Contratos sanitizados de replay | Media |
+| FakeBinanceClient o ReplayClient | COMPLETADO | FakeBinanceClient A-L y ReplayClient offline determinístico sobre el mismo state/contrato | Acumular observaciones sanitizadas; históricos siguen siendo parciales | Tapes versionados | Media |
 | Tests end-to-end sin operaciones reales | PARCIAL | 473 tests unitarios y supresión de transportes | Escenarios completos ciclo→persistencia→Telegram con cliente falso | Fake/Replay client | Alta |
 | Política de gaps/downtime persistida | COMPLETADO | operational_state, heartbeat y CLI reproducible | Acumular evidencia forward-only; legacy no se backfillea | Ciclos futuros | Alta |
 | Freshness de stats e insights | PARCIAL | stats se reconstruye; Insights tiene metadata | Umbrales, relación de fuentes y warning visible | Contratos derivados | Media |
@@ -154,7 +154,7 @@ Cumplir estos criterios no autoriza cambios live: sólo habilita evaluación off
 - Gaps recientes sin evidencia persistida suficiente.
 - JSONL sin política uniforme de rotación.
 - Nombres legacy de OCO (`oco_id` / `oco_order_list_id`).
-- Falta de Fake/Replay/Paper/Shadow clients reutilizables.
+- Paper/Shadow clients siguen pendientes; Fake y Replay offline ya son reutilizables.
 - Encoding deteriorado en algunos comentarios históricos.
 - Versionado operativo demasiado grueso para algunos fixes por capacidad.
 
@@ -172,7 +172,7 @@ Cumplir estos criterios no autoriza cambios live: sólo habilita evaluación off
 
 1. Baseline estadístico reproducible sobre los 198 cierres `TRUSTED`.
 2. Evaluación temporal agrupada y version-aware para resolver dependencia/version mixing.
-3. FakeBinanceClient/ReplayClient y escenarios end-to-end sin operaciones.
+3. Ampliar tapes sanitizados y escenarios ciclo→persistencia→Telegram sin operaciones.
 4. Observar el gate pre-entry en AUDIT_ONLY y preparar decisión separada de ENFORCE.
 5. Política persistida de gaps/downtime y separación Timeline operativo/debug.
 
