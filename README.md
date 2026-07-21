@@ -79,6 +79,10 @@ Tambien valida el limite total de capital y muestra capital real vs capital auto
 
 `preflight_check.py` ejecuta healthcheck, validacion de observabilidad y analizadores locales.
 
+## Harness de exchange para tests
+
+`trading/testing/` provee un Fake Binance Client in-memory, determinista y sin red para tests unitarios y end-to-end. No usa credenciales ni se puede activar en produccion. Uso, metodos y limitaciones: `docs/FAKE_BINANCE_CLIENT.md`.
+
 ## Ejecucion
 
 Una iteracion manual:

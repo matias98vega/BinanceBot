@@ -2,6 +2,14 @@
 
 Guia de alto nivel de los modulos principales.
 
+## `trading/testing/`
+
+**Proposito:** harness Binance determinista y sin red, exclusivo de tests.
+
+**Responsabilidades:** simular estado Spot/Futures, ordenes, OCO, fills, filtros, fees, reduceOnly, reloj, IDs, fallos y escenarios end-to-end. Nunca se importa ni selecciona desde runtime. Ver `docs/FAKE_BINANCE_CLIENT.md`.
+
+**Lo usan:** tests unitarios y de integracion.
+
 ## `trading/bot.py`
 
 **Proposito:** bootstrap del proceso principal.

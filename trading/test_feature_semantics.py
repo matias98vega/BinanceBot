@@ -91,9 +91,10 @@ class StoreAndAuditTests(unittest.TestCase):
             self.assertTrue(any(set(x['features'])=={'a','b'} for x in result['redundancy']))
         finally:os.unlink(path)
     def test_readiness_zero(self):
-        result=fs.audit_semantics()
-        self.assertFalse(result['readiness']['ready_to_rerun_baseline'])
-        self.assertEqual(0,result['readiness']['new_schema_closed_trades'])
+        with tempfile.NamedTemporaryFile('w') as manifest:
+            result=fs.audit_semantics(manifest=manifest.name)
+            self.assertFalse(result['readiness']['ready_to_rerun_baseline'])
+            self.assertEqual(0,result['readiness']['new_schema_closed_trades'])
     def test_fingerprint_stable(self):
         self.assertEqual(fs._digest({'a':1}),fs._digest({'a':1}))
     def test_output_artifacts(self):
