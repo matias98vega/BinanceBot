@@ -101,6 +101,7 @@ python trading/analyze_trades.py
 python trading/analyze_decisions.py
 python trading/analyze_version_performance.py
 python trading/analyze_short_performance.py
+python trading/audit_ml_dataset.py --explain
 python trading/analyze_capital_accounting.py --explain
 python trading/audit_data_quality.py
 python trading/validate_observability.py
@@ -215,6 +216,8 @@ journalctl -u binancebot-guardian.service -f
 ```
 
 ## Evolución estadística y ML
+
+La auditoría formal offline se documenta en `docs/ML_DATASET.md`. El snapshot actual habilita la construcción del baseline estadístico, pero no ML: todavía exige evaluación por versión, agrupación de muestras dependientes y validación de estabilidad de features.
 
 La secuencia aprobada es estrictamente progresiva: auditoría formal del dataset, baseline estadístico reproducible, walk-forward sin ML, XGBoost offline, shadow mode read-only y sólo después una posible evaluación de veto conservador. Ningún componente ML actual modifica scoring, sizing u órdenes; el sizing adaptativo permanece bloqueado para una fase futura independiente. Ver `docs/ROADMAP.md`.
 

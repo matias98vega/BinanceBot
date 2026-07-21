@@ -1058,6 +1058,33 @@ def _audit_rebalance(path, data, report):
             report.explain_incident(path, category, rule, evidence, timestamp, recent)
 
 
+def _audit_ml_dataset_artifact(project_dir, report):
+    """Check an existing offline audit artifact without running the ML audit."""
+    summary_path = _project_path(project_dir, 'data', 'analysis', 'ml_dataset_audit', 'summary.json')
+    if not os.path.exists(summary_path):
+        return
+    try:
+        with open(summary_path, encoding='utf-8') as f:
+            summary = json.load(f)
+        if not isinstance(summary, dict) or not summary.get('dataset_fingerprint') or not isinstance(summary.get('source_hashes'), dict):
+            report.informational_warning(summary_path, 'ML dataset audit artifact corrupt or incomplete')
+            return
+        stale = []
+        for name, expected in summary.get('source_hashes', {}).items():
+            path = _project_path(project_dir, 'data', 'history', f'{name}.jsonl') if name in ('trades', 'features') else (_project_path(project_dir, 'trading', 'trade_analytics.jsonl') if name == 'trade_analytics' else None)
+            if not path or not os.path.isfile(path):
+                stale.append(name); continue
+            import hashlib
+            with open(path, 'rb') as source_file:
+                digest = hashlib.sha256(source_file.read()).hexdigest()
+            if digest != expected:
+                stale.append(name)
+        if stale:
+            report.informational_warning(summary_path, f'ML dataset audit stale sources={",".join(sorted(stale))}')
+    except Exception as exc:
+        report.informational_warning(summary_path, f'ML dataset audit artifact unreadable: {type(exc).__name__}')
+
+
 def _collect_trade_ids(records):
     return {record.get('trade_id') for record in records if isinstance(record, dict) and record.get('trade_id')}
 
@@ -1137,6 +1164,8 @@ def audit_project(project_dir=PROJECT_DIR):
         report.informational_warning(ledger_path, 'capital accounting incomplete: ledger no inicializado; PnL Trading y ROI Trading deben mostrarse N/A')
         report.recommendations.add('Capital accounting: ejecutar reconcile_capital_ledger.py --dry-run antes de un bootstrap explícito.')
     _audit_bot_state(_project_path(trading_dir, 'bot_state.json'), bot_state, report)
+
+    _audit_ml_dataset_artifact(project_dir, report)
 
     for rebalance_path in (
         _project_path(history_dir, 'rebalance_status.json'),

@@ -67,9 +67,9 @@ Este documento es la hoja de ruta canónica. No autoriza cambios de estrategia n
 
 | Ítem | Estado | Evidencia | Pendiente real | Dependencia | Prioridad |
 |---|---|---|---|---|---|
-| Auditoría formal del dataset | PENDIENTE | `audit_data_quality.py` audita almacenamiento, no readiness ML completa | Informe reproducible de cobertura, sesgos, labels y leakage | Criterios de dataset listo | Alta |
-| Manifiesto trusted/partial/excluded | PARCIAL | `version_history.classify_record()` y auditor aportan señales | Artefacto versionado por fila y motivo | Auditoría formal | Alta |
-| Baseline reproducible del scoring actual | PENDIENTE | métricas actuales son descriptivas | Definir target, periodo, features, métricas y semillas | Dataset trusted | Alta |
+| Auditoría formal del dataset | COMPLETADO | `audit_ml_dataset.py`, schema 1: 198 TRUSTED, 35 PARTIAL, 2 EXCLUDED | Repetir por snapshot/capability epoch | Criterios de dataset listo | Alta |
+| Manifiesto trusted/partial/excluded | COMPLETADO | manifiesto reproducible por `trade_id`, sólo escrito con `--output`/`--manifest` | Consumir únicamente TRUSTED en el baseline | Auditoría formal | Alta |
+| Baseline reproducible del scoring actual | PENDIENTE | auditoría: `dataset_ready_for_baseline=true`, 198 cierres TRUSTED | Definir target, periodo, métricas y evaluación temporal agrupada | Dataset trusted | Alta |
 | Intervalos de confianza | PARCIAL | diagnóstico SHORT incluye bootstrap CI | Generalizar por versión, lado y régimen | Muestras válidas | Alta |
 | Mínimos de muestra | PARCIAL | Insights y SHORT usan umbrales | Política común por reporte y decisión | Baseline | Alta |
 | Comparación robusta entre versiones | PARCIAL | métricas y diagnóstico por versión ya existen | Comparación pareada/temporal, intervalos y control de mix | Manifiesto y baseline | Alta |
@@ -80,7 +80,7 @@ Este documento es la hoja de ruta canónica. No autoriza cambios de estrategia n
 
 | Ítem | Estado | Evidencia | Pendiente real | Dependencia | Prioridad |
 |---|---|---|---|---|---|
-| Export tabular versionado | PENDIENTE | Feature Store JSONL disponible | Schema, manifest, checksum y lineage | Dataset listo | Alta |
+| Export tabular versionado | PENDIENTE | auditoría produce manifiesto/fingerprint, pero no dataset de entrenamiento | Exportar sólo TRUSTED con schema, checksum y lineage | Baseline aprobado | Alta |
 | Split temporal reproducible | PENDIENTE | no existe pipeline ML | Train/validation/test sin mezcla temporal | Export tabular | Alta |
 | XGBoost offline | BLOQUEADO | no hay modelo conectado ni dependencia requerida | Entrenamiento offline reproducible | Baseline y split temporal | Media |
 | Comparación contra baseline | BLOQUEADO | baseline pendiente | Métricas predictivas, económicas y de riesgo | XGBoost offline | Alta |
@@ -147,7 +147,7 @@ Cumplir estos criterios no autoriza cambios live: sólo habilita evaluación off
 ## Deuda técnica preservada
 
 - Registros históricos sin `bot_version` explícito.
-- `short_WLDUSDT_1782763085` con cierre sin apertura previa.
+- `short_WLDUSDT_1782763085` tiene apertura reparada de forma auditable, pero permanece `PARTIAL` por origen recovered y falta de snapshot completo.
 - Recovered opens con schema reducido.
 - Partials cuya relación con el trade base necesita normalización cuidadosa.
 - Gaps recientes sin evidencia persistida suficiente.
@@ -169,8 +169,8 @@ Cumplir estos criterios no autoriza cambios live: sólo habilita evaluación off
 
 ## Próximas cinco tareas priorizadas
 
-1. Auditoría formal de readiness del dataset y manifiesto `trusted/partial/excluded`.
-2. Baseline estadístico reproducible del scoring actual.
+1. Baseline estadístico reproducible sobre los 198 cierres `TRUSTED`.
+2. Evaluación temporal agrupada y version-aware para resolver dependencia/version mixing.
 3. FakeBinanceClient/ReplayClient y escenarios end-to-end sin operaciones.
 4. Auditoría unificada state-vs-exchange pre-entry.
 5. Política persistida de gaps/downtime y separación Timeline operativo/debug.

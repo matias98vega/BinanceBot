@@ -1181,6 +1181,30 @@ class AuditDataQualityTests(unittest.TestCase):
         report.error("events.jsonl", "corrupcion")
         self.assertIn("Estado operativo: CRITICO", audit_data_quality.format_report(report))
 
+    def test_missing_ml_audit_is_not_operational(self):
+        self.minimal_runtime_files()
+        report = audit_data_quality.audit_project(self.project)
+        self.assertFalse(any('ML dataset audit' in item for item in report.operational_warnings))
+
+    def test_corrupt_ml_audit_is_informational_only(self):
+        self.minimal_runtime_files()
+        self.write_json('data/analysis/ml_dataset_audit/summary.json', {'dataset_fingerprint': 'x'})
+        report = audit_data_quality.audit_project(self.project)
+        self.assertTrue(any('ML dataset audit artifact corrupt' in item for item in report.informational_warnings))
+        self.assertFalse(any('ML dataset audit' in item for item in report.operational_warnings))
+
+    def test_stale_ml_audit_is_informational_only(self):
+        self.minimal_runtime_files()
+        self.write_jsonl('data/history/trades.jsonl', [])
+        self.write_jsonl('data/history/features.jsonl', [])
+        self.write_json('data/analysis/ml_dataset_audit/summary.json', {
+            'dataset_fingerprint': 'x',
+            'source_hashes': {'trades': 'wrong', 'features': 'wrong', 'trade_analytics': 'wrong'},
+        })
+        report = audit_data_quality.audit_project(self.project)
+        self.assertTrue(any('ML dataset audit stale' in item for item in report.informational_warnings))
+        self.assertFalse(any('ML dataset audit' in item for item in report.operational_warnings))
+
     def test_audit_does_not_modify_runtime_files(self):
         self.minimal_runtime_files()
         paths = [
