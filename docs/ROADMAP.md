@@ -69,7 +69,7 @@ Este documento es la hoja de ruta canónica. No autoriza cambios de estrategia n
 |---|---|---|---|---|---|
 | Auditoría formal del dataset | COMPLETADO | `audit_ml_dataset.py`, schema 1: 198 TRUSTED, 35 PARTIAL, 2 EXCLUDED | Repetir por snapshot/capability epoch | Criterios de dataset listo | Alta |
 | Manifiesto trusted/partial/excluded | COMPLETADO | manifiesto reproducible por `trade_id`, sólo escrito con `--output`/`--manifest` | Consumir únicamente TRUSTED en el baseline | Auditoría formal | Alta |
-| Baseline reproducible del scoring actual | PENDIENTE | auditoría: `dataset_ready_for_baseline=true`, 198 cierres TRUSTED | Definir target, periodo, métricas y evaluación temporal agrupada | Dataset trusted | Alta |
+| Baseline reproducible del scoring actual | COMPLETADO | auditoría: `dataset_ready_for_baseline=true`, 198 cierres TRUSTED | Definir target, periodo, métricas y evaluación temporal agrupada | Dataset trusted | Alta |
 | Intervalos de confianza | PARCIAL | diagnóstico SHORT incluye bootstrap CI | Generalizar por versión, lado y régimen | Muestras válidas | Alta |
 | Mínimos de muestra | PARCIAL | Insights y SHORT usan umbrales | Política común por reporte y decisión | Baseline | Alta |
 | Comparación robusta entre versiones | PARCIAL | métricas y diagnóstico por versión ya existen | Comparación pareada/temporal, intervalos y control de mix | Manifiesto y baseline | Alta |

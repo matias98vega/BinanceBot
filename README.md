@@ -102,6 +102,8 @@ python trading/analyze_decisions.py
 python trading/analyze_version_performance.py
 python trading/analyze_short_performance.py
 python trading/audit_ml_dataset.py --explain
+.venv/bin/python trading/run_statistical_baseline.py --explain
+.venv/bin/python trading/run_statistical_baseline.py --walk-forward
 python trading/analyze_capital_accounting.py --explain
 python trading/audit_data_quality.py
 python trading/validate_observability.py

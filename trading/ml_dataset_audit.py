@@ -397,8 +397,22 @@ def audit_dataset(trades_file=history.DEFAULT_TRADES_FILE, features_file=feature
       'duplicates_report':{'flags':dict(Counter(x for r in manifest for x in r['duplicate_sources']))},
       'chronology_report':_chronology_report(manifest, closed),
       'inventory':inventory,'segment_coverage':segments,'imbalance':{'majority_class_baseline':majority,'wins':positive,'losses':len(labs)-positive},
-      'temporal_split':split,'excluded_reasons':dict(reasons),
+      'temporal_split':split,'excluded_reasons':dict(reasons),'statistical_baseline':_baseline_artifact_status(fingerprint),
       'readiness':{'dataset_ready_for_baseline':not baseline_blocks,'dataset_ready_for_ml':not ml_blocks,'blocking_reasons':{'baseline':sorted(set(baseline_blocks)),'ml':sorted(set(ml_blocks))},'warnings':sorted(set(split['flags'])),'recommendations':['Resolve excluded/partial records through policy, never silent backfill.','Build a reproducible statistical baseline before XGBoost.','Use temporal or grouped walk-forward splits; never random-only split.']}}
+
+
+def _baseline_artifact_status(dataset_fingerprint):
+    path=os.path.join(PROJECT_DIR, 'data', 'analysis', 'statistical_baseline', 'summary.json')
+    status={'baseline_generated':False,'baseline_stale':False,'baseline_ready':False,'ready_for_xgboost_experiment':False}
+    if not os.path.exists(path): return status
+    try:
+        with open(path,encoding='utf-8') as f: value=json.load(f)
+        status['baseline_generated']=True
+        status['baseline_stale']=value.get('dataset_fingerprint') != dataset_fingerprint or value.get('commit') != _git_commit()
+        status['baseline_ready']=not status['baseline_stale'] and value.get('baseline_schema_version') == 1 and value.get('commit') == _git_commit() and isinstance(value.get('options'),dict)
+        status['ready_for_xgboost_experiment']=status['baseline_ready'] and bool(value.get('ready_for_xgboost_experiment'))
+    except (OSError,ValueError,TypeError): status['baseline_stale']=True
+    return status
 
 
 def _logical(result):

@@ -157,4 +157,4 @@ Generated artifacts are analysis outputs and must not be committed without a sep
 
 ## Next step
 
-Build the reproducible statistical baseline from `TRUSTED` closed samples. It must establish majority-class, simple heuristic and scoring baselines with version-aware grouped temporal evaluation before XGBoost is started.
+The reproducible statistical baseline now consumes only `TRUSTED` closed samples; see `STATISTICAL_BASELINE.md`. It establishes grouped temporal, feature-stability and version-aware evidence before XGBoost.
