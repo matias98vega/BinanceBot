@@ -38,3 +38,15 @@ With no production manifest, the CLI reports compatibility mode and performs no 
 6. Only after rollback and concurrent-write tests, replace destructive 5/4 MiB retention.
 
 Capital ledger migration requires a separate accounting review and must never use destructive truncation.
+
+## Timeline shadow rehearsal
+
+`trading/run_timeline_shadow_migration.py` captures a verified complete-line prefix of the live Timeline, then builds monolithic, plain-shard and gzip-shard layouts only under `/tmp`. It validates both manifests, compares logical fingerprints and proves rollback by reading the monolith while ignoring the manifest.
+
+The capture permits concurrent append but detects inode changes, shrinkage or rewritten prefixes. A real append can be observed with `--observe-seconds`; tests also exercise an active writer deterministically. This is evidence for a future migration, not activation authority.
+
+```bash
+.venv/bin/python trading/run_timeline_shadow_migration.py --observe-seconds 45 --strict
+```
+
+Production readers, writers, paths and the existing 5/4 MiB Timeline rotation remain unchanged.
