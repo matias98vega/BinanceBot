@@ -1,164 +1,184 @@
 # Roadmap
 
-Este roadmap documenta el estado del proyecto y las lineas de trabajo futuras. No define cambios de estrategia por si mismo; cualquier cambio de trading debe pasar por una iteracion separada, con pruebas y revision de riesgo.
+> Última revisión: 2026-07-21
+>
+> Commit de referencia: `3134e76`
+>
+> Versión runtime: `v1.2-sizing-v2`
+>
+> Estado general: motor live desplegado y observable; contabilidad confiable desde el bootstrap; fase actual centrada en confiabilidad y preparación estadística, sin ML conectado al trading.
 
-## Estado Actual
+Este documento es la hoja de ruta canónica. No autoriza cambios de estrategia ni operaciones reales. Todo cambio live requiere una tarea separada, pruebas, revisión de riesgo y aprobación explícita.
 
-BinanceBot es un bot modular de trading para Binance con ejecucion por ciclos, gestion separada de Long Spot y Short Futures, guardian de SL, rebalanceo de capital, guardrails de capital, Telegram, dashboard local y observabilidad JSONL.
+## Estado actual desplegado
 
-El sistema ya cuenta con:
+| Capacidad | Estado | Evidencia |
+|---|---|---|
+| Core Long Spot / Short Futures, TP/SL, Guardian y rebalance | COMPLETADO | `trading/longs.py`, `shorts.py`, `sl_guardian.py`, `rebalance.py` |
+| Sizing v2 por exposición y slots | COMPLETADO | `VERSION`, `trading/version_history.py`, tests de sizing |
+| Analytics Engine y Telegram avanzado | COMPLETADO | `analytics_engine.py`, `telegram_commands.py` |
+| Métricas y diagnóstico por versión | COMPLETADO | commits `4566c32`, `d69402f` |
+| Diagnóstico exploratorio de SHORT | COMPLETADO | commit `ec4bc57`, `analyze_short_performance.py` |
+| Insights Engine base y Trade Inspector | COMPLETADO | `insights_engine.py`, `trade_inspector.py` |
+| Capital real/usado/libre y PnL abierto | COMPLETADO | páginas Capital y Posiciones de Telegram |
+| Reconciliación de rebalance alineado | COMPLETADO | commit `335da04` |
+| Reconciliación segura de Spot stale | COMPLETADO | commit `5fc9fe6` |
+| Capital ledger schema v2 y flujos externos | COMPLETADO | commits `5af249f`, `8ded902` |
+| Bootstrap productivo del ledger | COMPLETADO | inicio contable `2026-07-20T21:47:14Z` |
+| PnL Trading, ROI y uPnL Spot/Futures | COMPLETADO | commit `3134e76`, CLI y Telegram |
+| Clasificación del auditor | COMPLETADO | commit `970bd97`; separa crítico, operativo, legacy, informativo y aceptado |
+| Capacidad operativa vs target visual | COMPLETADO | `operational_max`, `target_max`, estado no incrementable |
 
-- Ejecucion principal en `trading/bot.py` con lock local.
-- Longs Spot en `trading/longs.py` con compra MARKET, OCO, recovery y venta de emergencia.
-- Shorts Futures en `trading/shorts.py` con orden MARKET, TP reduceOnly y SL nativo/software.
-- Guardian independiente en `trading/sl_guardian.py`.
-- Rebalance Spot/Futures en `trading/rebalance.py`.
-- Capital guardrails centralizados en `trading/capital_manager.py`.
-- Acceso a Binance centralizado e inyectable en `trading/binance_client.py`.
-- Estado observable persistido en `trading/bot_state.py`.
-- Telegram read-only en `trading/telegram_commands.py`.
-- Alertas Telegram configurables en `trading/telegram_alerts.py`.
-- Dashboard local en `dashboard/app.py`.
-- Analytics append-only en `trading/analytics.py`.
-- Snapshots de decisiones en `trading/decision_snapshots.jsonl`.
-- Memoria historica pasiva en `data/history/*.jsonl`.
-- Feature Store pasivo en `data/history/features.jsonl`.
-- Analytics Engine pasivo con `data/history/stats.json`.
-- Insights Engine pasivo con `data/history/insights.json`.
-- Decision Timeline cronologico en `data/history/timeline.jsonl`.
-- Trade Inspector pasivo para reconstruccion individual de trades.
-- Healthcheck, preflight, post-cycle y validadores de observabilidad.
-- Tests unitarios para capital, rebalance, hardening de trades y notificaciones.
+### Convención contable vigente
 
-## Corto Plazo
+- `REALIZED_PNL` es PnL realizado neto de comisiones de trading.
+- `TRADING_FEE` es informativo y no se vuelve a restar.
+- `FUNDING_FEE` conserva signo.
+- `trading_pnl_net = realized_pnl_net_of_fees + funding_net`.
+- PnL Trading y ROI Trading son confiables sólo desde `2026-07-20T21:47:14Z`; no reconstruyen actividad previa.
 
-| Item | Prioridad | Dependencias | Estado |
-|---|---|---|---|
-| Documentacion canonica del proyecto | Alta | Ninguna | En curso |
-| Consolidar arquitectura en raiz y `docs/` | Alta | Documentacion canonica | En curso |
-| Auditar desalineaciones entre docs y codigo | Alta | Inventario de modulos | En curso |
-| Completar Decision Timeline cronologico | Alta | Definir contrato JSONL y puntos de integracion | Implementado base |
-| Mejorar diagnostico de errores Binance HTTP | Alta | Wrapper HTTP actual | Implementado parcialmente |
-| Profundizar tests de recovery Long Spot | Alta | Hardening OCO actual | Implementado base |
-| Consolidar memoria historica JSONL | Alta | `history.py` y analytics | Implementado base |
-| Construir Feature Store pasivo | Alta | Analytics de apertura | Implementado base |
-| Introducir BinanceClient inyectable | Alta | `utils` actual | Implementado base |
-| Construir Analytics Engine pasivo | Alta | Historia JSONL | Implementado base |
-| Integrar Analytics Engine en Telegram | Alta | `stats.json` | Implementado base |
-| Construir Insights Engine pasivo | Alta | `stats.json` | Implementado base |
-| Construir Trade Inspector pasivo | Alta | Historia JSONL y timeline | Implementado base |
-| Validar cierre preventivo BTC con orden real de salida | Alta | Auditoria de `bot.py` | Pendiente |
-| Separar estado observable de calculos de presentacion | Media | `bot_state.py` actual | En desarrollo |
-| Revisar documentos legacy | Media | Docs canonicas | En curso |
+## Fase inmediata — sincronización y deuda documental
 
-## Mediano Plazo
+| Ítem | Estado | Evidencia | Pendiente real | Dependencia | Prioridad |
+|---|---|---|---|---|---|
+| Sincronizar Roadmap, Changelog y README | COMPLETADO | revisión documental sobre `3134e76` | Mantenerlos por capability update | Ninguna | Alta |
+| Inventario de recovered, partials y gaps | PARCIAL | auditor y `VERSION_HISTORY.md` ya los clasifican | Manifiesto único con impacto y política por registro | Auditor actual | Alta |
+| Taxonomía Neutral/Sideways | PENDIENTE | analytics conserva ambos buckets; runtime usa principalmente Neutral | Consolidar Sideways visualmente dentro de Neutral sin reescribir históricos | Contrato de presentación | Media |
+| Documentar capacidad operativa vs target | COMPLETADO | `bot_state.py`, Telegram Diagnóstico, auditor | Mantener contrato en consumidores futuros | Ninguna | Alta |
+| Definir criterios de dataset listo | COMPLETADO | sección específica de este documento | Implementar auditoría que produzca el manifiesto | Feature Store y auditor | Alta |
+| Revisar versionado funcional | PARCIAL | runtime y `VERSION` siguen en `v1.2-sizing-v2` | Decidir capability epoch futura sin reetiquetar silenciosamente trades | Criterio de release | Media |
+| CHANGELOG por capacidades | COMPLETADO | `CHANGELOG.md` | Actualizar por hito, no por cada commit | Disciplina de release | Media |
 
-| Item | Prioridad | Dependencias | Estado |
-|---|---|---|---|
-| Auditoria estado local vs exchange antes de operar | Alta | Helpers seguros de balance/posiciones | Pendiente |
-| Backtesting offline del scoring actual | Alta | Dataset historico local | Pendiente |
-| Dataset local de klines por simbolo/timeframe | Alta | Politica de almacenamiento | Pendiente |
-| Simulador con fees, slippage y filtros Binance | Alta | Dataset historico | Pendiente |
-| Reportes por regimen, simbolo, hora y direccion | Media | Analytics estable | Pendiente |
-| Dashboard de diagnostico profundo | Media | API local estable | En desarrollo |
-| Alertas periodicas de healthcheck | Media | Telegram alerts | Pendiente |
-| Rotacion de JSONL operativos | Media | Politica de retencion | Pendiente |
-| Pruebas de integracion sin ordenes reales | Media | Mocks Binance consistentes | Pendiente |
+## Fase de confiabilidad
 
-## Largo Plazo
+| Ítem | Estado | Evidencia | Pendiente real | Dependencia | Prioridad |
+|---|---|---|---|---|---|
+| Auditoría unificada state-vs-exchange pre-entry | PARCIAL | Futures reconciliation, auditoría de orphans y Spot stale | Resultado único y política segura de bloqueo antes de nuevas entradas | Cliente read-only inyectable | Alta |
+| FakeBinanceClient o ReplayClient | PENDIENTE | `BinanceClient` es inyectable; no existe implementación reusable completa | Cliente determinista con balances, fills, órdenes y errores | Contratos actuales del cliente | Alta |
+| Tests end-to-end sin operaciones reales | PARCIAL | 473 tests unitarios y supresión de transportes | Escenarios completos ciclo→persistencia→Telegram con cliente falso | Fake/Replay client | Alta |
+| Política de gaps/downtime persistida | PARCIAL | auditor reconoce pausas y mantiene gaps sin evidencia como operativos | Evento durable de inicio/fin y motivo de downtime | Timeline operativo | Alta |
+| Freshness de stats e insights | PARCIAL | stats se reconstruye; Insights tiene metadata | Umbrales, relación de fuentes y warning visible | Contratos derivados | Media |
+| Rotación y retención JSONL | PARCIAL | Timeline rota | Política uniforme, backup y pruebas para los demás JSONL | Inventario de consumidores | Media |
+| Timeline operativo vs debug | PARCIAL | Timeline y filtros existen | Niveles/canales para reducir ruido sin perder evidencia | Política de eventos | Media |
+| Cierre preventivo BTC y fallback Guardian | NECESITA REDEFINICIÓN | riesgo documentado, tests parciales | Validar con cliente falso, replay y GET/read-only; operación real sólo fuera del roadmap y con aprobación explícita | Fake/Replay client | Alta |
+| Playbooks de recuperación manual | PENDIENTE | acciones distribuidas en docs y CLI | Procedimientos idempotentes y verificables | Reconciliación unificada | Media |
 
-| Item | Prioridad | Dependencias | Estado |
-|---|---|---|---|
-| Motor de experimentacion de estrategias | Alta | Backtesting confiable | Idea |
-| Portfolio multi-estrategia | Media | Motor de riesgo compartido | Idea |
-| Optimizacion walk-forward | Media | Backtesting y datasets | Idea |
-| Adaptacion dinamica de parametros | Media | Estadisticas suficientes | Idea |
-| Clasificador offline de regimen de mercado | Baja | Dataset historico | Idea |
-| Modelos ML auxiliares para investigacion | Baja | Feature store y evaluacion offline | Idea |
-| Comparacion automatica entre versiones | Media | Framework de experimentos | Idea |
-| Reportes semanales con hipotesis | Media | Analytics enriquecida | Idea |
+## Fase de evaluación estadística
 
-## Funcionalidades Implementadas
+| Ítem | Estado | Evidencia | Pendiente real | Dependencia | Prioridad |
+|---|---|---|---|---|---|
+| Auditoría formal del dataset | PENDIENTE | `audit_data_quality.py` audita almacenamiento, no readiness ML completa | Informe reproducible de cobertura, sesgos, labels y leakage | Criterios de dataset listo | Alta |
+| Manifiesto trusted/partial/excluded | PARCIAL | `version_history.classify_record()` y auditor aportan señales | Artefacto versionado por fila y motivo | Auditoría formal | Alta |
+| Baseline reproducible del scoring actual | PENDIENTE | métricas actuales son descriptivas | Definir target, periodo, features, métricas y semillas | Dataset trusted | Alta |
+| Intervalos de confianza | PARCIAL | diagnóstico SHORT incluye bootstrap CI | Generalizar por versión, lado y régimen | Muestras válidas | Alta |
+| Mínimos de muestra | PARCIAL | Insights y SHORT usan umbrales | Política común por reporte y decisión | Baseline | Alta |
+| Comparación robusta entre versiones | PARCIAL | métricas y diagnóstico por versión ya existen | Comparación pareada/temporal, intervalos y control de mix | Manifiesto y baseline | Alta |
+| Detección de drift | PENDIENTE | no existe monitor estadístico formal | Drift de features, labels, símbolos y performance | Dataset versionado | Media |
+| Walk-forward básico sin ML | PENDIENTE | SHORT sólo informa muestra insuficiente | Framework temporal general contra baseline | Baseline reproducible | Alta |
 
-- Ciclo principal con lock y proteccion contra concurrencia.
-- Gestion simultanea de Long Spot y Short Futures.
-- Modo direccional por contexto BTC.
-- Scoring Long/Short multi-timeframe.
-- Cooldown por simbolo tras SL.
-- Pausa por racha de SL y perdida diaria.
-- Partial take profit.
-- Trailing stop.
-- Stale exit.
-- Guardian SL independiente.
-- Rebalance automatico entre Spot y Futures.
-- Reserva minima de wallet configurable, default `0`.
-- Guardrails de capital por exposicion y slots.
-- `BinanceClient` como punto unico de acceso al exchange.
-- Telegram read-only con menu, capital, posiciones, health, diagnostico, trades, snapshots y estadisticas.
-- Telegram `Insights` con conclusiones compactas generadas desde `stats.json`.
-- Telegram `Inspeccionar Trade` para ultimo trade, ultimo ganador, ultimo perdedor y detalle por id.
-- Telegram `/timeline` read-only con filtros simples por categoria o simbolo.
-- Notificaciones Telegram configurables por tipo.
-- Dashboard local con estado, trades, snapshots, health y metricas.
-- Analytics estructurada y snapshots de decisiones.
-- Persistencia historica JSONL de trades, decisiones y snapshots.
-- Feature Store append-only para futuras etapas de aprendizaje.
-- Estadisticas precalculadas en `data/history/stats.json`.
-- Insights precalculados en `data/history/insights.json`.
-- Timeline rotado de decisiones y eventos operativos en `data/history/timeline.jsonl`.
-- Trade Inspector read-only con endpoint `/api/trade/<id>`.
-- Validadores de observabilidad y healthcheck local.
-- Hardening Long Spot para no proteger/vender mas que balance real disponible.
+## Fase ML offline
 
-## Funcionalidades En Desarrollo
+| Ítem | Estado | Evidencia | Pendiente real | Dependencia | Prioridad |
+|---|---|---|---|---|---|
+| Export tabular versionado | PENDIENTE | Feature Store JSONL disponible | Schema, manifest, checksum y lineage | Dataset listo | Alta |
+| Split temporal reproducible | PENDIENTE | no existe pipeline ML | Train/validation/test sin mezcla temporal | Export tabular | Alta |
+| XGBoost offline | BLOQUEADO | no hay modelo conectado ni dependencia requerida | Entrenamiento offline reproducible | Baseline y split temporal | Media |
+| Comparación contra baseline | BLOQUEADO | baseline pendiente | Métricas predictivas, económicas y de riesgo | XGBoost offline | Alta |
+| Análisis de leakage | PENDIENTE | features históricas mezclan fuentes y tiempos | Verificar disponibilidad estrictamente pre-entry | Auditoría formal | Alta |
+| Importancia estable de features | BLOQUEADO | requiere folds temporales | Estabilidad, SHAP/importance y sensibilidad | Walk-forward ML | Media |
+| Sensibilidad régimen/lado/símbolo | BLOQUEADO | requiere muestra y modelo | Reporte estratificado con intervalos | Modelo validado | Media |
 
-- Mejoras de UX Telegram.
-- Diagnostico de capacidad real por wallet.
-- Observabilidad de errores Binance.
-- Consolidacion documental.
-- Tests de hardening operativo.
+Durante esta fase XGBoost es exclusivamente una herramienta offline y no participa en scoring, sizing, TP/SL ni órdenes.
 
-## Funcionalidades Pendientes
+## Fase shadow mode
 
-- UI visual avanzada para Decision Timeline en dashboard.
-- UI visual avanzada para Insights en dashboard.
-- UI visual avanzada para Trade Inspector en dashboard.
-- Validadores de calidad para Feature Store.
-- Auditoria state-vs-exchange antes de operar.
-- Backtesting offline.
-- Dataset historico local.
-- Dashboard de analitica avanzada.
-- Politica formal de retencion/rotacion de logs.
-- Playbooks de recuperacion manual.
-- Implementaciones alternativas de cliente: `FakeBinanceClient`, `ReplayBinanceClient`, `PaperBinanceClient`, `ShadowBinanceClient`.
+| Ítem | Estado | Evidencia | Pendiente real | Dependencia | Prioridad |
+|---|---|---|---|---|---|
+| Predictor read-only | BLOQUEADO | sólo está descrito en visión futura | Servicio/módulo sin capacidad de ordenar | Modelo offline validado | Alta |
+| Persistir predicción hipotética | BLOQUEADO | contrato aún no definido | `model_version`, `probability`, `expected_return`, `confidence`, decisión hipotética y timestamp | Predictor read-only | Alta |
+| Comparar con ejecución real | BLOQUEADO | falta shadow dataset | Joins por trade/candidato y resultados posteriores | Persistencia shadow | Alta |
+| Calibración y cobertura | BLOQUEADO | falta muestra shadow | Curvas de calibración, abstención y cobertura | Muestra mínima | Alta |
+| Cero impacto live | PENDIENTE | principio documentado | Tests que impidan importar rutas de ejecución/mutación | Diseño shadow | Crítica |
 
-## Riesgos Conocidos
+## Fase de posible activación conservadora
 
-- `state.json` sigue siendo fuente operativa local; si se desalineara con Binance, pueden aparecer decisiones incorrectas.
-- El cierre preventivo BTC debe auditarse para asegurar que siempre ejecuta orden de cierre antes de remover una posicion local.
-- En algunos flujos legacy puede haber nombres inconsistentes para OCO (`oco_id` vs `oco_order_list_id`).
-- Los JSONL append-only pueden crecer sin rotacion formal.
-- Los errores HTTP de Binance dependen de cuerpos y codigos que pueden variar.
-- El dashboard y Telegram son read-only, pero dependen de freshness de archivos locales.
-- Hay configuracion historica de capital deprecated que conviene eliminar cuando ya no haya compatibilidad pendiente.
+| Ítem | Estado | Evidencia | Pendiente real | Dependencia | Prioridad |
+|---|---|---|---|---|---|
+| Superar baseline y walk-forward | BLOQUEADO | no existen resultados todavía | Umbrales predefinidos y repetibles | Fases anteriores | Crítica |
+| Veto conservador inicial | BLOQUEADO | no autorizado | Diseño como filtro de abstención, nunca generador autónomo inicial | Shadow exitoso | Alta |
+| Feature flag y rollback inmediato | BLOQUEADO | no aplica aún | Contrato, default off y rollback probado | Diseño de activación | Crítica |
+| Límites estrictos y evaluación por versión | BLOQUEADO | no aplica aún | Guardrails y métricas por capability epoch | Activación aprobada | Crítica |
+| Sizing adaptativo | BLOQUEADO | explícitamente fuera de alcance | Requiere evidencia posterior independiente | Activación conservadora estable | Muy baja |
 
-## Deuda Tecnica
+## Criterios para considerar el dataset listo
 
-- Documentacion historica dispersa entre raiz, `trading/` y `docs/`.
-- `bot.py` ya es bootstrap y la logica interna del ciclo vive bajo `trading/orchestration/`.
-- Tests aun no cubren todos los flujos de salida y recuperacion.
-- `BinanceClient` existe, pero las implementaciones Fake/Replay/Paper/Shadow aun son trabajo futuro.
-- Decision Timeline ya existe, pero su cobertura puede ampliarse a mas eventos de filtros finos y a una UI dashboard dedicada.
-- No hay una politica unica de migracion de `state.json`.
-- Algunos comentarios en codigo tienen encoding deteriorado heredado.
+El dataset sólo puede pasar a evaluación estadística/ML cuando exista evidencia reproducible de:
 
-## Ideas Futuras
+- relación apertura/cierre consistente y labels confiables;
+- ausencia de duplicados críticos;
+- feature snapshot capturado antes de la entrada;
+- exclusión o tratamiento explícito de recovered y partials no confiables;
+- cobertura mínima definida por versión, lado y régimen;
+- cobertura por símbolo suficiente o agrupación justificada;
+- missingness por feature bajo un umbral declarado;
+- timestamps válidos, ordenables y con semántica conocida;
+- ausencia de features posteriores al resultado o cualquier otro leakage;
+- split temporal reproducible;
+- manifiesto por fila `trusted`, `partial` o `excluded`, con motivo;
+- dataset, schema, reglas de selección y checksums versionados;
+- generación determinista desde fuentes inmutables o respaldadas.
 
-- Feature store offline basado en analytics y snapshots.
-- Shadow Mode, Auto Optimizer, Replay, RL e IA sobre Feature Store pasivo.
-- Simulador de ejecucion Binance con filtros reales.
-- Ranking de filtros por impacto historico.
-- Comparacion live-vs-backtest.
-- Panel de riesgo por exposicion, correlacion y drawdown.
-- Modo laboratorio separado de modo live.
-- Reporte automatico diario/semanal.
+Cumplir estos criterios no autoriza cambios live: sólo habilita evaluación offline.
+
+## Criterios de activación ML
+
+- XGBoost no modifica trading durante la fase offline.
+- Shadow mode read-only es obligatorio antes de cualquier activación.
+- La muestra mínima debe definirse antes de observar resultados shadow.
+- El modelo debe superar un baseline reproducible, no sólo obtener PnL positivo.
+- La mejora debe ser estable en walk-forward y fuera de muestra.
+- La calibración y cobertura deben cumplir umbrales predefinidos.
+- No puede existir degradación material de drawdown u otras métricas de riesgo.
+- Toda integración debe tener feature flag default-off y rollback inmediato probado.
+- La primera activación posible sería un veto conservador; no generación autónoma de entradas.
+- La evaluación debe quedar separada por versión/capability epoch.
+- El sizing adaptativo permanece bloqueado y requiere una fase futura independiente.
+
+## Deuda técnica preservada
+
+- Registros históricos sin `bot_version` explícito.
+- `short_WLDUSDT_1782763085` con cierre sin apertura previa.
+- Recovered opens con schema reducido.
+- Partials cuya relación con el trade base necesita normalización cuidadosa.
+- Gaps recientes sin evidencia persistida suficiente.
+- JSONL sin política uniforme de rotación.
+- Nombres legacy de OCO (`oco_id` / `oco_order_list_id`).
+- Falta de Fake/Replay/Paper/Shadow clients reutilizables.
+- Encoding deteriorado en algunos comentarios históricos.
+- Versionado operativo demasiado grueso para algunos fixes por capacidad.
+
+## Riesgos y reglas permanentes
+
+- `state.json` sigue siendo fuente operativa; la reconciliación debe ser conservadora y nunca fabricar PnL.
+- Un warning operativo real no se reclasifica como aceptado sin evidencia reproducible.
+- Los históricos no se reescriben sin dry-run, backup, checksums, confirmación explícita y tests.
+- Ledger y contabilidad no infieren depósitos/retiros desde variaciones de equity.
+- La versión de un trade es la versión con la que fue abierto.
+- Neutral/Sideways se consolidará sólo en presentación; no se cambiarán registros históricos.
+- Ningún componente offline, Insights o ML puede enviar órdenes o alterar decisiones live.
+
+## Próximas cinco tareas priorizadas
+
+1. Auditoría formal de readiness del dataset y manifiesto `trusted/partial/excluded`.
+2. Baseline estadístico reproducible del scoring actual.
+3. FakeBinanceClient/ReplayClient y escenarios end-to-end sin operaciones.
+4. Auditoría unificada state-vs-exchange pre-entry.
+5. Política persistida de gaps/downtime y separación Timeline operativo/debug.
+
+## Documentos relacionados
+
+- `../ARCHITECTURE.md`: arquitectura canónica.
+- `BACKLOG.md`: inventario detallado de tareas.
+- `CHANGELOG.md`: hitos por capacidad.
+- `VERSION_HISTORY.md`: confiabilidad por versión y uso de datos.
+- `FUTURE_VISION.md`: visión de largo plazo, subordinada a este roadmap.

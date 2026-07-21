@@ -1,82 +1,72 @@
 # Changelog
 
-Resumen de hitos importantes. No intenta reemplazar el historial de commits.
+Resumen de capacidades desplegadas. El historial Git conserva el detalle de cada cambio; este documento registra hitos de alto nivel sin inventar versiones runtime ni fechas no formalizadas.
 
-## Hitos Principales
+## v1.0 — Core Trading Engine
 
-### Modularizacion del bot
+- Motor modular con ciclos y lock local.
+- Long Spot y Short Futures.
+- TP/SL, OCO, partial take profit, trailing y stale exit.
+- Guardian de SL independiente.
+- Rebalance inicial Spot/Futures.
+- Cooldowns, pausa por racha de SL y guardrails de capital.
+- Telegram y dashboard read-only iniciales.
 
-- Separacion en `bot.py`, `market.py`, `longs.py`, `shorts.py`, `sl_guardian.py`, `rebalance.py`, `utils.py` y `config.py`.
-- Estado operativo unificado en `state.json`.
-- Soporte para posiciones Long Spot y Short Futures simultaneas.
+## v1.1 — Observability Hardening
 
-### Guardian SL
+- Timeline cronológico y snapshots de decisiones.
+- Memoria histórica JSONL y Feature Store pasivo.
+- Analytics Engine, Insights Engine base y Trade Inspector.
+- Auditor de calidad con agrupación por versión.
+- Metadata `bot_version`, `strategy_version` y `data_schema_version` en nuevos registros.
+- Telegram avanzado con estadísticas, timeline, insights y diagnóstico.
+- Reconciliación de posiciones Futures observadas frente al estado local.
 
-- Proceso independiente para revisar SLs con mayor frecuencia que el ciclo principal.
-- Proteccion de posiciones sin depender solo del timer del bot.
-- Manejo de cierres y actualizacion de estado/analytics.
+## v1.2 — Sizing v2
 
-### Long Spot con OCO y Recovery
+- Runtime vigente: `v1.2-sizing-v2`.
+- Exposición Spot distribuida por slots Long disponibles.
+- Exposición Futures definida como notional y margen derivado por leverage.
+- Persistencia de versión de apertura en nuevos trades.
+- Métricas históricas por versión de apertura y vista paginada en Telegram (`4566c32`).
 
-- Apertura Long con BUY MARKET y OCO SELL TP/SL.
-- Recovery automatico para OCO faltante.
-- Venta de emergencia si OCO inicial falla.
-- Hardening posterior para usar balance real disponible y no cantidad teorica.
+## v1.2.x — Reliability & Accounting capability updates
 
-### Short Futures
+Estos cambios son capabilities posteriores dentro de la versión runtime `v1.2-sizing-v2`; no constituyen nuevas etiquetas runtime.
 
-- Apertura Short con SELL MARKET.
-- TP reduceOnly.
-- SL nativo cuando esta habilitado y fallback/guardian software.
-- Trailing y stale exit.
+### Diagnóstico y calidad
 
-### Partial Take Profit y Trailing
+- Diagnóstico reproducible de rendimiento por versión (`d69402f`).
+- Diagnóstico exploratorio específico de SHORT, sin cambios de estrategia (`ec4bc57`).
+- Clasificación del auditor en errores críticos, warnings operativos, legacy, informativos y aceptados (`970bd97`).
+- Los gaps sin evidencia reproducible permanecen operativos.
 
-- Cierre parcial al alcanzar parte del recorrido hacia TP.
-- Movimiento de SL a breakeven cuando aplica.
-- Trailing stop por movimiento favorable.
+### Reconciliación
 
-### Cooldown y Protecciones
+- Reconciliación automática e idempotente de rebalance pendiente cuando capital observado y targets ya están alineados (`335da04`).
+- Reconciliación conservadora de posiciones Spot stale, sin crear cierres ni PnL (`5fc9fe6`).
+- Distinción observable entre capacidad operativa, capacidad objetivo y exceso no incrementable (`3134e76`).
 
-- Cooldown por simbolo tras SL.
-- Pausa por racha de SL.
-- Limite de perdida diaria.
-- Filtros de momentum BTC y modo direccional.
+### Capital ledger y contabilidad
 
-### Rebalance Automatico
-
-- Redistribucion Spot/Futures segun regimen BTC.
-- Reserva minima configurable por `REBALANCE_MIN_WALLET_USDT`.
-- Default actual de reserva: `0`, para permitir mover 100% al wallet objetivo.
-
-### Capital Manager
-
-- Unificacion de sizing/guardrails con `max_margin_per_position`.
-- Base principal: `BOT_MAX_EXPOSURE_PERCENT / max_positions`.
-- `BOT_MAX_POSITION_PERCENT` queda deprecated.
-
-### Observabilidad
-
-- `trade_analytics.jsonl` para eventos estructurados de trades.
-- `decision_snapshots.jsonl` para decisiones aceptadas/rechazadas/skipped.
-- `analyze_trades.py`, `analyze_decisions.py`, `validate_observability.py`.
-- `healthcheck.py`, `preflight_check.py` y `post_cycle_check.py`.
+- Flujos externos de depósito/retiro separados del rendimiento (`5af249f`).
+- Capital ledger schema v2, convención contable explícita y bootstrap seguro/idempotente (`8ded902`).
+- Bootstrap productivo aplicado; contabilidad confiable desde `2026-07-20T21:47:14Z`.
+- `REALIZED_PNL` neto de trading fees, `TRADING_FEE` informativo y `FUNDING_FEE` firmado.
+- PnL Trading y ROI Trading calculados desde el inicio contable, sin reconstruir actividad previa.
+- Observación read-only de uPnL Spot y Futures, con desglose por posición y fallos explícitos ante datos incompletos (`3134e76`).
 
 ### Telegram
 
-- Servicio read-only con `/menu`, `/status`, `/capital`, `/positions`, `/health`, `/diagnostics`, `/lasttrades`, `/snapshots`.
-- Botonera inline.
-- Estado de bot basado en timer systemd cuando corresponde.
-- Notificaciones configurables por tipo.
+- PnL unificado entre Home y Estadísticas.
+- Capital real/usado/libre por wallet.
+- PnL abierto total.
+- Métricas contables, PnL Trading, ROI y uPnL Spot/Futures.
+- Métricas y diagnósticos por versión y SHORT.
+- Presentación de capacidad operativa frente a target visual.
 
-### Dashboard
+## Convención de mantenimiento
 
-- Dashboard local read-only.
-- APIs para status, trades, snapshots, health y metricas.
-- Lectura preferente de `bot_state.json`.
-
-### Deployment
-
-- Scripts operativos en `scripts/`.
-- Unidades systemd de ejemplo para bot, guardian, dashboard y Telegram.
-- Guia de despliegue Ubuntu 24.04.
+- `VERSION` y `trading/version_history.py` son la fuente runtime; no se cambian por cada fix sin una decisión explícita de capability epoch.
+- Este changelog se actualiza por capacidad desplegada, no por cada commit.
+- Los cambios futuros de estrategia o ML deben registrarse como una fase/versionado separado antes de afectar live.

@@ -1,8 +1,17 @@
 # BinanceBot
 
-Version candidata: `v1.0-alpha`.
+Versión runtime vigente: `v1.2-sizing-v2`.
 
-Bot de trading para Binance con ejecucion local/VPS, telemetria JSONL, validaciones de observabilidad, dashboard local y ejemplos de despliegue con `systemd`.
+Bot de trading para Binance con ejecución local/VPS, telemetría JSONL, validaciones de observabilidad, dashboard local y ejemplos de despliegue con `systemd`.
+
+Capacidades desplegadas destacadas:
+
+- Long Spot y Short Futures con Guardian, TP/SL, partials, trailing y rebalance.
+- Sizing v2 por exposición y slots.
+- Analytics, Insights, Trade Inspector y Timeline read-only.
+- Telegram con capital real/usado/libre, PnL abierto, estadísticas y diagnósticos por versión.
+- Reconciliación de posiciones Spot stale, Futures observadas y rebalance pendiente alineado.
+- Capital ledger schema v2, flujos externos separados y contabilidad desde el bootstrap productivo.
 
 ## Requisitos
 
@@ -90,6 +99,10 @@ python trading/sl_guardian.py
 ```bash
 python trading/analyze_trades.py
 python trading/analyze_decisions.py
+python trading/analyze_version_performance.py
+python trading/analyze_short_performance.py
+python trading/analyze_capital_accounting.py --explain
+python trading/audit_data_quality.py
 python trading/validate_observability.py
 python trading/healthcheck.py
 python trading/analytics.py --export
@@ -110,6 +123,12 @@ Archivos principales generados localmente:
 - `trading/reports/trades.csv`
 
 Estos archivos contienen estado/datos operativos y no deben versionarse.
+
+### Capital ledger y contabilidad
+
+El ledger append-only vive en `data/history/capital_ledger.jsonl` y usa schema v2. La convención vigente considera `REALIZED_PNL` neto de trading fees, registra `TRADING_FEE` sólo como información y suma `FUNDING_FEE` con su signo.
+
+El bootstrap productivo fija el inicio contable en `2026-07-20T21:47:14Z`. PnL Trading y ROI Trading excluyen actividad anterior; no deben interpretarse como rendimiento histórico completo del bot. La observación actual de uPnL Spot/Futures es read-only y falla explícitamente si faltan precios o existe un mismatch de cantidad.
 
 ## Dashboard local
 
@@ -195,6 +214,10 @@ journalctl -u binancebot.service -f
 journalctl -u binancebot-guardian.service -f
 ```
 
+## Evolución estadística y ML
+
+La secuencia aprobada es estrictamente progresiva: auditoría formal del dataset, baseline estadístico reproducible, walk-forward sin ML, XGBoost offline, shadow mode read-only y sólo después una posible evaluación de veto conservador. Ningún componente ML actual modifica scoring, sizing u órdenes; el sizing adaptativo permanece bloqueado para una fase futura independiente. Ver `docs/ROADMAP.md`.
+
 ## Documentacion
 
 Documentos principales:
@@ -220,7 +243,7 @@ ARCHITECTURE.md     Arquitectura canonica
 README.md           Guia principal
 requirements.txt    Dependencias Python
 .env.example        Variables de entorno sin secretos
-VERSION             Version candidata
+VERSION             Version runtime vigente
 ```
 
 ## Seguridad
