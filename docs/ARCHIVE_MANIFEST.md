@@ -50,3 +50,13 @@ The capture permits concurrent append but detects inode changes, shrinkage or re
 ```
 
 Production readers, writers, paths and the existing 5/4 MiB Timeline rotation remain unchanged.
+
+## Timeline dual-reader shadow (not active)
+
+`trading/check_timeline_dual_reader.py` runs the existing Timeline consumers against a verified monolithic capture and against materialized plain-shard and gzip-shard layouts under `/tmp`. It compares exact structured outputs and reports a digest plus the first difference for each consumer: recent/category reads, operational/diagnostic/debug views, Telegram rendering, auditor pause windows, gap-compatible intervals and incident inspection.
+
+```bash
+.venv/bin/python trading/check_timeline_dual_reader.py --output /tmp/binancebot_timeline_dual_reader --strict
+```
+
+The report always declares `effective_source=MONOLITHIC_ONLY` and `shadow_results_used_by_runtime=false`. A mismatch makes strict validation fail but never replaces or changes the authoritative result. This tool is not imported by runtime callbacks, creates no production manifest or shard, and provides no writer, rotation, network or trading capability.
