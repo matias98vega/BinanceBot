@@ -42,6 +42,8 @@
 
 Resumen de capacidades desplegadas. El historial Git conserva el detalle de cada cambio; este documento registra hitos de alto nivel sin inventar versiones runtime ni fechas no formalizadas.
 
+Las releases agrupan documentación; `bot_version` identifica comportamiento de trading y las capability epochs identifican capacidades desplegadas. El registro canónico y su evidencia por commit están en `trading/capability_history.py`; ver `VERSIONING_POLICY.md`.
+
 ## v1.0 — Core Trading Engine
 
 - Motor modular con ciclos y lock local.
@@ -110,3 +112,5 @@ Estos cambios son capabilities posteriores dentro de la versión runtime `v1.2-s
 - `VERSION` y `trading/version_history.py` son la fuente runtime; no se cambian por cada fix sin una decisión explícita de capability epoch.
 - Este changelog se actualiza por capacidad desplegada, no por cada commit.
 - Los cambios futuros de estrategia o ML deben registrarse como una fase/versionado separado antes de afectar live.
+- `feature-capture-v2`, Replay, accounting y los experimentos offline son capabilities no conductuales de v1.2.x. `preentry-audit-v1` continúa OBSERVING/AUDIT_ONLY.
+- Un gate ENFORCE o filtro ML live exige una nueva `bot_version` aprobada; todavía no existe v1.3.

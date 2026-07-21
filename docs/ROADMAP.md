@@ -46,7 +46,7 @@ Este documento es la hoja de ruta canónica. No autoriza cambios de estrategia n
 | Taxonomía Neutral/Sideways | PENDIENTE | analytics conserva ambos buckets; runtime usa principalmente Neutral | Consolidar Sideways visualmente dentro de Neutral sin reescribir históricos | Contrato de presentación | Media |
 | Documentar capacidad operativa vs target | COMPLETADO | `bot_state.py`, Telegram Diagnóstico, auditor | Mantener contrato en consumidores futuros | Ninguna | Alta |
 | Definir criterios de dataset listo | COMPLETADO | sección específica de este documento | Implementar auditoría que produzca el manifiesto | Feature Store y auditor | Alta |
-| Revisar versionado funcional | PARCIAL | runtime y `VERSION` siguen en `v1.2-sizing-v2` | Decidir capability epoch futura sin reetiquetar silenciosamente trades | Criterio de release | Media |
+| Revisar versionado funcional | COMPLETADO | `VERSIONING_POLICY.md`, `trading/capability_history.py`, validador read-only | Mantener registry por capability y abrir nueva bot_version sólo ante cambio conductual | Criterio de release | Media |
 | CHANGELOG por capacidades | COMPLETADO | `CHANGELOG.md` | Actualizar por hito, no por cada commit | Disciplina de release | Media |
 
 ## Fase de confiabilidad

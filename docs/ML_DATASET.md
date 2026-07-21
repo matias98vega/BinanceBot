@@ -1,5 +1,7 @@
 # ML Dataset Audit
 
+Versionado: el schema pasivo de features es independiente de `bot_version`. Un shadow read-only puede tener `model_version`; un modelo que filtre trades live requiere una nueva `bot_version`. Los joins usan siempre la versión de apertura.
+
 > Audit schema: `1`
 > Reference commit before implementation: `4068eca`
 > Runtime version: `v1.2-sizing-v2`

@@ -2,6 +2,8 @@
 
 Versión runtime vigente: `v1.2-sizing-v2`.
 
+El versionado funcional separa comportamiento, schemas, observabilidad y tooling offline. Ver [`docs/VERSIONING_POLICY.md`](docs/VERSIONING_POLICY.md).
+
 Bot de trading para Binance con ejecución local/VPS, telemetría JSONL, validaciones de observabilidad, dashboard local y ejemplos de despliegue con `systemd`.
 
 Capacidades desplegadas destacadas:

@@ -1,5 +1,7 @@
 # XGBoost experiment — OFFLINE ONLY
 
+Versionado: este experimento no tiene un `model_version` desplegado ni cambia `bot_version`. Un shadow futuro puede tener identidad propia; cualquier filtro live es conductual y exige nueva versión del bot.
+
 This CPU-only experiment is not connected to scoring, sizing, filters, orders
 or shadow mode. It uses `tree_method="hist"`, `device="cpu"` and `n_jobs=1`.
 

@@ -1,5 +1,7 @@
 # Pre-entry state/exchange safety gate
 
+Versionado: `AUDIT_ONLY` es la capability no conductual `preentry-audit-v1`. Pasar a `ENFORCE` puede bloquear entradas y requiere otra `bot_version` aprobada; ver `VERSIONING_POLICY.md`. Ese cambio no está activo.
+
 ## Propósito y alcance
 
 El gate compara el estado gestionado local con una observación read-only del
