@@ -51,6 +51,8 @@ Este documento es la hoja de ruta canónica. No autoriza cambios de estrategia n
 
 ## Fase de confiabilidad
 
+La infraestructura read-only para manifests y datasets multi-shard está preparada, pero no activada. Timeline conserva por ahora su rotación productiva actual; cualquier migración requiere locking, publicación atómica, compatibilidad de consumidores y rollback. Ver `ARCHIVE_MANIFEST.md`.
+
 | Ítem | Estado | Evidencia | Pendiente real | Dependencia | Prioridad |
 |---|---|---|---|---|---|
 | Auditoría unificada state-vs-exchange pre-entry | PARCIAL | gate unificado, CLI, Fake E2E e integración AUDIT_ONLY | Observar varios ciclos y autorizar ENFORCE por separado | Evidencia productiva sin falsos positivos | Alta |
