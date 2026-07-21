@@ -79,6 +79,10 @@ Tambien valida el limite total de capital y muestra capital real vs capital auto
 
 `preflight_check.py` ejecuta healthcheck, validacion de observabilidad y analizadores locales.
 
+## Pre-entry safety gate
+
+El gate read-only `state vs exchange` se integra en modo `AUDIT_ONLY` antes de aperturas LONG/SHORT. `ENFORCE` no está activado en producción. Uso y política: `docs/PRE_ENTRY_SAFETY_GATE.md`.
+
 ## Harness de exchange para tests
 
 `trading/testing/` provee un Fake Binance Client in-memory, determinista y sin red para tests unitarios y end-to-end. No usa credenciales ni se puede activar en produccion. Uso, metodos y limitaciones: `docs/FAKE_BINANCE_CLIENT.md`.

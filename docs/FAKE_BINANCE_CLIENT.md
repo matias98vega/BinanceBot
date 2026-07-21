@@ -41,6 +41,10 @@ El paquete no importa el transporte productivo. Los tests parchean `socket.socke
 
 Los mocks locales existentes permanecen cuando prueban una secuencia muy estrecha o errores HTTP concretos. Se pueden migrar gradualmente cuando el fake aporte una semántica mejor sin ocultar el propósito del test.
 
+## Gate pre-entry
+
+`test_pre_entry_safety_gate_e2e.py` reutiliza el fake para comprobar aperturas seguras y cero escrituras exchange ante bloqueos. El gate productivo nunca importa el fake.
+
 ## Limitaciones y siguiente fase
 
 El siguiente paso posible es un `ReplayClient` que reproduzca respuestas sanitizadas y versionadas. No está implementado ni se considera completado.

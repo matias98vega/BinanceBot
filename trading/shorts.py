@@ -7,7 +7,7 @@ TP: orden LIMIT + reduceOnly=true.
 import sys, os, time, math
 import urllib.error as _ue
 sys.path.insert(0, os.path.dirname(__file__))
-import utils, config, capital_manager, decision_timeline, binance_client
+import utils, config, capital_manager, decision_timeline, binance_client, pre_entry_safety_gate
 
 BINANCE = binance_client.get_default_client()
 
@@ -117,7 +117,7 @@ def _get_fill_price(order_id, symbol, fallback):
     return fallback
 
 
-def open_short(candidate, state, max_shorts=None):
+def open_short(candidate, state, max_shorts=None, pre_entry_gate_result=None):
     """
     Abre una posición short en futures.
     TP: orden LIMIT reduceOnly.
@@ -197,6 +197,16 @@ def open_short(candidate, state, max_shorts=None):
         return None, f'CAPITAL LIMIT ERROR FUTURES: {e}'
     if not ok:
         return None, limit_msg
+
+    if pre_entry_gate_result is None and pre_entry_safety_gate.configured_mode() == pre_entry_safety_gate.ENFORCE:
+        pre_entry_gate_result = pre_entry_safety_gate.evaluate_pre_entry_safety(
+            client=BINANCE, local_state=state, side="SHORT", symbol=sym,
+            context={"capacity": {"current": sum(1 for p in state.get("positions", []) if p.get("direction") == "short"),
+                                  "operational_max": max_shorts, "new_entries_allowed": True}},
+            mode=pre_entry_safety_gate.ENFORCE,
+        )
+    if pre_entry_gate_result and not pre_entry_gate_result.get("entry_allowed", False):
+        return None, pre_entry_safety_gate.rejection_reason(pre_entry_gate_result)
 
     _ensure_leverage(sym, config.FUTURES_LEVERAGE)
 

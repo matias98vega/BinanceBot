@@ -13,6 +13,7 @@ import futures_residuals
 import feature_registry
 import longs
 import market
+import pre_entry_gate_observability
 import rebalance
 import shorts
 import utils
@@ -374,7 +375,14 @@ class CycleRunner:
                 except Exception:
                     pass
                 feature_registry.enrich_bot_context(best_long, state)
-                pos, msg = longs.open_long(best_long, state, max_longs=max_longs)
+                gate_result = pre_entry_gate_observability.evaluate_and_record(
+                    client=self.binance, local_state=state, bot_state=bot_state.load_bot_state({}),
+                    side="LONG", symbol=best_long.get("symbol"), cycle_id=cycle_id,
+                    reconciliation_status={"position_pending": state.get("position_reconciliation_pending")},
+                    context={"capacity": {"current": long_count, "operational_max": max_longs,
+                                          "new_entries_allowed": long_count < max_longs}},
+                )
+                pos, msg = longs.open_long(best_long, state, max_longs=max_longs, pre_entry_gate_result=gate_result)
                 if pos:
                     state['positions'].append(pos)
                     self.safe_log_open(pos, best_long, btc_ctx, spot_total_capital)
@@ -435,7 +443,14 @@ class CycleRunner:
                 except Exception:
                     pass
                 feature_registry.enrich_bot_context(best_short, state)
-                pos, msg = shorts.open_short(best_short, state, max_shorts=max_shorts)
+                gate_result = pre_entry_gate_observability.evaluate_and_record(
+                    client=self.binance, local_state=state, bot_state=bot_state.load_bot_state({}),
+                    side="SHORT", symbol=best_short.get("symbol"), cycle_id=cycle_id,
+                    reconciliation_status={"position_pending": state.get("futures_entries_blocked")},
+                    context={"capacity": {"current": short_count, "operational_max": max_shorts,
+                                          "new_entries_allowed": short_count < max_shorts}},
+                )
+                pos, msg = shorts.open_short(best_short, state, max_shorts=max_shorts, pre_entry_gate_result=gate_result)
                 if pos:
                     state['positions'].append(pos)
                     self.safe_log_open(pos, best_short, btc_ctx, fut_free)

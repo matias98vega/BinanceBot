@@ -5,6 +5,13 @@
 - Added the read-only semantic audit, readiness gate and benchmark.
 - Strategy, scoring, sizing, order payloads, bot version and historical records remain unchanged.
 
+# 2026-07-21 — Pre-entry state/exchange safety gate
+
+- Added a unified read-only safety evaluation with stable status codes and composable checks.
+- Integrated AUDIT_ONLY before LONG/SHORT openings; ENFORCE remains inactive pending production observation.
+- Added FakeBinanceClient end-to-end coverage, read-only CLI and compact BotState/timeline evidence.
+- Strategy, scoring, sizing, TP/SL, Guardian, reconciliation, payloads and bot version remain unchanged.
+
 # Changelog
 
 Resumen de capacidades desplegadas. El historial Git conserva el detalle de cada cambio; este documento registra hitos de alto nivel sin inventar versiones runtime ni fechas no formalizadas.

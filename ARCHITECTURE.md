@@ -4,6 +4,8 @@ Este documento es la referencia canonica de arquitectura. Describe el estado act
 
 ## Vista General
 
+El flujo de apertura incluye `pre_entry_safety_gate.py` entre la selección del candidato y `longs.py`/`shorts.py`. El modo desplegable inicial es AUDIT_ONLY; la activación ENFORCE requiere validación separada.
+
 ```text
 Binance API
    |

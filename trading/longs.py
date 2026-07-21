@@ -5,7 +5,7 @@ Abre, monitorea, toma parcial, trailing stop, cierra.
 """
 import sys, os, time, math
 sys.path.insert(0, os.path.dirname(__file__))
-import utils, config, capital_manager, decision_timeline, binance_client, residuals
+import utils, config, capital_manager, decision_timeline, binance_client, residuals, pre_entry_safety_gate
 
 BINANCE = binance_client.get_default_client()
 
@@ -65,7 +65,7 @@ def _recovery_pending_position(sym, actual_price, qty, real_sl, real_tp, atr, re
     }
 
 
-def open_long(candidate, state, max_longs=None):
+def open_long(candidate, state, max_longs=None, pre_entry_gate_result=None):
     """
     Abre una posición long en spot para el candidato dado.
     Retorna (posición dict, mensaje) o (None, error_msg).
@@ -163,6 +163,16 @@ def open_long(candidate, state, max_longs=None):
     # Redondear SL/TP al tick
     sl = utils.round_tick(sl, tick)
     tp = utils.round_tick(tp, tick)
+
+    if pre_entry_gate_result is None and pre_entry_safety_gate.configured_mode() == pre_entry_safety_gate.ENFORCE:
+        pre_entry_gate_result = pre_entry_safety_gate.evaluate_pre_entry_safety(
+            client=BINANCE, local_state=state, side="LONG", symbol=sym,
+            context={"capacity": {"current": sum(1 for p in state.get("positions", []) if p.get("direction") == "long"),
+                                  "operational_max": max_longs, "new_entries_allowed": True}},
+            mode=pre_entry_safety_gate.ENFORCE,
+        )
+    if pre_entry_gate_result and not pre_entry_gate_result.get("entry_allowed", False):
+        return None, pre_entry_safety_gate.rejection_reason(pre_entry_gate_result)
 
     # Compra MARKET (con backoff ante errores transitorios de API)
     buy = None

@@ -1020,6 +1020,18 @@ def _audit_bot_state(path, data, report):
         target_maximum = state.get('target_max')
         if current is not None and target_maximum is not None and _is_number(current) and _is_number(target_maximum) and float(current) > float(target_maximum):
             report.warning(path, f'posiciones {side} existentes superan capacidad objetivo; nuevas entradas no incrementables')
+    gate = data.get("pre_entry_safety_summary") if isinstance(data.get("pre_entry_safety_summary"), dict) else None
+    if not gate:
+        report.informational_warning(path, "pre-entry gate aun sin evidencia persistida")
+    else:
+        gate_status = str(gate.get("status") or "UNKNOWN")
+        gate_mode = str(gate.get("mode") or "UNKNOWN")
+        if gate_status in {"BLOCKED_POSITION_MISMATCH", "BLOCKED_ORPHAN_POSITION", "BLOCKED_MISSING_PROTECTION", "BLOCKED_EXCHANGE_STATE_UNKNOWN"}:
+            report.warning(path, f"pre-entry gate bloqueo material status={gate_status} mode={gate_mode}")
+        elif gate_status == "BLOCKED_CAPACITY" or gate_mode == "AUDIT_ONLY":
+            report.informational_warning(path, f"pre-entry gate status={gate_status} mode={gate_mode}")
+        elif gate_mode not in {"AUDIT_ONLY", "ENFORCE"}:
+            report.informational_warning(path, f"pre-entry gate modo desconocido={gate_mode}")
 
 
 def _audit_rebalance(path, data, report):

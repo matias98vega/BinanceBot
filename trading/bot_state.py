@@ -1144,6 +1144,14 @@ def build_bot_state(
         'diagnostics': diagnostics,
         'rebalance': rebalance_info,
     }
+    gate_summary = state.get("_last_pre_entry_gate") if isinstance(state.get("_last_pre_entry_gate"), dict) else None
+    if gate_summary:
+        payload["last_pre_entry_gate_status"] = gate_summary.get("status")
+        payload["last_pre_entry_gate_symbol"] = gate_summary.get("symbol")
+        payload["last_pre_entry_gate_side"] = gate_summary.get("side")
+        payload["last_pre_entry_gate_at"] = gate_summary.get("observed_at")
+        payload["last_pre_entry_gate_blocking_reasons"] = gate_summary.get("blocking_reasons") or []
+        payload["pre_entry_safety_summary"] = dict(gate_summary)
     if safety_pause:
         payload['safety_pause'] = safety_pause
     return version_history.attach_version_metadata(payload)

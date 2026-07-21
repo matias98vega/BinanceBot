@@ -53,8 +53,8 @@ Este documento es la hoja de ruta canónica. No autoriza cambios de estrategia n
 
 | Ítem | Estado | Evidencia | Pendiente real | Dependencia | Prioridad |
 |---|---|---|---|---|---|
-| Auditoría unificada state-vs-exchange pre-entry | PARCIAL | Futures reconciliation, auditoría de orphans y Spot stale | Resultado único y política segura de bloqueo antes de nuevas entradas | Cliente read-only inyectable | Alta |
-| FakeBinanceClient o ReplayClient | PENDIENTE | `BinanceClient` es inyectable; no existe implementación reusable completa | Cliente determinista con balances, fills, órdenes y errores | Contratos actuales del cliente | Alta |
+| Auditoría unificada state-vs-exchange pre-entry | PARCIAL | gate unificado, CLI, Fake E2E e integración AUDIT_ONLY | Observar varios ciclos y autorizar ENFORCE por separado | Evidencia productiva sin falsos positivos | Alta |
+| FakeBinanceClient o ReplayClient | PARCIAL | FakeBinanceClient reusable y escenarios A-L completados | ReplayClient sigue pendiente | Contratos sanitizados de replay | Media |
 | Tests end-to-end sin operaciones reales | PARCIAL | 473 tests unitarios y supresión de transportes | Escenarios completos ciclo→persistencia→Telegram con cliente falso | Fake/Replay client | Alta |
 | Política de gaps/downtime persistida | PARCIAL | auditor reconoce pausas y mantiene gaps sin evidencia como operativos | Evento durable de inicio/fin y motivo de downtime | Timeline operativo | Alta |
 | Freshness de stats e insights | PARCIAL | stats se reconstruye; Insights tiene metadata | Umbrales, relación de fuentes y warning visible | Contratos derivados | Media |
@@ -173,7 +173,7 @@ Cumplir estos criterios no autoriza cambios live: sólo habilita evaluación off
 1. Baseline estadístico reproducible sobre los 198 cierres `TRUSTED`.
 2. Evaluación temporal agrupada y version-aware para resolver dependencia/version mixing.
 3. FakeBinanceClient/ReplayClient y escenarios end-to-end sin operaciones.
-4. Auditoría unificada state-vs-exchange pre-entry.
+4. Observar el gate pre-entry en AUDIT_ONLY y preparar decisión separada de ENFORCE.
 5. Política persistida de gaps/downtime y separación Timeline operativo/debug.
 
 ## Documentos relacionados
