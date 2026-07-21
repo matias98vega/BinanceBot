@@ -1154,3 +1154,45 @@ def get_capital_accounting_stats(current_equity=None, starting_equity=0.0,
         asset,
         unrealized_pnl,
     )
+
+
+def get_live_capital_accounting_stats(
+        ledger_file=capital_accounting.capital_ledger.DEFAULT_LEDGER_FILE,
+        asset=None, observer=None):
+    """Return accounting metrics enriched by one read-only live observation.
+
+    The observer values managed Spot quantity at the current read-only ticker
+    and reuses Futures unrealized PnL reported by the account. A quantity or
+    price mismatch makes the observation explicitly incomplete; it is never
+    converted to zero and wallet dust is not attributed to a managed trade.
+    """
+    if observer is None:
+        import reconcile_capital_ledger
+        observer = reconcile_capital_ledger.observe_capital
+    try:
+        observation = observer() or {}
+    except Exception as exc:
+        observation = {'errors': [f'live_observation_failed:{type(exc).__name__}']}
+    errors = sorted(set(observation.get('errors') or []))
+    current_spot = observation.get('baseline_spot_unrealized_pnl')
+    current_futures = observation.get('baseline_futures_unrealized_pnl')
+    current_total = observation.get('baseline_unrealized_pnl')
+    complete = not errors and current_total is not None and observation.get('observed_equity') is not None
+    summary = get_capital_accounting_stats(
+        current_equity=observation.get('observed_equity'), ledger_file=ledger_file,
+        asset=asset, unrealized_pnl=current_total if complete else None,
+    )
+    summary.update({
+        'current_spot_unrealized_pnl': current_spot if complete else None,
+        'current_futures_unrealized_pnl': current_futures if complete else None,
+        'current_unrealized_pnl': current_total if complete else None,
+        'current_unrealized_pnl_by_position': observation.get('open_positions_at_bootstrap') or [],
+        'observation_timestamp': observation.get('timestamp'),
+        'observation_complete': complete,
+        'missing_fields': errors,
+        'observation_source': observation.get('observation_source'),
+        'observed_equity': observation.get('observed_equity'),
+    })
+    if not complete:
+        summary['accounting_status'] = 'INCOMPLETE_DATA'
+    return summary

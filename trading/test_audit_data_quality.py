@@ -1037,6 +1037,17 @@ class AuditDataQualityTests(unittest.TestCase):
         self.assertTrue(any('market.regime faltante' in item for item in report.warnings))
         self.assertTrue(any('posiciones short actuales superan max' in item for item in report.warnings))
 
+    def test_bot_state_target_overcapacity_remains_visible_without_false_operational_max(self):
+        self.write_json('trading/bot_state.json', {
+            'market': {}, 'capital': {'spot_real': 2, 'spot_used': 1},
+            'positions': {'long': {'current': 2, 'max': 2, 'operational_max': 2, 'target_max': 1, 'new_entries_allowed': False}},
+        })
+        self.write_jsonl('trading/decision_snapshots.jsonl', [{'timestamp': '2026-01-01T00:00:00Z'}])
+        self.write_jsonl('trading/trade_analytics.jsonl', [])
+        report = audit_data_quality.audit_project(self.project)
+        self.assertFalse(any('superan max reportado' in item for item in report.warnings))
+        self.assertTrue(any('superan capacidad objetivo' in item for item in report.warnings))
+
     def test_bot_state_btc_aliases_are_accepted(self):
         self.write_json('trading/bot_state.json', {
             'market': {

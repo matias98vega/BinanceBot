@@ -462,6 +462,48 @@ class AnalyticsEngineTests(unittest.TestCase):
         self.assertEqual(summary['adjusted_pnl'], 10.0)
         self.assertEqual(summary['adjusted_roi'], 25.0)
 
+    def _live_observation(self, spot=1.5, futures=-0.5, errors=None):
+        total = None if errors else spot + futures
+        return {
+            'timestamp': '2026-07-21T00:00:00Z',
+            'observation_source': 'test_read_only',
+            'observed_equity': 101.0,
+            'baseline_spot_unrealized_pnl': None if errors else spot,
+            'baseline_futures_unrealized_pnl': futures,
+            'baseline_unrealized_pnl': total,
+            'open_positions_at_bootstrap': [
+                {'symbol': 'XRPUSDT', 'wallet': 'SPOT', 'quantity': 10, 'entry_price': 1, 'current_price': 1 + spot / 10, 'unrealized_pnl': spot},
+                {'symbol': 'BTCUSDT', 'wallet': 'FUTURES', 'unrealized_pnl': futures},
+            ],
+            'errors': errors or [],
+        }
+
+    def test_live_accounting_combines_spot_and_futures_upnl(self):
+        capital_ledger.record_movement(capital_ledger.TYPE_INITIAL_CAPITAL, 100, reference_id='initial', ledger_file=self.ledger)
+        summary = analytics_engine.get_live_capital_accounting_stats(
+            self.ledger, observer=lambda: self._live_observation(2.0, -1.0))
+        self.assertTrue(summary['observation_complete'])
+        self.assertEqual(summary['current_spot_unrealized_pnl'], 2.0)
+        self.assertEqual(summary['current_futures_unrealized_pnl'], -1.0)
+        self.assertEqual(summary['current_unrealized_pnl'], 1.0)
+        self.assertEqual(len(summary['current_unrealized_pnl_by_position']), 2)
+        self.assertIn(summary['accounting_status'], ('ALIGNED', 'WITHIN_TOLERANCE'))
+
+    def test_live_accounting_supports_negative_spot_upnl(self):
+        summary = analytics_engine.get_live_capital_accounting_stats(
+            self.ledger, observer=lambda: self._live_observation(-2.0, 0.0))
+        self.assertEqual(summary['current_spot_unrealized_pnl'], -2.0)
+        self.assertEqual(summary['current_unrealized_pnl'], -2.0)
+
+    def test_live_accounting_mismatch_or_missing_price_is_incomplete_not_zero(self):
+        for error in ('managed_spot_quantity_mismatch:XRPUSDT', 'missing_current_price:XRPUSDT'):
+            summary = analytics_engine.get_live_capital_accounting_stats(
+                self.ledger, observer=lambda e=error: self._live_observation(errors=[e]))
+            self.assertFalse(summary['observation_complete'])
+            self.assertIsNone(summary['current_unrealized_pnl'])
+            self.assertEqual(summary['accounting_status'], 'INCOMPLETE_DATA')
+            self.assertIn(error, summary['missing_fields'])
+
     def test_capital_accounting_does_not_change_existing_analytics_metrics(self):
         self._seed_closed_trades()
         baseline = self._rebuild()

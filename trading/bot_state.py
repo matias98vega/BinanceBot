@@ -478,9 +478,10 @@ def _rebalance_wallet_min(default=0.0):
 
 
 def compute_observable_max_positions(spot_target, futures_target, max_longs=None, max_shorts=None):
-    """Return max position slots for observability using wallet targets as source.
+    """Return the effective limits already used by the operational cycle.
 
-    This is read-only and does not affect trading entry logic.
+    Explicit limits come from the entry cycle and must not be silently clamped
+    by a separately derived target-capital view. This is read-only.
     """
     import config
     import utils
@@ -489,10 +490,7 @@ def compute_observable_max_positions(spot_target, futures_target, max_longs=None
         if max_longs is None:
             dynamic_longs = utils.get_max_long_positions(spot_target if spot_target is not None else 0)
         else:
-            dynamic_longs = min(
-                int(max_longs),
-                int(utils.get_max_long_positions(spot_target if spot_target is not None else 0)),
-            )
+            dynamic_longs = int(max_longs)
         max_longs = _wallet_max_positions(
             spot_target,
             getattr(config, 'MAX_LONG_POSITIONS', 2),
@@ -509,10 +507,7 @@ def compute_observable_max_positions(spot_target, futures_target, max_longs=None
         if max_shorts is None:
             dynamic_shorts = utils.get_max_short_positions(futures_target if futures_target is not None else 0)
         else:
-            dynamic_shorts = min(
-                int(max_shorts),
-                int(utils.get_max_short_positions(futures_target if futures_target is not None else 0)),
-            )
+            dynamic_shorts = int(max_shorts)
         max_shorts = _wallet_max_positions(
             futures_target,
             getattr(config, 'MAX_SHORT_POSITIONS', 2),
@@ -1037,6 +1032,9 @@ def build_bot_state(
         max_longs=max_longs,
         max_shorts=max_shorts,
     )
+    target_max_longs, target_max_shorts = compute_observable_max_positions(
+        spot_target=spot_target, futures_target=futures_target,
+    )
 
     rebalance_info = _build_rebalance_diagnostics(
         spot_real=spot_real,
@@ -1111,10 +1109,19 @@ def build_bot_state(
             'note': capital_note,
         },
         'positions': {
-            'long': {'current': len(longs), 'max': max_longs},
+            'long': {
+                'current': len(longs), 'max': max_longs,
+                'operational_max': max_longs, 'target_max': target_max_longs,
+                'new_entries_allowed': bool(max_longs and len(longs) < max_longs),
+                'capacity_status': ('OVER_OPERATIONAL_CAPACITY' if max_longs is not None and len(longs) > max_longs else 'AT_CAPACITY' if max_longs is not None and len(longs) == max_longs else 'AVAILABLE'),
+                'target_capacity_status': ('OVER_TARGET_CAPACITY_NON_INCREMENTABLE' if target_max_longs is not None and len(longs) > target_max_longs else 'AT_TARGET_CAPACITY' if target_max_longs is not None and len(longs) == target_max_longs else 'WITHIN_TARGET_CAPACITY'),
+            },
             'short': {
                 'current': short_count,
                 'max': max_shorts,
+                'operational_max': max_shorts,
+                'target_max': target_max_shorts,
+                'new_entries_allowed': bool(max_shorts and short_count < max_shorts),
                 'source': 'binance_futures_account' if short_count > len(shorts) else 'state',
                 'symbols': futures_observability.get('futures_open_symbols') or [],
                 'observed': futures_observability.get('futures_positions') or [],

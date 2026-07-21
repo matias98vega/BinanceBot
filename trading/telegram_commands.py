@@ -733,6 +733,10 @@ def _exposure_metrics():
             'short_count': short_state.get('current', 0),
             'max_longs': long_state.get('max', 'N/D'),
             'max_shorts': short_state.get('max', 'N/D'),
+            'target_max_longs': long_state.get('target_max'),
+            'target_max_shorts': short_state.get('target_max'),
+            'long_capacity_status': long_state.get('target_capacity_status'),
+            'long_new_entries_allowed': long_state.get('new_entries_allowed'),
             'total_real': capital.get('total_real'),
             'total_limit': capital.get('total_limit'),
             'total_authorized': capital.get('total_authorized'),
@@ -780,6 +784,10 @@ def _exposure_metrics():
         'short_count': len(short_positions),
         'max_longs': 'N/D',
         'max_shorts': 'N/D',
+        'target_max_longs': None,
+        'target_max_shorts': None,
+        'long_capacity_status': None,
+        'long_new_entries_allowed': None,
         'total_real': None,
         'total_limit': None,
         'total_authorized': None,
@@ -1744,11 +1752,7 @@ def _capital_accounting_payload(metrics=None):
     )
     has_reliable_baseline = starting_equity is not None
     try:
-        summary = analytics_engine.get_capital_accounting_stats(
-            current_equity=current_equity,
-            starting_equity=starting_equity,
-            unrealized_pnl=metrics.get('unrealized_pnl'),
-        ) or {}
+        summary = analytics_engine.get_live_capital_accounting_stats() or {}
     except Exception:
         summary = {}
     payload = {
@@ -1774,6 +1778,11 @@ def _capital_accounting_payload(metrics=None):
         'baseline_unrealized_pnl': summary.get('baseline_unrealized_pnl'),
         'current_unrealized_pnl': summary.get('current_unrealized_pnl'),
         'unrealized_change_since_bootstrap': summary.get('unrealized_change_since_bootstrap'),
+        'current_spot_unrealized_pnl': summary.get('current_spot_unrealized_pnl'),
+        'current_futures_unrealized_pnl': summary.get('current_futures_unrealized_pnl'),
+        'observation_timestamp': summary.get('observation_timestamp'),
+        'observation_complete': bool(summary.get('observation_complete')),
+        'missing_fields': summary.get('missing_fields') or [],
         'has_reliable_baseline': has_reliable_baseline,
     }
     return payload
@@ -1805,6 +1814,8 @@ def _capital_accounting_lines(metrics=None, compact=False):
         f'PnL Trading neto: {_fmt_money_or_unavailable(accounting.get("trading_pnl_net"))}',
         f'ROI Trading: {_fmt_pct_or_unavailable(accounting.get("trading_roi_pct"))}',
         f'PnL no realizado inicial: {_fmt_money_or_unavailable(accounting.get("baseline_unrealized_pnl"))}',
+        f'PnL no realizado Spot/Futures: {_fmt_money_or_unavailable(accounting.get("current_spot_unrealized_pnl"))} / {_fmt_money_or_unavailable(accounting.get("current_futures_unrealized_pnl"))}',
+        f'Observacion actual: {"completa" if accounting.get("observation_complete") else "incompleta"}',
         f'Cambio no realizado: {_fmt_money_or_unavailable(accounting.get("unrealized_change_since_bootstrap"))}',
         f'Estado contable: {accounting.get("accounting_status") or "INCOMPLETE_DATA"}',
         f'Equity ajustado: {_fmt_money_or_unavailable(accounting.get("adjusted_equity"))}',
@@ -2239,6 +2250,8 @@ class DiagnosticsPage(MenuPage):
             '',
             'Longs:',
             f'{metrics["long_count"]}/{max_longs}',
+            f'Objetivo: {metrics.get("target_max_longs") if metrics.get("target_max_longs") is not None else "N/D"} | Nuevas: {"si" if metrics.get("long_new_entries_allowed") else "no"}',
+            f'Estado objetivo: {metrics.get("long_capacity_status") or "N/D"}',
             '',
             'Shorts:',
             f'{metrics["short_count"]}/{max_shorts}',

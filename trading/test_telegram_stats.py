@@ -80,10 +80,13 @@ class TelegramStatsTests(unittest.TestCase):
         self.stats_file = os.path.join(self.tmp.name, 'stats.json')
         self._old_daily_pnl_paths = telegram_commands.DAILY_PNL_FALLBACK_PATHS
         self._old_daily_pnl_now = telegram_commands.DAILY_PNL_FALLBACK_NOW
+        self._live_accounting = patch.object(telegram_commands.analytics_engine, 'get_live_capital_accounting_stats', return_value=self._accounting())
+        self._live_accounting.start()
 
     def tearDown(self):
         telegram_commands.DAILY_PNL_FALLBACK_PATHS = self._old_daily_pnl_paths
         telegram_commands.DAILY_PNL_FALLBACK_NOW = self._old_daily_pnl_now
+        self._live_accounting.stop()
         self.tmp.cleanup()
 
     def _write_jsonl(self, name, rows):
@@ -411,7 +414,7 @@ class TelegramStatsTests(unittest.TestCase):
              patch.object(telegram_commands, '_bot_state', return_value={}), \
              patch.object(
                  telegram_commands.analytics_engine,
-                 'get_capital_accounting_stats',
+                 'get_live_capital_accounting_stats',
                  return_value=self._accounting(
                      external_deposits=100,
                      external_withdrawals=25,
@@ -434,7 +437,7 @@ class TelegramStatsTests(unittest.TestCase):
     def test_capital_accounting_shows_bootstrap_date_and_unrealized_change(self):
         metrics = self._metrics()
         metrics['unrealized_pnl'] = 2.0
-        with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics), patch.object(telegram_commands, '_bot_state', return_value={}), patch.object(telegram_commands.analytics_engine, 'get_capital_accounting_stats', return_value=self._accounting(accounting_start_timestamp='2026-07-20T12:00:00Z', baseline_unrealized_pnl=10, unrealized_change_since_bootstrap=-8, initial_capital=100, trading_pnl_net=2, trading_roi_pct=2, accounting_status='ALIGNED')):
+        with patch.object(telegram_commands, '_exposure_metrics', return_value=metrics), patch.object(telegram_commands, '_bot_state', return_value={}), patch.object(telegram_commands.analytics_engine, 'get_live_capital_accounting_stats', return_value=self._accounting(accounting_start_timestamp='2026-07-20T12:00:00Z', baseline_unrealized_pnl=10, unrealized_change_since_bootstrap=-8, initial_capital=100, trading_pnl_net=2, trading_roi_pct=2, accounting_status='ALIGNED')):
             text = telegram_commands._render_page('capital')['text']
         self.assertIn('Contabilidad desde: 2026-07-20T12:00:00Z', text)
         self.assertIn('PnL no realizado inicial: 10.00 USDT', text)
@@ -445,7 +448,7 @@ class TelegramStatsTests(unittest.TestCase):
              patch.object(telegram_commands, '_bot_state', return_value={}), \
              patch.object(
                  telegram_commands.analytics_engine,
-                 'get_capital_accounting_stats',
+                 'get_live_capital_accounting_stats',
                  return_value=self._accounting(adjusted_equity=54, adjusted_pnl=0, adjusted_roi=0),
              ):
             text = telegram_commands._render_page('capital')['text']
@@ -462,7 +465,7 @@ class TelegramStatsTests(unittest.TestCase):
              patch.object(telegram_commands, '_bot_state', return_value={}), \
              patch.object(
                  telegram_commands.analytics_engine,
-                 'get_capital_accounting_stats',
+                 'get_live_capital_accounting_stats',
                  return_value=self._accounting(adjusted_equity=None, adjusted_pnl=None, adjusted_roi=None),
              ):
             text = telegram_commands._render_page('capital')['text']
@@ -696,7 +699,7 @@ class TelegramStatsTests(unittest.TestCase):
              patch.object(telegram_commands, '_bot_state', return_value={}), \
              patch.object(
                  telegram_commands.analytics_engine,
-                 'get_capital_accounting_stats',
+                 'get_live_capital_accounting_stats',
                  return_value=self._accounting(
                      net_external_flows=75,
                      commissions=0.5,
@@ -745,7 +748,7 @@ class TelegramStatsTests(unittest.TestCase):
              patch.object(telegram_commands, '_bot_state', return_value={'pnl': {'today': -0.4402, 'total': 5.0022}}), \
              patch.object(
                  telegram_commands.analytics_engine,
-                 'get_capital_accounting_stats',
+                 'get_live_capital_accounting_stats',
                  return_value=self._accounting(
                      adjusted_equity=47.76,
                      adjusted_pnl=-52.24,
@@ -766,7 +769,7 @@ class TelegramStatsTests(unittest.TestCase):
     def test_telegram_uses_analytics_for_capital_accounting_only(self):
         source = inspect.getsource(telegram_commands)
 
-        self.assertIn('analytics_engine.get_capital_accounting_stats', source)
+        self.assertIn('analytics_engine.get_live_capital_accounting_stats', source)
         self.assertNotIn('import capital_ledger', source)
         self.assertNotIn('import capital_accounting', source)
 

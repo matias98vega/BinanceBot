@@ -1017,6 +1017,9 @@ def _audit_bot_state(path, data, report):
         maximum = state.get('max')
         if current is not None and maximum is not None and _is_number(current) and _is_number(maximum) and float(current) > float(maximum):
             report.warning(path, f'posiciones {side} actuales superan max reportado')
+        target_maximum = state.get('target_max')
+        if current is not None and target_maximum is not None and _is_number(current) and _is_number(target_maximum) and float(current) > float(target_maximum):
+            report.warning(path, f'posiciones {side} existentes superan capacidad objetivo; nuevas entradas no incrementables')
 
 
 def _audit_rebalance(path, data, report):

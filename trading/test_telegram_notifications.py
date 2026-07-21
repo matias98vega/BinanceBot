@@ -114,6 +114,29 @@ class ObservableCapacityTests(unittest.TestCase):
     def test_zero_target_still_disables_capacity(self):
         self.assertEqual(bot_state._wallet_max_positions(0, configured_max=2, dynamic_value=4), 0)
 
+    @patch.dict(os.environ, {'BOT_TOTAL_CAPITAL_LIMIT_USDT': '54'}, clear=False)
+    def test_valid_existing_positions_distinguish_operational_and_target_capacity(self):
+        positions = [
+            {'symbol': 'XRPUSDT', 'direction': 'long', 'entry_price': 1, 'quantity': 10},
+            {'symbol': 'ADAUSDT', 'direction': 'long', 'entry_price': 0.2, 'quantity': 50},
+        ]
+        payload = bot_state.build_bot_state(
+            state={'positions': positions},
+            btc_ctx={'trend': 'bullish', 'btc_price': 60000, 'change_4h': 1},
+            spot_real=48, futures_real=3, spot_target=25, futures_target=26,
+            max_longs=2, max_shorts=2,
+        )
+        capacity = payload['positions']['long']
+        self.assertEqual(capacity['current'], 2)
+        self.assertEqual(capacity['operational_max'], 2)
+        self.assertEqual(capacity['target_max'], 1)
+        self.assertFalse(capacity['new_entries_allowed'])
+        self.assertEqual(capacity['capacity_status'], 'AT_CAPACITY')
+        self.assertEqual(capacity['target_capacity_status'], 'OVER_TARGET_CAPACITY_NON_INCREMENTABLE')
+
+    def test_explicit_operational_capacity_is_not_clamped_by_target(self):
+        self.assertEqual(bot_state.compute_observable_max_positions(25, 25, 2, 2), (2, 2))
+
     def test_futures_account_observability_counts_open_shorts_and_margin(self):
         account = {
             'totalWalletBalance': '22.16',
