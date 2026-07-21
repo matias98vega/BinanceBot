@@ -74,6 +74,7 @@ Este documento es la hoja de ruta canónica. No autoriza cambios de estrategia n
 | Mínimos de muestra | PARCIAL | Insights y SHORT usan umbrales | Política común por reporte y decisión | Baseline | Alta |
 | Comparación robusta entre versiones | PARCIAL | métricas y diagnóstico por versión ya existen | Comparación pareada/temporal, intervalos y control de mix | Manifiesto y baseline | Alta |
 | Detección de drift | PENDIENTE | no existe monitor estadístico formal | Drift de features, labels, símbolos y performance | Dataset versionado | Media |
+| Feature schema pre-entry v2 | COMPLETADO | registro canónico, captura local y auditor semántico | Acumular al menos 150 cierres nuevos sin backfill | Feature Store | Alta |
 | Walk-forward básico sin ML | PENDIENTE | SHORT sólo informa muestra insuficiente | Framework temporal general contra baseline | Baseline reproducible | Alta |
 
 ## Fase ML offline

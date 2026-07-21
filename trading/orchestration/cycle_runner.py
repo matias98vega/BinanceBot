@@ -10,6 +10,7 @@ import config
 import decision_timeline
 import futures_reconciliation
 import futures_residuals
+import feature_registry
 import longs
 import market
 import rebalance
@@ -372,6 +373,7 @@ class CycleRunner:
                     )
                 except Exception:
                     pass
+                feature_registry.enrich_bot_context(best_long, state)
                 pos, msg = longs.open_long(best_long, state, max_longs=max_longs)
                 if pos:
                     state['positions'].append(pos)
@@ -432,6 +434,7 @@ class CycleRunner:
                     )
                 except Exception:
                     pass
+                feature_registry.enrich_bot_context(best_short, state)
                 pos, msg = shorts.open_short(best_short, state, max_shorts=max_shorts)
                 if pos:
                     state['positions'].append(pos)

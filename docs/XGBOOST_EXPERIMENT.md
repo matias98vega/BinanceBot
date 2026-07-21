@@ -25,3 +25,5 @@ walk-forward, classification/economic metrics, calibration, importances and a
 No binary model is persisted. Artifacts are labelled `OFFLINE_ONLY`,
 `NOT_FOR_TRADING` and `NOT_SHADOW_APPROVED`. A negative result keeps shadow
 mode blocked and is retained as evidence.
+
+The result remains negative. Re-evaluation waits for the schema-v2 readiness gate instead of repeatedly testing the same final-test block.

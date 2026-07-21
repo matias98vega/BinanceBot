@@ -1,3 +1,10 @@
+# 2026-07-21 — Passive pre-entry feature context v2
+
+- Added forward-only feature schema/capture versioning.
+- Added local pre-entry trend, momentum, volatility, volume, structure, BTC, risk and position-context features without new exchange calls.
+- Added the read-only semantic audit, readiness gate and benchmark.
+- Strategy, scoring, sizing, order payloads, bot version and historical records remain unchanged.
+
 # Changelog
 
 Resumen de capacidades desplegadas. El historial Git conserva el detalle de cada cambio; este documento registra hitos de alto nivel sin inventar versiones runtime ni fechas no formalizadas.

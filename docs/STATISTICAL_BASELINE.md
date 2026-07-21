@@ -17,3 +17,5 @@ Stability reports PSI with train-derived bins, KS and unseen categories. Evaluat
 ```
 
 XGBoost and live scoring remain outside this tool. `XGBOOST_EXPERIMENT.md` reuses this exact split without mutating it.
+
+Baseline and XGBoost must not be repeated for schema v2 until the readiness gate in `FEATURE_REGISTRY.md` passes.

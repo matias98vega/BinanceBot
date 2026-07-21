@@ -37,6 +37,7 @@ def safe_log_open(pos, candidate, btc_ctx, capital_at_entry, analytics):
             quantity=pos.get('quantity'),
             wallet='SPOT' if pos.get('direction') == 'long' else 'FUTURES',
             btc_context=btc_ctx or {},
+            passive_context=candidate.get('passive_feature_context') if candidate else None,
         )
     except Exception:
         pass

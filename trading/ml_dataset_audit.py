@@ -12,6 +12,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
 import feature_store
+import feature_registry
 import history
 import version_history
 from config_loader import PROJECT_DIR
@@ -133,7 +134,7 @@ def _feature_id(row):
 
 
 def _feature_ts(row):
-    return _iso(_first(_nested(row, 'identification', 'timestamp'), row.get('timestamp'), row.get('entry_time')))
+    return _iso(_first(_nested(row, 'preentry_context', 'capture', 'captured_at'), _nested(row, 'identification', 'timestamp'), row.get('timestamp'), row.get('entry_time')))
 
 
 def _feature_values(row, opening):
@@ -144,7 +145,7 @@ def _feature_values(row, opening):
     btc = opening.get('btc_context') if isinstance(opening.get('btc_context'), dict) else {}
     extra = opening.get('extra') if isinstance(opening.get('extra'), dict) else {}
     ts = _dt(_open_ts(opening))
-    return {
+    values = {
         'symbol': _first(_nested(row, 'identification', 'symbol'), opening.get('symbol')),
         'side': str(_first(_nested(row, 'identification', 'direction'), opening.get('side')) or '').upper() or None,
         'bot_version': _first(_nested(row, 'identification', 'bot_version'), row.get('bot_version'), opening.get('bot_version')),
@@ -174,6 +175,9 @@ def _feature_values(row, opening):
         'max_positions': capital.get('max_positions'), 'exposure': _first(capital.get('exposure_pct'), capital.get('position_calculated')),
         'entry_price': _first(ind.get('entry_price'), opening.get('entry_price')),
     }
+    passive = _nested(row, 'preentry_context', 'features')
+    if isinstance(passive, dict): values.update(passive)
+    return values
 
 
 def _percentile(values, fraction):
@@ -305,7 +309,7 @@ def audit_dataset(trades_file=history.DEFAULT_TRADES_FILE, features_file=feature
         manifest.append({'trade_id':tid,'classification':classification,'reasons':sorted(set(reasons)),'valid_for':usable,
             'opening_timestamp':opening_ts,'closing_timestamp':closing_ts,'bot_version':item_version or 'unknown',
             'symbol':primary_open.get('symbol') or primary_close.get('symbol'),'side':item_side,'regime':item_regime,
-            'feature_source':'features.jsonl' if feature else None,'feature_timestamp':feature_ts,
+            'feature_source':'features.jsonl' if feature else None,'feature_timestamp':feature_ts,'feature_schema_version':(feature.get('feature_schema_version') or feature.get('schema_version')) if feature else None,'feature_capture_version':feature.get('feature_capture_version') if feature else None,'feature_capture_metadata':_nested(feature,'preentry_context','capture') if feature else None,
             'label_source':'trades.jsonl' if any(src=='trades' for src,_ in close_rows) else ('trade_analytics.jsonl' if close_rows else None),
             'is_closed':bool(closing_ts),'is_recovered':recovered,'is_partial':bool(partials.get(tid)),
             'partial_events':len(partials.get(tid,[])),'missing_features':missing,'invalid_features':invalid,
@@ -313,7 +317,8 @@ def audit_dataset(trades_file=history.DEFAULT_TRADES_FILE, features_file=feature
             'source_files':sorted(sources.get(tid,set()) | ({'features'} if feature else set())),'features':flat,'labels':labels})
     counts=Counter(r['classification'] for r in manifest); closed=[r for r in manifest if r['is_closed']]
     feature_report={}
-    for name in sorted(set(NUMERIC_FEATURES)|{'symbol','side','bot_version','strategy_version','regime','btc_regime'}):
+    all_feature_names=set(NUMERIC_FEATURES)|{'symbol','side','bot_version','strategy_version','regime','btc_regime'}|set(k for r in manifest for k in r.get('features',{}))|set(feature_registry.FEATURE_REGISTRY)
+    for name in sorted(all_feature_names):
         vals=[r['features'].get(name) for r in manifest]; valid_num=[_num(v) for v in vals if v not in (None,'') and _num(v) is not None]
         missing=sum(v in (None,'') for v in vals); invalid_count=sum(v not in (None,'') and name in NUMERIC_FEATURES and _num(v) is None for v in vals)
         bounds = NUMERIC_FEATURES.get(name)
@@ -396,7 +401,7 @@ def audit_dataset(trades_file=history.DEFAULT_TRADES_FILE, features_file=feature
       'leakage_report':{'confirmed_count':critical_leak,'risk_count':sum(bool(r['leakage_flags']) for r in manifest)-critical_leak,'flags':dict(Counter(x for r in manifest for x in r['leakage_flags'])),'statement':'No detected flag proves absence of leakage; unknown timestamps remain risk.'},
       'duplicates_report':{'flags':dict(Counter(x for r in manifest for x in r['duplicate_sources']))},
       'chronology_report':_chronology_report(manifest, closed),
-      'inventory':inventory,'segment_coverage':segments,'imbalance':{'majority_class_baseline':majority,'wins':positive,'losses':len(labs)-positive},
+      'inventory':inventory,'feature_schema_coverage':dict(Counter(r.get('feature_schema_version') or 1 for r in manifest)),'segment_coverage':segments,'imbalance':{'majority_class_baseline':majority,'wins':positive,'losses':len(labs)-positive},
       'temporal_split':split,'excluded_reasons':dict(reasons),'statistical_baseline':_baseline_artifact_status(fingerprint),
       'readiness':{'dataset_ready_for_baseline':not baseline_blocks,'dataset_ready_for_ml':not ml_blocks,'blocking_reasons':{'baseline':sorted(set(baseline_blocks)),'ml':sorted(set(ml_blocks))},'warnings':sorted(set(split['flags'])),'recommendations':['Resolve excluded/partial records through policy, never silent backfill.','Build a reproducible statistical baseline before XGBoost.','Use temporal or grouped walk-forward splits; never random-only split.']}}
 

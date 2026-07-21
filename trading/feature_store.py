@@ -142,8 +142,12 @@ def _record_from_kwargs(kwargs):
     ema200 = kwargs.get('ema200')
     regime = _normalise_regime(kwargs.get('regime') or kwargs.get('market_regime') or _btc_value(btc_context, 'trend', 'regime'))
 
+    passive_context = kwargs.get('passive_context') if isinstance(kwargs.get('passive_context'), dict) else None
+    feature_schema_version = passive_context.get('feature_schema_version') if passive_context else 1
     record = {
-        'schema_version': 1,
+        'schema_version': feature_schema_version,
+        'feature_schema_version': feature_schema_version,
+        'feature_capture_version': passive_context.get('feature_capture_version') if passive_context else 'legacy-postfill-v1',
         'recorded_at': _now_iso(),
         'identification': {
             'trade_id': kwargs.get('trade_id'),
@@ -215,6 +219,7 @@ def _record_from_kwargs(kwargs):
             'timeline_id': kwargs.get('timeline_id'),
         },
         'extra': _sanitize(kwargs.get('extra') or {}),
+        'preentry_context': _sanitize(passive_context),
     }
     version_history.attach_version_metadata(record)
     record['identification']['bot_version'] = record.get('bot_version')

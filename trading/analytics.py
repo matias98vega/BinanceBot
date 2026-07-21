@@ -85,6 +85,7 @@ class AnalyticsLogger:
         strategy_version=None,
         bot_version=None,
         entry_time=None,
+        passive_context=None,
     ):
         record = {
             'trade_id': trade_id,
@@ -106,6 +107,7 @@ class AnalyticsLogger:
             'reject_reasons': reject_reasons,
             'capital_at_entry': self._float_or_none(capital_at_entry),
             'status': 'OPEN',
+            'passive_context': passive_context,
         }
         version_history.attach_version_metadata(record)
         self._append(record)
@@ -323,6 +325,7 @@ class AnalyticsLogger:
                     'strategy_version': extra.get('strategy_version'),
                     'btc_correlation': record.get('btc_correlation'),
                 },
+                passive_context=record.get('passive_context'),
             )
         except Exception as exc:
             import logging

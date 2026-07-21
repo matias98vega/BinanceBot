@@ -4,7 +4,7 @@ Análisis de mercado: contexto macro BTC, scoring de candidatos long y short.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
-import utils, config, binance_client
+import utils, config, binance_client, feature_registry
 
 BINANCE = binance_client.get_default_client()
 
@@ -556,7 +556,7 @@ def score_long(symbol, btc_ctx):
             except Exception:
                 pass
 
-        return {
+        candidate = {
             'symbol':    symbol,
             'direction': 'long',
             'score':     sc,
@@ -579,6 +579,9 @@ def score_long(symbol, btc_ctx):
             'reject_reason': None,
             'reject_reasons': None,
         }
+        candidate['passive_feature_context'] = feature_registry.safe_build_preentry_context(
+            candidate, closes, highs, lows, vols, opens=[float(k[1]) for k in k1h], klines=k1h, btc_context=btc_ctx)
+        return candidate
     except Exception:
         return None
 
@@ -769,7 +772,7 @@ def score_short(symbol, btc_ctx):
         if sl_dist_pct < config.SL_MIN_DIST_PCT:
             real_sl = utils.round_tick(last * (1 + config.SL_MIN_DIST_PCT / 100), 0.00001)
 
-        return {
+        candidate = {
             'symbol':    symbol,
             'direction': 'short',
             'score':     sc,
@@ -795,6 +798,9 @@ def score_short(symbol, btc_ctx):
             'reject_reason': None,
             'reject_reasons': None,
         }
+        candidate['passive_feature_context'] = feature_registry.safe_build_preentry_context(
+            candidate, closes, highs, lows, vols, opens=[float(k[1]) for k in k1h], klines=k1h, btc_context=btc_ctx)
+        return candidate
     except Exception as e:
         return None
 
