@@ -5,6 +5,10 @@
 herramienta de tests y análisis: no es un backtester, no selecciona parámetros y
 no puede importarse ni activarse desde el runtime productivo.
 
+La biblioteca permanente de incidentes sanitizados, su taxonomía de evidencia y
+sus límites están en docs/REPLAY_INCIDENT_FIXTURES.md. Se ejecutan con
+run_replay_scenario.py --incident; ninguna fixture actual declara fidelidad total.
+
 ## Niveles de fidelidad
 
 - `FIXTURE_REPLAY`: fixture diseñada para tests. No admite `missing_fields` y se
@@ -71,6 +75,7 @@ exacta y se consumen con la misma semántica del fake.
 .venv/bin/python trading/testing/run_replay_scenario.py --scenario spot-long-tp
 .venv/bin/python trading/testing/run_replay_scenario.py --scenario spot-long-tp --json
 .venv/bin/python trading/testing/run_replay_scenario.py --tape /ruta/tape.json --strict
+.venv/bin/python trading/testing/run_replay_scenario.py --incident incident-ada-stale-spot --json
 ```
 
 La CLI es read-only salvo `--output DIR`, que escribe `replay_result.json` en la

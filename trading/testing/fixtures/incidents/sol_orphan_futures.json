@@ -1,0 +1,33 @@
+{
+  "replay_schema_version": 1,
+  "fixture_schema_version": 1,
+  "scenario_id": "incident-sol-orphan-futures",
+  "title": "SOL orphan Futures position",
+  "description": "Sanitized position observation reproducing the orphan and unprotected classification when Futures exposure exists without local lifecycle metadata.",
+  "incident_type": "ORPHAN_FUTURES_POSITION",
+  "source_incident": {"observed_class": "orphan Futures", "evidence_scope": "recovery design, reconciliation classification and incident-driven regression history", "exact_exchange_snapshot_available": false},
+  "source_commit_range": "pre-ad6ab3f..ad6ab3f",
+  "source_files": ["trading/futures_reconciliation.py", "trading/futures_recovery.py", "trading/test_futures_recovery.py"],
+  "sanitization": {"identifiers": "all order and trade identifiers removed", "amounts": "position size and prices synthetic", "timestamps": "synthetic replay clock", "secrets_removed": true},
+  "fidelity": "CONTROL_FLOW_FIDELITY",
+  "confidence": "MEDIUM",
+  "assumptions": ["No corresponding local managed short existed", "No reduceOnly protection order existed"],
+  "known_missing_fields": ["original_positionRisk_response", "original_openOrders_response", "original_local_state_snapshot", "original_timestamps"],
+  "inferred_fields": ["absence of local lifecycle metadata", "absence of protection"],
+  "synthetic_fields": ["initial_state.prices", "initial_state.futures_wallet_balance", "initial_state.futures_positions"],
+  "expected_behavior": ["classify orphan_futures_position", "classify unprotected_futures_position", "require explicit recovery authority before any close"],
+  "forbidden_behavior": ["automatically close the position", "create a non-reduceOnly recovery order", "mark the position managed"],
+  "started_at": "2023-11-14T22:13:20Z",
+  "initial_state": {
+    "prices": {"SOLUSDT": "50"}, "futures_wallet_balance": "100",
+    "futures_positions": [{"symbol": "SOLUSDT", "positionAmt": "-0.5", "entryPrice": "52", "leverage": 2}],
+    "open_orders": [], "local_state": {"positions": []}
+  },
+  "events": [{"at_ms": 1700000001000, "event_type": "RECONCILIATION", "payload": {"symbol": "SOLUSDT", "classification": ["observed_futures_position", "unmanaged_futures_position", "orphan_futures_position", "unprotected_futures_position"], "status": "REVIEW"}}],
+  "checkpoints": [
+    {"id": "orphan", "expected": true}, {"id": "unprotected", "expected": true},
+    {"id": "automatic_close_orders", "expected": 0}
+  ],
+  "tags": ["incident", "futures", "sol", "orphan", "reconciliation"],
+  "data_classification": ["NOT_PRODUCTION_DATA", "SANITIZED", "OFFLINE_ONLY", "NO_NETWORK", "NOT_FOR_PNL_VALIDATION"]
+}

@@ -1,0 +1,49 @@
+{
+  "replay_schema_version": 1,
+  "fixture_schema_version": 1,
+  "scenario_id": "incident-ada-stale-spot",
+  "title": "ADA managed Spot stale after external fill",
+  "description": "Sanitized control-flow reproduction of a managed ADA position left open locally after exchange sell fills and only non-operable dust remained.",
+  "incident_type": "STALE_SPOT_POSITION",
+  "source_incident": {
+    "observed_at": "2026-07-20T21:34:30Z",
+    "observed_classification": "CLOSED_ON_EXCHANGE_OPEN_IN_STATE",
+    "observed_reason": "exchange_sell_fill_and_non_operable_residual",
+    "evidence_scope": "timeline reconciliation record and preserved state reconciliation marker"
+  },
+  "source_commit_range": "pre-5fc9fe6..5fc9fe6",
+  "source_files": ["data/history/timeline.jsonl", "trading/state.json", "trading/orchestration/audit_pipeline.py"],
+  "sanitization": {
+    "identifiers": "trade and order identifiers replaced",
+    "amounts": "quantities and price rescaled while preserving dust/filter relationships",
+    "timestamps": "replay clock synthetic; observed incident timestamp retained only as provenance",
+    "secrets_removed": true
+  },
+  "fidelity": "CONTROL_FLOW_FIDELITY",
+  "confidence": "HIGH",
+  "assumptions": ["No open Spot order remained", "The residual was below both min quantity and min notional"],
+  "known_missing_fields": ["original_account_response", "original_myTrades_response", "original_order_responses"],
+  "inferred_fields": ["sanitized sell fill composition"],
+  "synthetic_fields": ["initial_state.prices", "initial_state.filters", "initial_state.trades", "initial_state.local_state"],
+  "expected_behavior": ["classify CLOSED_ON_EXCHANGE_OPEN_IN_STATE", "reconcile local state without creating PnL or orders"],
+  "forbidden_behavior": ["send an order", "attribute synthetic PnL", "treat dust as an active operable position"],
+  "started_at": "2023-11-14T22:13:20Z",
+  "initial_state": {
+    "prices": {"ADAUSDT": "1"},
+    "balances": {"ADA": {"free": "0.04", "locked": "0"}, "USDT": {"free": "100", "locked": "0"}},
+    "filters": [{"symbol": "ADAUSDT", "values": {"tick_size": "0.01", "step_size": "0.1", "min_qty": "0.1", "min_notional": "5"}}],
+    "trades": [
+      {"id": 1, "orderId": 101, "symbol": "ADAUSDT", "qty": "10", "price": "1", "commission": "0", "commissionAsset": "USDT", "time": 1700000000100, "isBuyer": true},
+      {"id": 2, "orderId": 102, "symbol": "ADAUSDT", "qty": "10", "price": "1", "commission": "0", "commissionAsset": "USDT", "time": 1700000000200, "isBuyer": false}
+    ],
+    "local_state": {"positions": [{"id": "sanitized-ada-trade", "direction": "long", "symbol": "ADAUSDT", "quantity": 10, "entry_time": 1700000000, "entry_price": 1}]}
+  },
+  "events": [{"at_ms": 1700000001000, "event_type": "OPERATIONAL_EVENT", "payload": {"event_type": "spot_position_state_reconciled", "classification": "CLOSED_ON_EXCHANGE_OPEN_IN_STATE", "reason_code": "EXTERNAL_FILL_DUST"}}],
+  "checkpoints": [
+    {"id": "classification", "expected": "CLOSED_ON_EXCHANGE_OPEN_IN_STATE"},
+    {"id": "exchange_writes", "expected": 0},
+    {"id": "residual_operable", "expected": false}
+  ],
+  "tags": ["incident", "spot", "ada", "stale", "dust", "reconciliation"],
+  "data_classification": ["NOT_PRODUCTION_DATA", "SANITIZED", "OFFLINE_ONLY", "NO_NETWORK", "NOT_FOR_PNL_VALIDATION"]
+}

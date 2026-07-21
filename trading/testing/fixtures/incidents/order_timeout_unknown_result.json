@@ -1,0 +1,32 @@
+{
+  "replay_schema_version": 1,
+  "fixture_schema_version": 1,
+  "scenario_id": "incident-order-timeout-unknown-result",
+  "title": "Order timeout with initially unknown result",
+  "description": "Low-confidence control-flow fixture for a transport timeout where no response proves whether Binance accepted the request.",
+  "incident_type": "ORDER_RESULT_UNKNOWN_AFTER_TIMEOUT",
+  "source_incident": {"observed_class": "timeout leaves exchange order state unknown", "exact_exchange_transcript_available": false, "retrospective_result_known": false},
+  "source_commit_range": "1804253..a68cc3c",
+  "source_files": ["trading/pre_entry_safety_gate.py", "trading/orchestration/position_lifecycle.py", "trading/test_pre_entry_safety_gate_e2e.py"],
+  "sanitization": {"symbol": "replaced with ETHUSDT", "identifiers": "removed", "amounts": "synthetic", "timestamps": "synthetic replay clock", "exception": "generic TimeoutError", "secrets_removed": true},
+  "fidelity": "CONTROL_FLOW_FIDELITY",
+  "confidence": "LOW",
+  "assumptions": ["No authoritative order response was received", "Immediate retry could duplicate exposure"],
+  "known_missing_fields": ["original_request_id", "original_order_response", "post_timeout_order_query", "post_timeout_balance", "final_exchange_outcome"],
+  "inferred_fields": ["risk of duplicate submission"],
+  "synthetic_fields": ["symbol", "price", "quantity", "timeout timing", "operational event"],
+  "expected_behavior": ["surface unknown order result", "preserve pre-timeout local assumptions until reconciliation", "require an exchange-state check before retry"],
+  "forbidden_behavior": ["blindly retry the order", "claim the order failed", "claim the order filled", "mutate PnL"],
+  "started_at": "2023-11-14T22:13:20Z",
+  "initial_state": {"prices": {"ETHUSDT": "100"}, "balances": {"USDT": {"free": "100", "locked": "0"}}},
+  "events": [
+    {"at_ms": 1700000001000, "event_type": "ERROR", "payload": {"operation": "spot_signed:POST:/api/v3/order", "exception_type": "TimeoutError", "message": "sanitized order timeout"}},
+    {"at_ms": 1700000002000, "event_type": "OPERATIONAL_EVENT", "payload": {"event_type": "order_result_unknown", "state": "BLOCKED_EXCHANGE_UNKNOWN", "reason_code": "ORDER_TIMEOUT"}}
+  ],
+  "checkpoints": [
+    {"id": "result", "expected": "UNKNOWN"}, {"id": "orders_recorded", "expected": 0},
+    {"id": "automatic_retry_count", "expected": 0}, {"id": "reconciliation_required", "expected": true}
+  ],
+  "tags": ["incident", "order", "timeout", "unknown-result", "reconciliation"],
+  "data_classification": ["NOT_PRODUCTION_DATA", "SANITIZED", "OFFLINE_ONLY", "NO_NETWORK", "NOT_FOR_PNL_VALIDATION"]
+}

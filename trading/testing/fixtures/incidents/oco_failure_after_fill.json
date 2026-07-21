@@ -1,0 +1,35 @@
+{
+  "replay_schema_version": 1,
+  "fixture_schema_version": 1,
+  "scenario_id": "incident-oco-failure-after-fill",
+  "title": "Spot fill succeeds and OCO creation fails",
+  "description": "Control-flow regression where the market buy mutates Spot balances before protection creation is rejected.",
+  "incident_type": "OCO_FAILURE_AFTER_ENTRY_FILL",
+  "source_incident": {"observed_class": "filled entry left temporarily unprotected after OCO rejection", "exact_exchange_transcript_available": false},
+  "source_commit_range": "55e3e14..1804253",
+  "source_files": ["trading/longs.py", "trading/orchestration/audit_pipeline.py", "trading/test_end_to_end_scenarios.py"],
+  "sanitization": {"identifiers": "all IDs generated deterministically by fake", "amounts": "price and quantity synthetic", "timestamps": "synthetic replay clock", "error": "message generalized", "secrets_removed": true},
+  "fidelity": "CONTROL_FLOW_FIDELITY",
+  "confidence": "MEDIUM",
+  "assumptions": ["The entry market order was filled before OCO rejection", "No protection order was created"],
+  "known_missing_fields": ["original_fill_response", "original_oco_error_body", "original_balances"],
+  "inferred_fields": ["unprotected interval duration"],
+  "synthetic_fields": ["initial_state", "entry quantity", "OCO prices", "error code"],
+  "expected_behavior": ["preserve the acquired asset after OCO failure", "surface an unprotected-position recovery condition", "avoid duplicate entry"],
+  "forbidden_behavior": ["roll back the successful fill", "claim OCO exists", "submit a second entry order"],
+  "started_at": "2023-11-14T22:13:20Z",
+  "initial_state": {
+    "prices": {"BTCUSDT": "100"}, "balances": {"USDT": {"free": "100", "locked": "0"}},
+    "filters": [{"symbol": "BTCUSDT", "values": {"tick_size": "0.01", "step_size": "0.001", "min_qty": "0.001", "min_notional": "5"}}]
+  },
+  "events": [
+    {"at_ms": 1700000001000, "event_type": "SPOT_ORDER", "payload": {"params": {"symbol": "BTCUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.1"}}},
+    {"at_ms": 1700000002000, "event_type": "ERROR", "payload": {"operation": "spot_signed:POST:/api/v3/order/oco", "message": "sanitized OCO rejection", "code": -2010, "status": 400}}
+  ],
+  "checkpoints": [
+    {"id": "entry_status", "expected": "FILLED"}, {"id": "asset_balance_positive", "expected": true},
+    {"id": "oco_count", "expected": 0}, {"id": "duplicate_entry_count", "expected": 0}
+  ],
+  "tags": ["incident", "spot", "oco", "fill", "protection", "recovery"],
+  "data_classification": ["NOT_PRODUCTION_DATA", "SANITIZED", "OFFLINE_ONLY", "NO_NETWORK", "NOT_FOR_PNL_VALIDATION"]
+}

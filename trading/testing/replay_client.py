@@ -103,7 +103,10 @@ class ReplayClient(FakeBinanceClient):
         elif kind == 'ORDER_SNAPSHOT': self.state.orders[int(payload['orderId'])] = deepcopy(payload)
         elif kind == 'FILL_SNAPSHOT': self._apply_fill_snapshot(payload)
         elif kind == 'ERROR':
-            error = FakeBinanceError(payload.get('message', 'replayed exchange error'), int(payload.get('code', -2010)), int(payload.get('status', 400)))
+            if payload.get('exception_type') == 'TimeoutError':
+                error = TimeoutError(payload.get('message', 'replayed timeout'))
+            else:
+                error = FakeBinanceError(payload.get('message', 'replayed exchange error'), int(payload.get('code', -2010)), int(payload.get('status', 400)))
             self.state.queue_error(payload['operation'], error)
         elif kind == 'RECONCILIATION': self.reconciliation_events.append(deepcopy(payload))
         elif kind == 'PAUSE': self.pause_events.append(deepcopy(payload))

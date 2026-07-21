@@ -1,0 +1,33 @@
+{
+  "replay_schema_version": 1,
+  "fixture_schema_version": 1,
+  "scenario_id": "incident-ondo-xrp-partial-evidence",
+  "title": "ONDO to XRP gap with no contemporaneous operational evidence",
+  "description": "Analytics-only replay preserving the observed trade-boundary timestamps while explicitly omitting unavailable runtime evidence inside the interval.",
+  "incident_type": "OPERATIONAL_GAP_INSUFFICIENT_EVIDENCE",
+  "source_incident": {"previous_boundary": "2026-07-19T21:41:55Z", "next_boundary": "2026-07-20T21:47:24Z", "observed_duration_hours": 24.09, "historical_classification": "LEGACY_NO_EVIDENCE"},
+  "source_commit_range": "pre-8d7bcf8..8d7bcf8",
+  "source_files": ["data/history/trades.jsonl", "trading/trade_analytics.jsonl", "docs/GAP_AND_DOWNTIME_POLICY.md"],
+  "sanitization": {"identifiers": "trade IDs replaced by stable aliases", "amounts": "prices, quantity and PnL omitted", "timestamps": "observed boundary timestamps retained", "secrets_removed": true},
+  "fidelity": "ANALYTICS_ONLY",
+  "confidence": "HIGH",
+  "assumptions": ["No persisted operational evidence covering the interval is available"],
+  "known_missing_fields": ["balances", "exchange_responses", "fills", "klines", "open_orders", "positions", "operational_heartbeats", "cycle_events"],
+  "inferred_fields": [],
+  "synthetic_fields": ["event aliases"],
+  "expected_behavior": ["classify the gap as LEGACY_NO_EVIDENCE", "keep confidence about downtime cause low", "avoid retrospective explanation"],
+  "forbidden_behavior": ["classify as explained using current state", "invent heartbeat coverage", "calculate PnL from this fixture"],
+  "started_at": "2026-07-19T21:41:55Z",
+  "initial_state": {},
+  "events": [
+    {"at_ms": 1784497315000, "event_type": "OPERATIONAL_EVENT", "payload": {"event_type": "TRADE_CLOSE", "recorded_at": "2026-07-19T21:41:55Z", "trade_id": "boundary-ondo", "symbol": "ONDOUSDT"}},
+    {"at_ms": 1784584044000, "event_type": "OPERATIONAL_EVENT", "payload": {"event_type": "TRADE_OPEN", "recorded_at": "2026-07-20T21:47:24Z", "trade_id": "boundary-xrp", "symbol": "XRPUSDT"}}
+  ],
+  "checkpoints": [
+    {"id": "classification", "expected": "LEGACY_NO_EVIDENCE"},
+    {"id": "evidence_intervals", "expected": 0},
+    {"id": "retrospective_backfill", "expected": false}
+  ],
+  "tags": ["incident", "analytics", "gap", "ondo", "xrp", "partial-evidence"],
+  "data_classification": ["NOT_PRODUCTION_DATA", "SANITIZED", "OFFLINE_ONLY", "NO_NETWORK", "NOT_FOR_PNL_VALIDATION"]
+}

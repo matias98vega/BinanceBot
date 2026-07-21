@@ -1,3 +1,9 @@
+# 2026-07-21 — Biblioteca sanitizada de incidentes Replay
+
+- Seis regresiones offline permanentes: ADA stale Spot, SOL orphan Futures, ONDO→XRP parcial, OCO post-fill, cierre Spot externo con dust y timeout incierto.
+- Evidencia observada, datos sanitizados/sintéticos, inferencias, supuestos y faltantes quedan separados por schema y validados.
+- Ninguna fixture se presenta como full fidelity ni sirve para validar PnL.
+
 # 2026-07-21 — ReplayClient offline determinístico
 
 - Tapes schema v1 inmutables, fingerprint canónico y cursor monotónico.

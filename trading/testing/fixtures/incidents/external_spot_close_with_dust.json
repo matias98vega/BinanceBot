@@ -1,0 +1,38 @@
+{
+  "replay_schema_version": 1,
+  "fixture_schema_version": 1,
+  "scenario_id": "incident-external-spot-close-with-dust",
+  "title": "External Spot close leaves dust",
+  "description": "Sanitized exchange observation where a managed Spot position was sold externally and only a below-filter residual remained.",
+  "incident_type": "EXTERNAL_SPOT_CLOSE_WITH_DUST",
+  "source_incident": {"observed_class": "state open while exchange closed with non-operable residual", "exact_symbol_and_exchange_transcript_available": false},
+  "source_commit_range": "1804253..5fc9fe6",
+  "source_files": ["trading/orchestration/audit_pipeline.py", "trading/test_spot_position_reconciliation.py", "trading/test_pre_entry_safety_gate_e2e.py"],
+  "sanitization": {"symbol": "replaced with LINKUSDT", "identifiers": "replaced", "amounts": "synthetic but preserve filter relationships", "timestamps": "synthetic replay clock", "secrets_removed": true},
+  "fidelity": "CONTROL_FLOW_FIDELITY",
+  "confidence": "MEDIUM",
+  "assumptions": ["The external sell is present in myTrades", "No open order remains", "Dust is not operable"],
+  "known_missing_fields": ["original_symbol", "original_account_response", "original_order_response"],
+  "inferred_fields": ["external actor", "exact close timing"],
+  "synthetic_fields": ["symbol", "price", "quantity", "filters", "trade IDs"],
+  "expected_behavior": ["detect external closure", "remove stale local position idempotently", "preserve dust without creating an OCO"],
+  "forbidden_behavior": ["sell dust", "create PnL record", "open a replacement position", "place an OCO below filters"],
+  "started_at": "2023-11-14T22:13:20Z",
+  "initial_state": {
+    "prices": {"LINKUSDT": "2"},
+    "balances": {"LINK": {"free": "0.02", "locked": "0"}, "USDT": {"free": "100", "locked": "0"}},
+    "filters": [{"symbol": "LINKUSDT", "values": {"tick_size": "0.01", "step_size": "0.1", "min_qty": "0.1", "min_notional": "5"}}],
+    "trades": [
+      {"id": 11, "orderId": 111, "symbol": "LINKUSDT", "qty": "5", "price": "2", "commission": "0", "commissionAsset": "USDT", "time": 1700000000100, "isBuyer": true},
+      {"id": 12, "orderId": 112, "symbol": "LINKUSDT", "qty": "5", "price": "2", "commission": "0", "commissionAsset": "USDT", "time": 1700000000200, "isBuyer": false}
+    ],
+    "local_state": {"positions": [{"id": "sanitized-external-close", "direction": "long", "symbol": "LINKUSDT", "quantity": 5, "entry_time": 1700000000, "entry_price": 2}]}
+  },
+  "events": [{"at_ms": 1700000001000, "event_type": "OPERATIONAL_EVENT", "payload": {"event_type": "external_spot_close_observed", "state": "BLOCKED_RECONCILIATION", "reason_code": "DUST_REMAINS"}}],
+  "checkpoints": [
+    {"id": "classification", "expected": "CLOSED_ON_EXCHANGE_OPEN_IN_STATE"},
+    {"id": "dust_balance", "expected": "0.02"}, {"id": "exchange_writes", "expected": 0}
+  ],
+  "tags": ["incident", "spot", "external-close", "dust", "reconciliation"],
+  "data_classification": ["NOT_PRODUCTION_DATA", "SANITIZED", "OFFLINE_ONLY", "NO_NETWORK", "NOT_FOR_PNL_VALIDATION"]
+}

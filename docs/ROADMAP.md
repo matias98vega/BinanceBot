@@ -55,6 +55,7 @@ Este documento es la hoja de ruta canónica. No autoriza cambios de estrategia n
 |---|---|---|---|---|---|
 | Auditoría unificada state-vs-exchange pre-entry | PARCIAL | gate unificado, CLI, Fake E2E e integración AUDIT_ONLY | Observar varios ciclos y autorizar ENFORCE por separado | Evidencia productiva sin falsos positivos | Alta |
 | FakeBinanceClient o ReplayClient | COMPLETADO | FakeBinanceClient A-L y ReplayClient offline determinístico sobre el mismo state/contrato | Acumular observaciones sanitizadas; históricos siguen siendo parciales | Tapes versionados | Media |
+| Biblioteca de incidentes Replay sanitizados | COMPLETADO | seis fixtures versionadas con fidelidad/confianza explícitas y regresiones offline | Sumar incidentes forward-only sin elevar artificialmente su fidelidad | ReplayClient | Media |
 | Tests end-to-end sin operaciones reales | PARCIAL | 473 tests unitarios y supresión de transportes | Escenarios completos ciclo→persistencia→Telegram con cliente falso | Fake/Replay client | Alta |
 | Política de gaps/downtime persistida | COMPLETADO | operational_state, heartbeat y CLI reproducible | Acumular evidencia forward-only; legacy no se backfillea | Ciclos futuros | Alta |
 | Freshness de stats e insights | PARCIAL | stats se reconstruye; Insights tiene metadata | Umbrales, relación de fuentes y warning visible | Contratos derivados | Media |

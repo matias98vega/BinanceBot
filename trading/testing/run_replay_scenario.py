@@ -9,10 +9,12 @@ from decimal import Decimal
 if __package__ in (None, ''):
     sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
     from testing.replay_scenario_runner import ReplayScenarioRunner
+    from testing.replay_fixture_library import get_fixture, load_library
     from testing.replay_scenarios import SCENARIOS, build_replay_scenario
     from testing.replay_tape import ReplayTape
 else:
     from .replay_scenario_runner import ReplayScenarioRunner
+    from .replay_fixture_library import get_fixture, load_library
     from .replay_scenarios import SCENARIOS, build_replay_scenario
     from .replay_tape import ReplayTape
 
@@ -27,12 +29,13 @@ def main(argv=None):
     source = parser.add_mutually_exclusive_group()
     source.add_argument('--scenario', choices=sorted(SCENARIOS), default='spot-long-tp')
     source.add_argument('--tape')
+    source.add_argument('--incident', choices=sorted(load_library()))
     parser.add_argument('--list', action='store_true'); parser.add_argument('--json', action='store_true')
     parser.add_argument('--output'); parser.add_argument('--strict', action='store_true')
     args = parser.parse_args(argv)
     if args.list:
         print('\n'.join(sorted(SCENARIOS))); return 0
-    tape = ReplayTape.load(args.tape) if args.tape else build_replay_scenario(args.scenario)
+    tape = ReplayTape.load(args.tape) if args.tape else get_fixture(args.incident).tape if args.incident else build_replay_scenario(args.scenario)
     result = ReplayScenarioRunner(tape).run()
     summary = {
         'scenario_id': tape.scenario_id, 'mode': tape.mode, 'fingerprint': tape.fingerprint,
