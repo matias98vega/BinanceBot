@@ -100,6 +100,10 @@ capacidad, circuit breaker, reconciliación, rebalance benigno, duplicados,
 múltiples bloqueos, prioridad, idempotencia y no-network. Los snapshots del fake
 demuestran ausencia de mutaciones ante bloqueo.
 
+## Evidencia operativa
+
+Los resultados futuros del gate se clasifican en Timeline v2: bloqueos materiales como OPERATIONAL, capacidad y audit-only como DIAGNOSTIC. Esto no cambia status, decisión ni modo AUDIT_ONLY.
+
 ## Activación recomendada
 
 Mantener `AUDIT_ONLY` durante varios ciclos, revisar timeline y BotState y repetir

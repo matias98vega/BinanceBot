@@ -1152,6 +1152,16 @@ def build_bot_state(
         payload["last_pre_entry_gate_at"] = gate_summary.get("observed_at")
         payload["last_pre_entry_gate_blocking_reasons"] = gate_summary.get("blocking_reasons") or []
         payload["pre_entry_safety_summary"] = dict(gate_summary)
+    operational = state.get("_operational_summary") if isinstance(state.get("_operational_summary"), dict) else {}
+    if operational:
+        payload["operational_state"] = operational.get("state")
+        payload["operational_reason"] = operational.get("reason")
+        payload["operational_state_since"] = operational.get("since")
+        payload["last_operational_heartbeat"] = operational.get("last_heartbeat")
+        payload["last_successful_cycle"] = operational.get("last_successful_cycle")
+        payload["timeline_operational_last_event"] = operational.get("last_event")
+        payload["unexplained_gap_count_recent"] = operational.get("unexplained_gap_count_recent", 0)
+        payload["last_unexplained_gap"] = operational.get("last_unexplained_gap")
     if safety_pause:
         payload['safety_pause'] = safety_pause
     return version_history.attach_version_metadata(payload)

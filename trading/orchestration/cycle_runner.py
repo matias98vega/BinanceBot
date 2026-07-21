@@ -13,6 +13,7 @@ import futures_residuals
 import feature_registry
 import longs
 import market
+import operational_state
 import pre_entry_gate_observability
 import rebalance
 import shorts
@@ -64,6 +65,9 @@ class CycleRunner:
     def run(self):
         cycle_id = f'cycle_{int(time.time())}'
         state = utils.load_state()
+        cycle_started_epoch = time.time()
+        cycle_started_at = datetime.fromtimestamp(cycle_started_epoch, timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        positions_before = len(state.get("positions", []))
         try:
             decision_timeline.record_cycle_start(cycle_id=cycle_id, details={'positions': len(state.get('positions', []))})
         except Exception:
@@ -103,6 +107,7 @@ class CycleRunner:
         # â”€â”€ Pausa global â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if state.get('status') == 'paused':
             self.out(f'â¸ï¸ Bot pausado (lÃ­mite diario). PnL hoy: {state.get("daily_pnl_usdt", 0):+.4f} USDT')
+            operational_state.transition("PAUSED_RISK", state.get("pause_reason") or "RISK_PAUSE", cycle_id=cycle_id, expected_until=state.get("pause_until"), blocking_new_entries=True)
             self.safe_persist_bot_state(state, system_health='WARNING')
             utils.save_state(state)
             return
@@ -139,6 +144,7 @@ class CycleRunner:
                 )
             except Exception:
                 pass
+            operational_state.transition("PAUSED_RISK", state.get("pause_reason") or "RISK_PAUSE", cycle_id=cycle_id, expected_until=state.get("pause_until"), blocking_new_entries=True)
             self.safe_persist_bot_state(state, system_health='WARNING')
             utils.save_state(state)
             return
@@ -148,6 +154,7 @@ class CycleRunner:
         if pause_until > 0 and int(time.time()) < pause_until:
             remaining_h = (pause_until - int(time.time())) / 3600
             self.out(f'â¸ï¸ Bot pausado (circuit breaker). Restan {remaining_h:.1f}h')
+            operational_state.transition("PAUSED_RISK", state.get("pause_reason") or "RISK_PAUSE", cycle_id=cycle_id, expected_until=state.get("pause_until"), blocking_new_entries=True)
             self.safe_persist_bot_state(state, system_health='WARNING')
             utils.save_state(state)
             return
@@ -286,6 +293,7 @@ class CycleRunner:
         state['positions'] = positions_to_keep
 
         if state.get('status') == 'paused':
+            operational_state.transition("PAUSED_RISK", state.get("pause_reason") or "RISK_PAUSE", cycle_id=cycle_id, expected_until=state.get("pause_until"), blocking_new_entries=True)
             self.safe_persist_bot_state(state, btc_ctx=btc_ctx, system_health='WARNING')
             utils.save_state(state)
             return
@@ -616,6 +624,51 @@ class CycleRunner:
             )
         except Exception:
             pass
+        gate_summary = state.get("_last_pre_entry_gate") if isinstance(state.get("_last_pre_entry_gate"), dict) else {}
+        gate_status = str(gate_summary.get("status") or "")
+        positions_after = len(state.get("positions", []))
+        trades_opened = max(0, positions_after - positions_before)
+        final_operational_state, final_reason = "IDLE_NO_SIGNAL", "NO_SIGNAL"
+        if trades_opened:
+            final_operational_state, final_reason = "RUNNING", "TRADE_OPENED"
+        elif gate_status == "BLOCKED_CAPACITY" or (long_count_final >= max_longs and short_count_observed >= max_shorts):
+            final_operational_state, final_reason = "BLOCKED_CAPACITY", "CAPACITY"
+        elif gate_status in {"BLOCKED_RECONCILIATION_PENDING", "BLOCKED_ORPHAN_POSITION", "BLOCKED_POSITION_MISMATCH"}:
+            final_operational_state, final_reason = "BLOCKED_RECONCILIATION", gate_status
+        elif gate_status == "BLOCKED_EXCHANGE_STATE_UNKNOWN":
+            final_operational_state, final_reason = "BLOCKED_EXCHANGE_UNKNOWN", gate_status
+        completed_epoch = time.time()
+        completed_at = datetime.fromtimestamp(completed_epoch, timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        transition_event = operational_state.transition(final_operational_state, final_reason, cycle_id=cycle_id, evidence={"gate_status": gate_status, "positions": positions_after}, blocking_new_entries=final_operational_state.startswith("BLOCKED"))
+        operational_state.cycle_completed(
+            cycle_id=cycle_id, started_at=cycle_started_at, completed_at=completed_at,
+            duration_ms=round((completed_epoch - cycle_started_epoch) * 1000, 3),
+            operational_state=final_operational_state, reason_code=final_reason, regime=btc_ctx.get("trend"),
+            candidates_seen=int(bool(locals().get("best_long"))) + int(bool(locals().get("best_short"))),
+            candidates_accepted=trades_opened, orders_sent=None, trades_opened=trades_opened,
+            trades_closed=None, positions_before=positions_before,
+            positions_after=positions_after, blocking_reason=gate_status or None, error_count=0, warning_count=0,
+        )
+        heartbeat_event = operational_state.heartbeat(
+            state=final_operational_state, cycle_id=cycle_id, last_successful_cycle_at=completed_at,
+            last_exchange_observation_at=gate_summary.get("observed_at"), positions_managed=positions_after,
+            positions_observed=short_count_observed, new_entries_allowed=final_operational_state not in {"PAUSED_RISK", "BLOCKED_RECONCILIATION", "BLOCKED_EXCHANGE_UNKNOWN"},
+            pause_until=state.get("pause_until"), guardian_status=(bot_state_payload or {}).get("system", {}).get("guardian"),
+            pre_entry_gate_mode=gate_summary.get("mode"),
+        )
+        previous_operational = state.get("_operational_summary") if isinstance(state.get("_operational_summary"), dict) else {}
+        operational_since = (transition_event or {}).get("started_at") or previous_operational.get("since") or completed_at
+        last_heartbeat = (heartbeat_event or {}).get("observed_at") or previous_operational.get("last_heartbeat")
+        state["_operational_summary"] = {"state": final_operational_state, "reason": final_reason, "since": operational_since, "last_heartbeat": last_heartbeat, "last_successful_cycle": completed_at, "last_event": "cycle_completed", "unexplained_gap_count_recent": previous_operational.get("unexplained_gap_count_recent", 0), "last_unexplained_gap": previous_operational.get("last_unexplained_gap")}
+        if isinstance(bot_state_payload, dict):
+            bot_state_payload["operational_state"] = final_operational_state
+            bot_state_payload["operational_reason"] = final_reason
+            bot_state_payload["operational_state_since"] = operational_since
+            bot_state_payload["last_operational_heartbeat"] = last_heartbeat
+            bot_state_payload["last_successful_cycle"] = completed_at
+            bot_state_payload["timeline_operational_last_event"] = "cycle_completed"
+            bot_state_payload["unexplained_gap_count_recent"] = previous_operational.get("unexplained_gap_count_recent", 0)
+            bot_state_payload["last_unexplained_gap"] = previous_operational.get("last_unexplained_gap")
         if bot_state_payload is not None:
             try:
                 bot_state.persist_bot_state(bot_state_payload)

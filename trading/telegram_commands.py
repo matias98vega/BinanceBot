@@ -1920,11 +1920,11 @@ def _nav_keyboard(page_id):
 
 
 def _timeline_text(filter_text=None):
-    category = None
+    category = "OPERATIONAL"
     symbol = None
     if filter_text:
         value = filter_text.strip().upper()
-        if value in decision_timeline.CATEGORIES:
+        if value in decision_timeline.CATEGORIES or value in decision_timeline.EVENT_CATEGORIES:
             category = value
         elif re.fullmatch(r'[A-Z0-9]{2,20}', value):
             symbol = value
@@ -2363,6 +2363,13 @@ class TimelinePage(MenuPage):
     def render(self):
         return _timeline_text()
 
+    def keyboard(self):
+        return [
+            [_button("Operativo", "timeline:OPERATIONAL"), _button("Diagnostico", "timeline:DIAGNOSTIC")],
+            [_button("Debug", "timeline:DEBUG")],
+            [_button("\u25C0 Menu", "home"), _button("\U0001F504 Actualizar", "r:timeline")],
+        ]
+
 
 class InsightsPage(MenuPage):
     page_id = 'insights'
@@ -2755,6 +2762,13 @@ def _dispatch_callback(data):
         data = data.split(':', 1)[1] or 'home'
     if data == 'refresh':
         data = 'home'
+    if data.startswith("timeline:"):
+        timeline_filter = data.split(":", 1)[1] or "OPERATIONAL"
+        return {
+            "page_id": "timeline",
+            "text": _timeline_text(timeline_filter),
+            "reply_markup": {"inline_keyboard": MENU_PAGES["timeline"].keyboard()},
+        }
     if data.startswith('inspect:'):
         mode = data.split(':', 1)[1] or 'latest'
         return {

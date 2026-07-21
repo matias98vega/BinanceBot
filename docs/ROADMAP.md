@@ -56,10 +56,10 @@ Este documento es la hoja de ruta canónica. No autoriza cambios de estrategia n
 | Auditoría unificada state-vs-exchange pre-entry | PARCIAL | gate unificado, CLI, Fake E2E e integración AUDIT_ONLY | Observar varios ciclos y autorizar ENFORCE por separado | Evidencia productiva sin falsos positivos | Alta |
 | FakeBinanceClient o ReplayClient | PARCIAL | FakeBinanceClient reusable y escenarios A-L completados | ReplayClient sigue pendiente | Contratos sanitizados de replay | Media |
 | Tests end-to-end sin operaciones reales | PARCIAL | 473 tests unitarios y supresión de transportes | Escenarios completos ciclo→persistencia→Telegram con cliente falso | Fake/Replay client | Alta |
-| Política de gaps/downtime persistida | PARCIAL | auditor reconoce pausas y mantiene gaps sin evidencia como operativos | Evento durable de inicio/fin y motivo de downtime | Timeline operativo | Alta |
+| Política de gaps/downtime persistida | COMPLETADO | operational_state, heartbeat y CLI reproducible | Acumular evidencia forward-only; legacy no se backfillea | Ciclos futuros | Alta |
 | Freshness de stats e insights | PARCIAL | stats se reconstruye; Insights tiene metadata | Umbrales, relación de fuentes y warning visible | Contratos derivados | Media |
 | Rotación y retención JSONL | PARCIAL | Timeline rota | Política uniforme, backup y pruebas para los demás JSONL | Inventario de consumidores | Media |
-| Timeline operativo vs debug | PARCIAL | Timeline y filtros existen | Niveles/canales para reducir ruido sin perder evidencia | Política de eventos | Media |
+| Timeline operativo vs debug | COMPLETADO | schema v2 y filtros Operational/Diagnostic/Debug | Afinar mappings futuros sin reescribir legacy | Taxonomía canónica | Media |
 | Cierre preventivo BTC y fallback Guardian | NECESITA REDEFINICIÓN | riesgo documentado, tests parciales | Validar con cliente falso, replay y GET/read-only; operación real sólo fuera del roadmap y con aprobación explícita | Fake/Replay client | Alta |
 | Playbooks de recuperación manual | PENDIENTE | acciones distribuidas en docs y CLI | Procedimientos idempotentes y verificables | Reconciliación unificada | Media |
 

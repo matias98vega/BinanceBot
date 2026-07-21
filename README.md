@@ -104,6 +104,15 @@ python trading/sl_guardian.py
 
 ## Analytics y observabilidad
 
+Gaps y Timeline operativo:
+
+```bash
+.venv/bin/python trading/analyze_operational_gaps.py --explain
+```
+
+`/timeline` muestra eventos operativos por defecto y permite filtrar Diagnóstico/Debug. La política está documentada en `docs/GAP_AND_DOWNTIME_POLICY.md`.
+
+
 ```bash
 python trading/analyze_trades.py
 python trading/analyze_decisions.py

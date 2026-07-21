@@ -1,5 +1,7 @@
 # BinanceBot Architecture
 
+La observabilidad operativa usa Timeline schema v2 más `operational_state.jsonl`: transiciones por cambio, cierre compacto por ciclo y heartbeat espaciado, sin llamadas remotas. Ver `docs/OPERATIONAL_TIMELINE.md` y `docs/GAP_AND_DOWNTIME_POLICY.md`.
+
 Este documento es la referencia canonica de arquitectura. Describe el estado actual sin proponer cambios de estrategia.
 
 ## Vista General

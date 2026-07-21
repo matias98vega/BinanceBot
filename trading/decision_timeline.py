@@ -15,13 +15,19 @@ DEFAULT_TIMELINE_FILE = os.path.join(PROJECT_DIR, 'data', 'history', 'timeline.j
 MAX_TIMELINE_BYTES = 5 * 1024 * 1024
 KEEP_RECENT_BYTES = 4 * 1024 * 1024
 
-LEVELS = {'INFO', 'WARNING', 'ERROR', 'CRITICAL'}
+LEVELS = {'INFO', 'WARNING', 'RISK', 'ERROR', 'CRITICAL'}
+EVENT_CATEGORIES = {'OPERATIONAL', 'DIAGNOSTIC', 'DEBUG'}
+OPERATIONAL_EVENTS = {'cycle_start', 'cycle_end', 'cycle_started', 'cycle_completed', 'cycle_failed', 'circuit_breaker_pause_started', 'trading_paused', 'trading_resumed', 'guardian_critical', 'position_reconciled', 'rebalance_error', 'rebalance_reconciled', 'pre_entry_blocked_material'}
+DIAGNOSTIC_EVENTS = {'capacity_reject', 'signal_rejected', 'sizing_rejected', 'pre_entry_safety_gate'}
 CATEGORIES = {
     'SYSTEM', 'MARKET', 'SIGNAL', 'FILTER', 'SIZING', 'RISK', 'REBALANCE',
     'ORDER', 'PROTECTION', 'GUARDIAN', 'CAPITAL', 'BLACKLIST', 'ANALYTICS',
 }
 
 CATEGORY_LABELS_ES = {
+    'OPERATIONAL': 'OPERATIVO',
+    'DIAGNOSTIC': 'DIAGNÓSTICO',
+    'DEBUG': 'DEBUG',
     'SYSTEM': 'SISTEMA',
     'MARKET': 'MERCADO',
     'SIGNAL': 'SEÑALES',
@@ -78,6 +84,36 @@ def _normalise_category(category):
     return value if value in CATEGORIES else 'SYSTEM'
 
 
+def classify_event(event, domain_category=None, details=None):
+    event = str(event or "").lower()
+    details = details if isinstance(details, dict) else {}
+    if event == "pre_entry_safety_gate":
+        status = str(details.get("status") or "")
+        if status in {"BLOCKED_POSITION_MISMATCH", "BLOCKED_ORPHAN_POSITION", "BLOCKED_MISSING_PROTECTION", "BLOCKED_EXCHANGE_STATE_UNKNOWN"}:
+            return "OPERATIONAL"
+        return "DIAGNOSTIC"
+    if event in OPERATIONAL_EVENTS or str(domain_category).upper() in {"ORDER", "PROTECTION", "GUARDIAN"}:
+        return "OPERATIONAL"
+    if event in DIAGNOSTIC_EVENTS or str(domain_category).upper() in {"RISK", "REBALANCE"}:
+        return "DIAGNOSTIC"
+    return "DEBUG"
+
+
+def normalise_event_schema(record):
+    row = dict(record or {})
+    legacy = "event_category" not in row
+    row.setdefault("event_type", row.get("event"))
+    row.setdefault("event_category", classify_event(row.get("event_type"), row.get("category"), row.get("details")))
+    row.setdefault("severity", row.get("level") or "INFO")
+    row.setdefault("occurred_at", row.get("timestamp"))
+    row.setdefault("recorded_at", row.get("timestamp"))
+    row.setdefault("source", str(row.get("category") or "timeline").lower())
+    row.setdefault("summary", row.get("message") or row.get("event_type"))
+    row.setdefault("schema_version", 1 if legacy else 2)
+    row["legacy_classification"] = legacy
+    return row
+
+
 def _test_mode_external_write_blocked(path):
     if os.path.abspath(path) != os.path.abspath(DEFAULT_TIMELINE_FILE):
         return False
@@ -130,6 +166,19 @@ def record_event(
             'message': _safe_str(message, 1000),
             'details': _sanitize(details or {}),
             'related_trade_id': related_trade_id,
+            'event_type': _safe_str(event, 120),
+            'event_category': classify_event(event, category, details),
+            'severity': _normalise_level(level),
+            'occurred_at': timestamp or _now_iso(),
+            'recorded_at': _now_iso(),
+            'source': str(category or 'SYSTEM').lower(),
+            'correlation_id': cycle_id or related_trade_id,
+            'trade_id': related_trade_id,
+            'side': str(direction).upper() if direction else None,
+            'operational_state': (details or {}).get('operational_state') if isinstance(details, dict) else None,
+            'reason_code': (details or {}).get('reason_code') if isinstance(details, dict) else None,
+            'summary': _safe_str(message, 1000),
+            'schema_version': 2,
         }
         version_history.attach_version_metadata(record)
         if _test_mode_external_write_blocked(path):
@@ -206,7 +255,8 @@ def read_recent_events(limit=20, category=None, symbol=None, path=DEFAULT_TIMELI
                     continue
                 if not isinstance(event, dict):
                     continue
-                if category_filter and str(event.get('category', '')).upper() != category_filter:
+                event = normalise_event_schema(event)
+                if category_filter and str(event.get('category', '')).upper() != category_filter and str(event.get('event_category', '')).upper() != category_filter:
                     continue
                 if symbol_filter and str(event.get('symbol', '')).upper() != symbol_filter:
                     continue
@@ -218,12 +268,23 @@ def read_recent_events(limit=20, category=None, symbol=None, path=DEFAULT_TIMELI
     return list(reversed(events[-max(int(limit or 20), 1):]))
 
 
+def _iter_view(view, path=DEFAULT_TIMELINE_FILE):
+    for event in reversed(read_recent_events(limit=100000, path=path)):
+        if event.get("event_category") == view:
+            yield event
+
+
+def iter_operational_events(path=DEFAULT_TIMELINE_FILE): return _iter_view("OPERATIONAL", path)
+def iter_diagnostic_events(path=DEFAULT_TIMELINE_FILE): return _iter_view("DIAGNOSTIC", path)
+def iter_debug_events(path=DEFAULT_TIMELINE_FILE): return _iter_view("DEBUG", path)
+
+
 def compact_event_for_telegram(event):
     if not isinstance(event, dict):
         return ''
     ts = str(event.get('timestamp') or '')
     time_part = ts[11:16] if len(ts) >= 16 else '--:--'
-    category = str(event.get('category') or 'SYSTEM').upper()
+    category = str(event.get('event_category') or event.get('category') or 'SYSTEM').upper()
     category_label = CATEGORY_LABELS_ES.get(category, category)
     level = str(event.get('level') or 'INFO').upper()
     icon = '\U0001F6A8' if level == 'CRITICAL' else '\u274C' if level == 'ERROR' else '\u26A0\uFE0F' if level == 'WARNING' else '\u2705'

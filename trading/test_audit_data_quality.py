@@ -261,6 +261,22 @@ class AuditDataQualityTests(unittest.TestCase):
         self.assertTrue(any('gap grande' in item and 'justified_by=safety_pause:daily_stop_loss_limit' in item for item in report.accepted_warnings))
         self.assertFalse(any('gap grande' in item for item in report.operational_warnings))
 
+    def test_recent_gap_covered_by_persisted_operational_evidence_is_accepted(self):
+        self.valid_bot_state()
+        self.write_jsonl("trading/decision_snapshots.jsonl", [
+            {"timestamp":"2026-07-11T23:10:00Z", "bot_version":"v1.2-sizing-v2"},
+            {"timestamp":"2026-07-12T23:05:00Z", "bot_version":"v1.2-sizing-v2"},
+        ])
+        self.write_jsonl("trading/trade_analytics.jsonl", [])
+        self.write_jsonl("data/history/operational_state.jsonl", [{
+            "event_type":"operational_state_transition", "state":"MAINTENANCE",
+            "reason_code":"PLANNED", "started_at":"2026-07-11T23:00:00Z",
+            "expected_until":"2026-07-12T23:30:00Z", "source":"manual_cli",
+        }])
+        report=audit_data_quality.audit_project(self.project)
+        self.assertTrue(any("persisted_operational_evidence:EXPLAINED_MAINTENANCE" in item for item in report.accepted_warnings))
+        self.assertFalse(any("gap grande" in item for item in report.operational_warnings))
+
     def test_recent_gap_without_pause_or_runtime_evidence_is_informational(self):
         self.valid_bot_state()
         self.write_jsonl('trading/decision_snapshots.jsonl', [

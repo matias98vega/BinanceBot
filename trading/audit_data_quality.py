@@ -9,6 +9,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 
 import version_history
+import gap_analysis
 
 
 TRADING_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -588,8 +589,9 @@ class ActiveTradeContext:
 
 
 class SafetyPauseContext:
-    def __init__(self, windows=None):
+    def __init__(self, windows=None, operational_evidence=None):
         self.windows = list(windows or [])
+        self.operational_evidence = list(operational_evidence or [])
 
     def covers(self, previous_dt, current_dt):
         if previous_dt is None or current_dt is None:
@@ -603,6 +605,14 @@ class SafetyPauseContext:
             if previous_dt >= start - tolerance and current_dt <= end + tolerance:
                 reason = window.get('reason') or 'safety_pause'
                 return f'safety_pause:{reason}'
+        if self.operational_evidence:
+            synthetic = [
+                {"recorded_at": previous_dt.isoformat(), "event_type": "gap_start"},
+                {"recorded_at": current_dt.isoformat(), "event_type": "gap_end"},
+            ]
+            gaps = gap_analysis.analyze_gaps(synthetic, self.operational_evidence, min_gap_hours=0)
+            if gaps and gaps[0].get("classification", "").startswith("EXPLAINED_"):
+                return "persisted_operational_evidence:" + gaps[0]["classification"]
         return None
 
 
@@ -688,12 +698,13 @@ def _collect_pause_windows_from_timeline(path):
     return windows
 
 
-def _build_safety_pause_context(state, bot_state, timeline_path):
+def _build_safety_pause_context(state, bot_state, timeline_path, operational_path=None):
     windows = []
     windows.extend(_collect_pause_windows_from_state(state, 'state'))
     windows.extend(_collect_pause_windows_from_state(bot_state, 'bot_state'))
     windows.extend(_collect_pause_windows_from_timeline(timeline_path))
-    return SafetyPauseContext(windows)
+    operational_evidence, _corrupt = gap_analysis.read_jsonl(operational_path) if operational_path else ([], 0)
+    return SafetyPauseContext(windows, operational_evidence)
 
 
 def _read_json(path, report, required=False):
@@ -1034,6 +1045,36 @@ def _audit_bot_state(path, data, report):
             report.informational_warning(path, f"pre-entry gate modo desconocido={gate_mode}")
 
 
+def _audit_operational_state(path, report):
+    if not os.path.exists(path):
+        report.informational_warning(path, "operational evidence file not created yet; pre-deployment history remains legacy")
+        return
+    rows = []
+    try:
+        with open(path, encoding="utf-8") as handle:
+            for line_no, line in enumerate(handle, 1):
+                if not line.strip(): continue
+                try: row = json.loads(line)
+                except Exception as exc:
+                    report.warning(path, f"operational evidence corrupt line={line_no} error={exc}")
+                    continue
+                if isinstance(row, dict): rows.append(row)
+    except Exception as exc:
+        report.warning(path, f"operational evidence unreadable error={exc}")
+        return
+    if not rows:
+        report.informational_warning(path, "operational evidence file empty")
+        return
+    heartbeat = next((row for row in reversed(rows) if row.get("event_type") == "operational_heartbeat"), None)
+    if heartbeat and report.reference_time:
+        stamp, _ = _parse_ts(heartbeat.get("observed_at"))
+        if stamp and (report.reference_time - stamp).total_seconds() > 1800:
+            report.warning(path, f"operational heartbeat stale observed_at={heartbeat.get('observed_at')}")
+    latest = rows[-1]
+    if latest.get("state") in {"ERROR", "BLOCKED_EXCHANGE_UNKNOWN", "BLOCKED_RECONCILIATION"}:
+        report.warning(path, f"material operational state={latest.get('state')} reason={latest.get('reason_code')}")
+
+
 def _audit_rebalance(path, data, report):
     if not data or not data.get('pending'):
         return
@@ -1126,7 +1167,8 @@ def audit_project(project_dir=PROJECT_DIR):
     futures_reconciliation = _read_json(_project_path(history_dir, 'futures_reconciliation_status.json'), report)
     active_context = ActiveTradeContext(state=state, bot_state=bot_state, reconciliation=futures_reconciliation)
     timeline_path = _project_path(history_dir, 'timeline.jsonl')
-    pause_context = _build_safety_pause_context(state, bot_state, timeline_path)
+    operational_path = _project_path(history_dir, "operational_state.jsonl")
+    pause_context = _build_safety_pause_context(state, bot_state, timeline_path, operational_path)
 
     history_jsonl_paths = sorted(glob.glob(_project_path(history_dir, '*.jsonl')))
     history_records = {}
@@ -1176,6 +1218,7 @@ def audit_project(project_dir=PROJECT_DIR):
         report.informational_warning(ledger_path, 'capital accounting incomplete: ledger no inicializado; PnL Trading y ROI Trading deben mostrarse N/A')
         report.recommendations.add('Capital accounting: ejecutar reconcile_capital_ledger.py --dry-run antes de un bootstrap explícito.')
     _audit_bot_state(_project_path(trading_dir, 'bot_state.json'), bot_state, report)
+    _audit_operational_state(operational_path, report)
 
     _audit_ml_dataset_artifact(project_dir, report)
 

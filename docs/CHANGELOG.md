@@ -12,6 +12,13 @@
 - Added FakeBinanceClient end-to-end coverage, read-only CLI and compact BotState/timeline evidence.
 - Strategy, scoring, sizing, TP/SL, Guardian, reconciliation, payloads and bot version remain unchanged.
 
+# 2026-07-21 — Persistent operational gap evidence
+
+- Added canonical operational states, transition evidence, spaced heartbeats and compact cycle completion.
+- Added reproducible persisted-evidence-only gap analysis and explicit maintenance evidence CLI.
+- Split Timeline views into Operational, Diagnostic and Debug without rewriting history.
+- Trading logic, gate mode, Binance payloads and runtime version remain unchanged.
+
 # Changelog
 
 Resumen de capacidades desplegadas. El historial Git conserva el detalle de cada cambio; este documento registra hitos de alto nivel sin inventar versiones runtime ni fechas no formalizadas.
