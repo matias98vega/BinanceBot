@@ -1,3 +1,9 @@
+# 2026-07-22 — Durable pre-entry gate evidence
+
+- Added forward-only sanitized GATE_EVALUATION/GATE_ENTRY_OUTCOME evidence with deterministic identity and Decimal metrics.
+- Added offline CURRENT/STEP/RELATIVE/NOTIONAL/COMBINED policy analysis, read-only CLI and auditor checks.
+- No tolerance, gate decision, entry behavior, Binance read/payload, strategy or bot version changed.
+
 # 2026-07-21 — Telegram presentation polish
 
 - Home compacta, Diagnóstico con detalle técnico y gate AUDIT_ONLY explícito.

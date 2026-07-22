@@ -1,6 +1,8 @@
 """Caller-owned observability for the pure pre-entry safety gate."""
+import logging
 import decision_timeline
 import pre_entry_safety_gate
+import pre_entry_gate_evidence
 
 
 def record_result(result, state, cycle_id=None):
@@ -25,7 +27,17 @@ def record_result(result, state, cycle_id=None):
     return summary
 
 
-def evaluate_and_record(*, local_state, cycle_id=None, **kwargs):
+def evaluate_and_record(*, local_state, cycle_id=None, evidence_context=None, **kwargs):
     result = pre_entry_safety_gate.evaluate_pre_entry_safety(local_state=local_state, **kwargs)
+    try:
+        context = pre_entry_gate_evidence.cached_observation_context(
+            local_state, (evidence_context or {}).get('mark_prices'))
+        pre_entry_gate_evidence.capture_evaluation(result, local_state, cycle_id=cycle_id, context=context)
+    except Exception as exc:
+        logging.warning('pre-entry evidence observation failed: %s', exc)
     record_result(result, local_state, cycle_id=cycle_id)
     return result
+
+
+def record_entry_outcome(result, position, cycle_id=None):
+    return pre_entry_gate_evidence.capture_outcome(result, position, cycle_id=cycle_id)

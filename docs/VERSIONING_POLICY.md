@@ -50,3 +50,7 @@ Compare by opening version and report period, sample size, win rate, PnL, expect
 - future v1.3: reserved for an approved behavioral change, not documentation or passive tooling.
 
 Validate read-only with `python trading/check_version_consistency.py [--json|--explain|--strict]`.
+
+## Durable pre-entry evidence epoch
+
+`preentry-evidence-v1` succeeds `preentry-audit-v1` as non-behavioral observability. It does not affect trade selection, management, accounting or ML datasets and does not change `bot_version`, `strategy_version` or feature schemas. Candidate tolerance policies remain offline; connecting one to `safe_to_enter` or `entry_allowed` would be behavioral and requires separate authorization and versioning.

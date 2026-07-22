@@ -258,6 +258,7 @@ class CycleRunner:
 
         # â”€â”€ 1b. GestiÃ³n normal de posiciones restantes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         positions_to_keep = []
+        position_prices = {}
 
         for pos in active_positions:
             direction = pos['direction']
@@ -272,6 +273,9 @@ class CycleRunner:
                 if should_skip_lifecycle_after_residual_cleanup(pos):
                     continue
                 action, price_close, pnl = shorts.manage_short(pos, state)
+
+            if price_close is not None:
+                position_prices[sym] = price_close
 
             if action in ('closed_tp', 'closed_sl', 'closed_manual'):
                 self.handle_close(state, pos, action, price_close, pnl, btc_ctx)
@@ -387,10 +391,12 @@ class CycleRunner:
                     client=self.binance, local_state=state, bot_state=bot_state.load_bot_state({}),
                     side="LONG", symbol=best_long.get("symbol"), cycle_id=cycle_id,
                     reconciliation_status={"position_pending": state.get("position_reconciliation_pending")},
+                    evidence_context={"mark_prices": position_prices},
                     context={"capacity": {"current": long_count, "operational_max": max_longs,
                                           "new_entries_allowed": long_count < max_longs}},
                 )
                 pos, msg = longs.open_long(best_long, state, max_longs=max_longs, pre_entry_gate_result=gate_result)
+                pre_entry_gate_observability.record_entry_outcome(gate_result, pos, cycle_id=cycle_id)
                 if pos:
                     state['positions'].append(pos)
                     self.safe_log_open(pos, best_long, btc_ctx, spot_total_capital)
@@ -455,10 +461,12 @@ class CycleRunner:
                     client=self.binance, local_state=state, bot_state=bot_state.load_bot_state({}),
                     side="SHORT", symbol=best_short.get("symbol"), cycle_id=cycle_id,
                     reconciliation_status={"position_pending": state.get("futures_entries_blocked")},
+                    evidence_context={"mark_prices": position_prices},
                     context={"capacity": {"current": short_count, "operational_max": max_shorts,
                                           "new_entries_allowed": short_count < max_shorts}},
                 )
                 pos, msg = shorts.open_short(best_short, state, max_shorts=max_shorts, pre_entry_gate_result=gate_result)
+                pre_entry_gate_observability.record_entry_outcome(gate_result, pos, cycle_id=cycle_id)
                 if pos:
                     state['positions'].append(pos)
                     self.safe_log_open(pos, best_short, btc_ctx, fut_free)

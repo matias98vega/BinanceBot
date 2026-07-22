@@ -5,6 +5,7 @@ import glob
 import json
 import os
 import sys
+import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 
@@ -1111,6 +1112,57 @@ def _audit_rebalance(path, data, report):
             report.explain_incident(path, category, rule, evidence, timestamp, recent)
 
 
+def _audit_pre_entry_evidence(path, report):
+    if not os.path.exists(path):
+        report.info(path, 'pre-entry durable evidence not created yet')
+        return
+    evaluations, outcomes, duplicate_ids = {}, [], set()
+    try:
+        with open(path, 'rb') as handle:
+            raw = handle.read()
+    except Exception as exc:
+        report.error(path, f'cannot read pre-entry evidence: {exc}')
+        return
+    lines = raw.splitlines(keepends=True)
+    if not raw:
+        report.info(path, 'pre-entry durable evidence is empty')
+        return
+    for number, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except Exception as exc:
+            if number == len(lines) and not line.endswith(b'\n') and time.time() - os.path.getmtime(path) < 300:
+                report.informational_warning(path, f'active final partial line #{number}: {exc}')
+            else:
+                report.error(path, f'invalid pre-entry evidence line #{number}: {exc}')
+            continue
+        report.records_checked += 1
+        if record.get('evidence_schema_version') != 1:
+            report.error(path, f'line #{number}: unsupported evidence_schema_version')
+        evaluation_id = record.get('evaluation_id')
+        if record.get('event_type') == 'GATE_EVALUATION':
+            if evaluation_id in evaluations:
+                duplicate_ids.add(evaluation_id)
+            evaluations[evaluation_id] = record
+        elif record.get('event_type') == 'GATE_ENTRY_OUTCOME':
+            outcomes.append(record)
+        else:
+            report.error(path, f'line #{number}: invalid gate evidence event_type')
+    if duplicate_ids:
+        report.warning(path, f'duplicate evaluation_id count={len(duplicate_ids)}')
+    orphan = [row for row in outcomes if row.get('evaluation_id') not in evaluations]
+    if orphan:
+        report.warning(path, f'outcome without evaluation count={len(orphan)}')
+    missing_filters = sum(not mismatch.get('filters_available') for row in evaluations.values() for mismatch in row.get('mismatches') or [])
+    if missing_filters:
+        report.info(path, f'pre-entry mismatches without cached filters={missing_filters}')
+    stale = sum(str(row.get('freshness_status')) == 'STALE' for row in evaluations.values())
+    if stale:
+        report.warning(path, f'stale pre-entry evidence count={stale}')
+
+
 def _audit_ml_dataset_artifact(project_dir, report):
     """Check an existing offline audit artifact without running the ML audit."""
     summary_path = _project_path(project_dir, 'data', 'analysis', 'ml_dataset_audit', 'summary.json')
@@ -1171,6 +1223,8 @@ def audit_project(project_dir=PROJECT_DIR):
     pause_context = _build_safety_pause_context(state, bot_state, timeline_path, operational_path)
 
     history_jsonl_paths = sorted(glob.glob(_project_path(history_dir, '*.jsonl')))
+    gate_evidence_path = _project_path(history_dir, 'pre_entry_gate_evidence.jsonl')
+    history_jsonl_paths = [path for path in history_jsonl_paths if path != gate_evidence_path]
     history_records = {}
     trades_path = _project_path(history_dir, 'trades.jsonl')
     trades_history = []
@@ -1219,6 +1273,7 @@ def audit_project(project_dir=PROJECT_DIR):
         report.recommendations.add('Capital accounting: ejecutar reconcile_capital_ledger.py --dry-run antes de un bootstrap explícito.')
     _audit_bot_state(_project_path(trading_dir, 'bot_state.json'), bot_state, report)
     _audit_operational_state(operational_path, report)
+    _audit_pre_entry_evidence(gate_evidence_path, report)
 
     _audit_ml_dataset_artifact(project_dir, report)
 

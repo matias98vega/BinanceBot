@@ -111,3 +111,20 @@ Los resultados futuros del gate se clasifican en Timeline v2: bloqueos materiale
 Mantener `AUDIT_ONLY` durante varios ciclos, revisar timeline y BotState y repetir
 la CLI sobre ambos lados. Activar `ENFORCE` únicamente en una tarea separada tras
 descartar falsos positivos de cantidades Spot compartidas, OCO y órdenes Futures.
+
+## Evidencia durable shadow
+
+La capability no conductual `preentry-evidence-v1` persiste evaluaciones futuras en `data/history/pre_entry_gate_evidence.jsonl`. No existe backfill. Cada `GATE_EVALUATION` conserva identidad determinística, modo y decisión original, freshness, contexto de capacidad/reconciliación y mismatches sanitizados con cantidades Decimal, precio observado durante la gestión, filtros ya cacheados y una matriz shadow compacta. `GATE_ENTRY_OUTCOME` correlaciona por `cycle_id` la apertura o no apertura sin reescribir la evaluación.
+
+La captura es append-only con `O_APPEND`, lock interproceso, una línea JSON UTF-8 y deduplicación best-effort por tail scan. Un fallo se registra y nunca cambia `safe_to_enter`, `entry_allowed`, reason codes ni ejecución. No se agregan llamadas de red: filtros y precios ausentes se guardan como `null`, y las políticas shadow fallan cerradas.
+
+Políticas observacionales: `CURRENT`, `STEP_ONLY`, `RELATIVE_ONLY`, `NOTIONAL_ONLY` y `COMBINED_CONSERVATIVE`. La combinada usa solamente para análisis `absolute_floor=1e-6`, `step_multiplier=1`, `relative_limit=0.001` y `notional_limit_usdt=0.10`. Ninguna política es importada por `pre_entry_safety_gate.py` ni participa en decisiones.
+
+```bash
+.venv/bin/python trading/analyze_pre_entry_gate_evidence.py --explain
+.venv/bin/python trading/analyze_pre_entry_gate_evidence.py --policy ALL --json
+```
+
+`enforce_relevant_evaluation` exige candidato en pre-entry, evaluación completa y capacidad/reconciliación aptas. `false_block_rate` divide falsos positivos shadow entre evaluaciones bloqueantes enforce-relevant; no incluye ciclos sin candidato, gestión, Telegram ni heartbeats. Con menos de 30 evaluaciones se informa muestra baja.
+
+ENFORCE continúa bloqueado. Repetir revisión tras 24–48 horas adicionales con casos SAFE y representación técnica y real de LONG/SHORT.

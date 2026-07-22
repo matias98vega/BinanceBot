@@ -59,7 +59,7 @@ El dual-reader shadow compara las salidas exactas de los consumidores principale
 
 | Ítem | Estado | Evidencia | Pendiente real | Dependencia | Prioridad |
 |---|---|---|---|---|---|
-| Auditoría unificada state-vs-exchange pre-entry | PARCIAL | gate unificado, CLI, Fake E2E e integración AUDIT_ONLY | Observar varios ciclos y autorizar ENFORCE por separado | Evidencia productiva sin falsos positivos | Alta |
+| Auditoría unificada state-vs-exchange pre-entry | PARCIAL | gate AUDIT_ONLY, evidencia durable v1, outcomes y políticas shadow offline | Acumular 24–48 h adicionales con SAFE y LONG/SHORT; ajustar tolerancia sólo en tarea separada | Evidencia productiva sin falsos positivos | Alta |
 | FakeBinanceClient o ReplayClient | COMPLETADO | FakeBinanceClient A-L y ReplayClient offline determinístico sobre el mismo state/contrato | Acumular observaciones sanitizadas; históricos siguen siendo parciales | Tapes versionados | Media |
 | Biblioteca de incidentes Replay sanitizados | COMPLETADO | seis fixtures versionadas con fidelidad/confianza explícitas y regresiones offline | Sumar incidentes forward-only sin elevar artificialmente su fidelidad | ReplayClient | Media |
 | Presentación Telegram de lectura rápida | COMPLETADO | Home compacta, diagnóstico técnico separado, Neutral/Sideways visual, símbolos paginados y progreso v2 | Mantener contratos read-only | Telegram | Media |
