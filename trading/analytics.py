@@ -109,8 +109,13 @@ class AnalyticsLogger:
             'status': 'OPEN',
             'passive_context': passive_context,
         }
+        if bot_version:
+            record['bot_version'] = bot_version
+        if strategy_version:
+            record['strategy_version'] = strategy_version
         version_history.attach_version_metadata(record)
         self._append(record)
+
         try:
             self.timeline_recorder.record_event(
                 'trade_registered',
@@ -167,7 +172,11 @@ class AnalyticsLogger:
             'status': 'CLOSED',
         }
         record.update({k: v for k, v in extra.items() if v is not None})
+        opening_version = self._opening_bot_version(trade_id)
+        if opening_version:
+            record['bot_version'] = opening_version
         version_history.attach_version_metadata(record)
+
         self._append(record)
         try:
             self.timeline_recorder.record_event(
@@ -183,6 +192,23 @@ class AnalyticsLogger:
             pass
         self._record_history_close(record, extra)
         return record
+
+    def _opening_bot_version(self, trade_id):
+        base_id = str(trade_id or '').removesuffix(':partial')
+        if not base_id or not os.path.exists(self.path):
+            return None
+        try:
+            with open(self.path, encoding='utf-8') as stream:
+                for line in stream:
+                    try:
+                        row = json.loads(line)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    if row.get('trade_id') == base_id and row.get('status') == 'OPEN':
+                        return row.get('bot_version')
+        except OSError:
+            return None
+        return None
 
     def log_event(self, event_type, **fields):
         record = {

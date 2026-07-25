@@ -13,7 +13,7 @@ TRADING_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(TRADING_DIR)
 VERSION_FILE = os.path.join(PROJECT_DIR, 'VERSION')
 SCHEMA_VERSION = 1
-BOT_VERSION = os.environ.get('BOT_VERSION') or 'v1.2-sizing-v2'
+BOT_VERSION = os.environ.get('BOT_VERSION') or 'v1.3-partial-quantity-fix'
 STRATEGY_VERSION = os.environ.get('STRATEGY_VERSION') or 'current'
 DATA_SCHEMA_VERSION = os.environ.get('DATA_SCHEMA_VERSION') or 'v1'
 VERSION_FIELDS = ('bot_version', 'strategy_version', 'data_schema_version')
@@ -102,10 +102,10 @@ VERSION_HISTORY = [
         'confidence': 'high',
     },
     {
-        'version': BOT_VERSION,
+        'version': 'v1.2-sizing-v2',
         'label': 'Sizing v2 capital exposure model',
         'started_at': '2026-07-12T00:00:00Z',
-        'ended_at': None,
+        'ended_at': '2026-07-25T00:00:00Z',
         'capabilities': [
             'Spot Long entries use target exposure slots instead of a decreasing free-balance percentage',
             'Futures Short entries size by target notional exposure and derive required margin from leverage',
@@ -122,6 +122,28 @@ VERSION_HISTORY = [
         'fixes': [
             'Long sizing now targets configured Spot exposure across available slots',
             'Short sizing now caps configured Futures exposure as notional rather than leveraged margin',
+        ],
+        'data_policy': 'trusted_if_auditor_clean',
+        'confidence': 'high',
+    },
+    {
+        'version': 'v1.3-partial-quantity-fix',
+        'label': 'Exact partial quantity integrity',
+        'started_at': '2026-07-25T00:00:00Z',
+        'ended_at': None,
+        'capabilities': [
+            'Partial closes derive remaining managed quantity from confirmed executedQty',
+            'Decimal stepSize arithmetic preserves partial plus remaining equals initial',
+            'Position mismatches remain reconciliation-pending instead of understating local state',
+        ],
+        'known_bugs': [],
+        'limitations': [
+            'Applies to future management only; historical trades and AMD cleanup are immutable',
+            'Open legacy trades retain their opening bot_version',
+        ],
+        'fixes': [
+            'Odd step-aligned quantities no longer round both halves independently',
+            'Remaining protection uses the confirmed exchange remainder',
         ],
         'data_policy': 'trusted_if_auditor_clean',
         'confidence': 'high',

@@ -1,10 +1,10 @@
 # Future work
 
-## Odd-step Futures partial split
+## Odd-step Futures partial split — COMPLETED in v1.3
 
 The AMDUSDT `0.03` incident demonstrated that independently rounding both halves down produced `0.01 + 0.01`, leaving an unmanaged `0.01` residual.
 
-A separate behavioral change must:
+The deployed behavioral change now:
 
 - use `Decimal`;
 - normalize the partial quantity to `stepSize`;

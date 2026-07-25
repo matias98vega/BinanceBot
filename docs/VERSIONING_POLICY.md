@@ -1,6 +1,6 @@
 # Functional versioning and capability epochs
 
-BinanceBot separates trading behavior from schemas, tooling and observability. The current runtime remains `v1.2-sizing-v2`; this policy does not authorize a new runtime label.
+BinanceBot separates trading behavior from schemas, tooling and observability. The current runtime is `v1.3-partial-quantity-fix`, an approved behavioral position-management release.
 
 ## Taxonomy
 
@@ -47,7 +47,7 @@ Compare by opening version and report period, sample size, win rate, PnL, expect
 - v1.1: Observability Hardening.
 - v1.2: Sizing v2.
 - v1.2.x: reliability, accounting, replay and offline evaluation capabilities.
-- future v1.3: reserved for an approved behavioral change, not documentation or passive tooling.
+- v1.3: exact partial quantity integrity; remaining derives from confirmed executedQty.
 
 Validate read-only with `python trading/check_version_consistency.py [--json|--explain|--strict]`.
 

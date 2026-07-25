@@ -4,10 +4,12 @@
 import bot_state
 import config
 import market
+import version_history
 
 
 def safe_log_open(pos, candidate, btc_ctx, capital_at_entry, analytics):
     try:
+        pos.setdefault('bot_version', version_history.current_version())
         observed_capital = capital_at_entry
         if observed_capital is None:
             try:
@@ -38,6 +40,7 @@ def safe_log_open(pos, candidate, btc_ctx, capital_at_entry, analytics):
             wallet='SPOT' if pos.get('direction') == 'long' else 'FUTURES',
             btc_context=btc_ctx or {},
             passive_context=candidate.get('passive_feature_context') if candidate else None,
+            bot_version=pos.get('bot_version'),
         )
     except Exception:
         pass
@@ -54,6 +57,7 @@ def safe_log_close(pos, exit_price, exit_reason, pnl, analytics):
             exit_price=exit_price,
             exit_reason=exit_reason,
             pnl_usdt=pnl,
+            bot_version=pos.get('bot_version'),
         )
     except Exception:
         pass

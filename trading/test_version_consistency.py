@@ -34,7 +34,7 @@ class CapabilityHistoryTests(unittest.TestCase):
         report = check_version_consistency.validate(trades_path='/missing', commit_checker=lambda commit: True)
         self.assertTrue(report['feature_schema_independent'])
         self.assertIsNone(report['deployed_model_version'])
-        self.assertEqual('v1.2-sizing-v2', version_history.current_version())
+        self.assertEqual('v1.3-partial-quantity-fix', version_history.current_version())
 
 
 class TradeVersionConsistencyTests(unittest.TestCase):

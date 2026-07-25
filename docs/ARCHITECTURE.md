@@ -2,7 +2,8 @@
 
 Exchange-confirmed residual cleanups use ledger schema v2 REALIZED_PNL (net of fee) plus informational COMMISSION, linked by a deterministic correction ID. They never create or rewrite trades. Operational evidence is append-only.
 
-# Architecture index
+
+Partial-close quantity arithmetic is centralized in `trading/quantity_integrity.py`; see `PARTIAL_QUANTITY_INTEGRITY.md`.
 
 The detailed runtime architecture remains in [`../ARCHITECTURE.md`](../ARCHITECTURE.md). Functional identity is intentionally layered: runtime behavior uses `bot_version`; rule identity uses `strategy_version`; persistence and feature schemas evolve independently; offline/shadow models use `model_version`; deployed non-behavioral capabilities use the canonical epochs in [`VERSIONING_POLICY.md`](VERSIONING_POLICY.md).
 

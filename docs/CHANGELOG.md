@@ -1,3 +1,9 @@
+# 2026-07-25 — Partial quantity integrity v1.3
+
+- SHORT partials use Decimal, symbol stepSize and confirmed executedQty; remaining is exact subtraction.
+- Unknown or mismatched outcomes remain reconciliation-pending; protection quantity follows the aligned remainder.
+- New runtime `v1.3-partial-quantity-fix`; existing trades keep opening version; no backfill.
+
 # 2026-07-25 — AMD residual corrective accounting
 
 - Recorded the exchange-confirmed AMDUSDT 0.01 residual cleanup as idempotent REALIZED_PNL net of fee plus informational COMMISSION.
@@ -51,6 +57,13 @@
 - Trading logic, gate mode, Binance payloads and runtime version remain unchanged.
 
 # Changelog
+
+## v1.3-partial-quantity-fix — 2026-07-25
+
+- Corrige el split SHORT impar: remaining = initial normalizada - executedQty confirmado.
+- Usa Decimal y stepSize; mismatch o resultado desconocido queda pendiente de reconciliación.
+- Preserva bot_version de apertura; sin backfill ni cambios al cleanup AMD.
+
 
 Resumen de capacidades desplegadas. El historial Git conserva el detalle de cada cambio; este documento registra hitos de alto nivel sin inventar versiones runtime ni fechas no formalizadas.
 

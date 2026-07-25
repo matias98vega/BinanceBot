@@ -1,15 +1,16 @@
 # Corrective reliability update (2026-07-25)
 
 - COMPLETED: idempotent accounting and audit coverage for the operator-confirmed AMD residual cleanup.
-- PENDING: correct odd-step partial sizing with Decimal so `remaining = initial - partial`; do not silently rewrite prior events.
+- COMPLETED: `partial-quantity-integrity-v1` uses Decimal and confirmed `executedQty`; historical events remain immutable.
 
-# Roadmap
+
+Estado conductual: partial-quantity-integrity-v1 desplegado; el gate permanece AUDIT_ONLY.
 
 > Última revisión: 2026-07-21
 >
 > Commit de referencia: `3134e76`
 >
-> Versión runtime: `v1.2-sizing-v2`
+> Versión runtime: `v1.3-partial-quantity-fix`
 >
 > Estado general: motor live desplegado y observable; contabilidad confiable desde el bootstrap; fase actual centrada en confiabilidad y preparación estadística, sin ML conectado al trading.
 

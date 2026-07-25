@@ -2,6 +2,7 @@
 """Position close, partial take-profit and recovery helpers extracted from bot.py."""
 
 import time
+from decimal import Decimal
 
 import config
 import decision_timeline
@@ -10,6 +11,7 @@ import rebalance
 import residuals
 import shorts
 import utils
+from quantity_integrity import compute_partial_and_remaining, decimal_value, remaining_after_execution
 
 
 def _state_contains_position(state, pos):
@@ -448,6 +450,7 @@ def check_partial_long(pos, state, binance, out_fn, analytics, recolocar_oco_lon
                 exit_price=price,
                 exit_reason='PARTIAL_TP',
                 pnl_usdt=pnl_partial,
+                bot_version=pos.get('bot_version'),
             )
         except Exception:
             pass
@@ -474,11 +477,15 @@ def check_partial_short(pos, state, binance, out_fn, analytics):
         return
 
     qty = pos['quantity']
-    step = binance.get_futures_filters(sym).get('step_size', 0.01)
-    qty_half = utils.round_step(qty * 0.5, step)
-    qty_rest = utils.round_step(qty * 0.5, step)
+    filters = binance.get_futures_filters(sym)
+    step = filters.get('step_size', 0.01)
+    split = compute_partial_and_remaining(qty, Decimal('0.5'), step)
+    qty_half = split.requested_partial_normalized
+    if not split.invariant_valid:
+        out_fn(f'WARNING: Parcial SHORT {sym}: invariant de quantity inválido; reconciliación requerida')
+        return
 
-    if qty_half < binance.get_futures_filters(sym).get('min_qty', 0.01):
+    if qty_half == 0 or qty_half < decimal_value(filters.get('min_qty', 0.01)):
         return
 
     try:
@@ -490,11 +497,32 @@ def check_partial_short(pos, state, binance, out_fn, analytics):
         d = binance.fut_signed('GET', '/fapi/v1/order', {
             'symbol': sym, 'orderId': order['orderId']
         })
+        status = str(d.get('status') or order.get('status') or '').upper()
+        executed_qty = decimal_value(d.get('executedQty', order.get('executedQty', '0')))
+        if executed_qty > qty_half:
+            raise ValueError(f'executedQty {executed_qty} exceeds requested partial {qty_half}')
+        if executed_qty == 0 or status not in ('FILLED', 'PARTIALLY_FILLED'):
+            pos['partial_reconciliation_status'] = 'PENDING_ORDER_RESULT'
+            pos['partial_order_id'] = str(order.get('orderId', ''))
+            pos['partial_requested_quantity'] = str(qty_half)
+            out_fn(f'WARNING: Parcial SHORT {sym}: resultado {status or "UNKNOWN"} sin fill confirmado; no se modifica quantity')
+            return
+        qty_rest = remaining_after_execution(split.initial_quantity, executed_qty, split.step_size)
+        exchange_amt, _exchange_row = _futures_position_amount(binance, sym)
+        exchange_remaining = decimal_value(abs(exchange_amt))
+        if exchange_remaining != qty_rest:
+            pos['partial_reconciliation_status'] = 'POSITION_MISMATCH'
+            pos['partial_order_id'] = str(order.get('orderId', ''))
+            pos['partial_requested_quantity'] = str(qty_half)
+            pos['partial_executed_quantity'] = str(executed_qty)
+            pos['exchange_remaining_quantity'] = str(exchange_remaining)
+            out_fn(f'WARNING: Parcial SHORT {sym}: remaining calculado {qty_rest} != exchange {exchange_remaining}; state no se marca alineado')
+            return
         fill = float(d.get('avgPrice', price))
         if fill == 0:
             fill = price
 
-        pnl_partial = (entry - fill) * qty_half
+        pnl_partial = (entry - fill) * float(executed_qty)
 
         tp_id = pos.get('tp_order_id', '')
         if tp_id:
@@ -503,7 +531,7 @@ def check_partial_short(pos, state, binance, out_fn, analytics):
             except Exception:
                 pass
 
-        tick = binance.get_futures_filters(sym).get('tick_size', 0.001)
+        tick = filters.get('tick_size', 0.001)
         new_sl = utils.round_tick(entry * 1.003, tick)
         new_tp = utils.round_tick(tp, tick)
 
@@ -542,7 +570,15 @@ def check_partial_short(pos, state, binance, out_fn, analytics):
                 logging.error(f'SL breakeven {sym}: stopPrice={new_sl}, qty={qty_rest}, price={price_now}, error={error_msg}')
                 utils.send_alert(f'⚠️ SL nativo breakeven {sym} no se pudo colocar: {error_msg}. Guardian software activo.')
 
-        pos['quantity'] = qty_rest
+        pos['quantity'] = float(qty_rest)
+        pos['initial_managed_quantity'] = str(split.initial_quantity)
+        pos['partial_requested_quantity'] = str(qty_half)
+        pos['partial_executed_quantity'] = str(executed_qty)
+        pos['remaining_managed_quantity'] = str(qty_rest)
+        pos['exchange_remaining_quantity'] = str(exchange_remaining)
+        pos['partial_step_size'] = str(split.step_size)
+        pos['partial_order_id'] = str(order.get('orderId', ''))
+        pos['partial_reconciliation_status'] = 'ALIGNED'
         pos['sl'] = new_sl
         pos['tp_order_id'] = new_tp_order_id
         pos['sl_order_id'] = new_sl_order_id
@@ -555,11 +591,8 @@ def check_partial_short(pos, state, binance, out_fn, analytics):
         )
         out_fn(msg)
         utils.send_alert(utils.format_trade_close_alert(pos, fill, 'PARTIAL_TP', pnl_partial))
-        state['trade_count'] = state.get('trade_count', 0) + 1
         state['total_pnl_usdt'] = round(state.get('total_pnl_usdt', 0) + pnl_partial, 4)
         state['daily_pnl_usdt'] = round(state.get('daily_pnl_usdt', 0) + pnl_partial, 4)
-        spot_free_now = binance.get_usdt_spot()
-        capital_now = spot_free_now + binance.get_total_futures()
         try:
             analytics.log_trade_close(
                 trade_id=f'{pos.get("id")}:partial',
@@ -570,10 +603,10 @@ def check_partial_short(pos, state, binance, out_fn, analytics):
                 exit_price=fill,
                 exit_reason='PARTIAL_TP',
                 pnl_usdt=pnl_partial,
+                bot_version=pos.get('bot_version'),
             )
         except Exception:
             pass
-        utils.log_trade(state['trade_count'], sym, 'short', 'PARCIAL TP 💰 (50%)', pnl_partial, capital_now)
         try:
             residual_result = futures_residuals.handle_after_partial_short(
                 pos,
