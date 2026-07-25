@@ -1,3 +1,8 @@
+# Corrective reliability update (2026-07-25)
+
+- COMPLETED: idempotent accounting and audit coverage for the operator-confirmed AMD residual cleanup.
+- PENDING: correct odd-step partial sizing with Decimal so `remaining = initial - partial`; do not silently rewrite prior events.
+
 # Roadmap
 
 > Última revisión: 2026-07-21

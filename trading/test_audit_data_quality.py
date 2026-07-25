@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.dirname(__file__))
 
 import audit_data_quality
+import capital_ledger
 import repair_data_quality
 
 
@@ -1237,6 +1238,41 @@ class AuditDataQualityTests(unittest.TestCase):
 
         after = {path: digest(path) for path in paths}
         self.assertEqual(before, after)
+
+    def test_auditor_accepts_idempotent_corrective_close_pair(self):
+        ledger = os.path.join(self.project, 'data', 'history', 'capital_ledger.jsonl')
+        capital_ledger.register_corrective_close(
+            gross_realized_pnl='0.02760000', trading_fee='0.00212108',
+            net_realized_pnl='0.02547892', symbol='AMDUSDT', side='SHORT',
+            quantity='0.01', order_id='352126125', client_order_id='amd-cleanup',
+            exchange_trade_id='16670048', original_trade_id='short_AMD_1',
+            reason='precision_quantity_split_mismatch', timestamp='2026-07-25T20:29:47Z',
+            idempotency_key='amd-cleanup-352126125-16670048',
+            bot_version='v1.2-sizing-v2', position_zero_confirmed=True,
+            ledger_file=ledger)
+        report = audit_data_quality.AuditReport()
+        audit_data_quality._audit_capital_ledger(
+            ledger, capital_ledger.read_history(ledger), report, {'short_AMD_1'})
+        self.assertEqual([], report.errors)
+
+    def test_auditor_rejects_corrective_close_without_fee_pair(self):
+        ledger = os.path.join(self.project, 'data', 'history', 'capital_ledger.jsonl')
+        row = capital_ledger._movement_record(
+            capital_ledger.TYPE_REALIZED_PNL, 0.02547892,
+            source='exchange_confirmed_fill', timestamp='2026-07-25T20:29:47Z',
+            metadata={'classification': 'RESIDUAL_CLEANUP_CORRECTIVE_CLOSE',
+                      'idempotency_id': 'k', 'correction': True,
+                      'position_zero_confirmed': True, 'symbol': 'AMDUSDT',
+                      'side': 'SHORT', 'quantity': '0.01',
+                      'gross_realized_pnl': '0.02760000', 'trading_fee': '0.00212108',
+                      'net_realized_pnl': '0.02547892', 'order_id': '1',
+                      'client_order_id': 'c', 'exchange_trade_id': '2',
+                      'original_trade_id': 't', 'reason': 'x', 'source': 'exchange_confirmed_fill',
+                      'opening_bot_version': 'v1.2-sizing-v2'})
+        row['event_id'] = 'e1'
+        report = audit_data_quality.AuditReport()
+        audit_data_quality._audit_capital_ledger(ledger, [row], report, {'t'})
+        self.assertTrue(any('requiere un REALIZED_PNL y una COMMISSION' in item for item in report.errors))
 
 
 if __name__ == '__main__':

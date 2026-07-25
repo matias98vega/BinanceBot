@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import os
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 
 import history
@@ -26,6 +27,7 @@ TYPE_UNKNOWN_CAPITAL_FLOW = 'unknown_capital_flow'
 # REALIZED_PNL is already net of trading fees. COMMISSION is informational;
 # gross PnL requires a new schema/convention and explicit migration.
 ACCOUNTING_CONVENTION = 'realized_pnl_net_of_fees_plus_signed_funding'
+CORRECTIVE_CLOSE_CLASSIFICATION = 'RESIDUAL_CLEANUP_CORRECTIVE_CLOSE'
 
 SUPPORTED_TYPES = {
     TYPE_EXTERNAL_DEPOSIT,
@@ -274,3 +276,82 @@ def register_funding_fee(amount, asset='USDT', source='binance', description=Non
 def register_realized_pnl(amount, asset='USDT', source='bot', description=None,
                           reference_id=None, metadata=None, timestamp=None, ledger_file=DEFAULT_LEDGER_FILE):
     return record_movement(TYPE_REALIZED_PNL, amount, asset, source, description, reference_id, metadata, timestamp, ledger_file)
+
+
+def _decimal(value, field):
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        raise ValueError(f'{field} must be numeric') from exc
+
+
+def _matching_reference(ledger_file, reference_id):
+    return [row for row in read_history(ledger_file) if row.get('reference_id') == reference_id]
+
+
+def _validated_existing_reference(ledger_file, reference_id, movement_type, amount):
+    existing = _matching_reference(ledger_file, reference_id)
+    if not existing:
+        return None
+    if len(existing) != 1:
+        raise ValueError(f'duplicate corrective close reference_id={reference_id}')
+    row = existing[0]
+    if str(row.get('type') or '').lower() != movement_type or _decimal(row.get('amount'), 'existing amount') != amount:
+        raise ValueError(f'conflicting corrective close reference_id={reference_id}')
+    return row
+
+
+def register_corrective_close(*, gross_realized_pnl, trading_fee, net_realized_pnl,
+                              symbol, side, quantity, order_id, client_order_id,
+                              exchange_trade_id, original_trade_id, reason,
+                              timestamp, idempotency_key, bot_version,
+                              position_zero_confirmed, source='exchange_confirmed_fill',
+                              ledger_file=DEFAULT_LEDGER_FILE):
+    """Record one cleanup without creating a trade or subtracting its fee twice."""
+    gross = _decimal(gross_realized_pnl, 'gross_realized_pnl')
+    fee = _decimal(trading_fee, 'trading_fee')
+    net = _decimal(net_realized_pnl, 'net_realized_pnl')
+    qty = _decimal(quantity, 'quantity')
+    if fee < 0 or qty <= 0:
+        raise ValueError('trading_fee must be non-negative and quantity positive')
+    if gross - fee != net:
+        raise ValueError('net_realized_pnl must equal gross_realized_pnl - trading_fee')
+    if position_zero_confirmed is not True:
+        raise ValueError('corrective close requires position_zero_confirmed=true')
+    required = {'symbol': symbol, 'side': side, 'order_id': order_id,
+                'client_order_id': client_order_id, 'exchange_trade_id': exchange_trade_id,
+                'original_trade_id': original_trade_id, 'reason': reason,
+                'timestamp': timestamp, 'idempotency_key': idempotency_key,
+                'bot_version': bot_version}
+    missing = [key for key, value in required.items() if value in (None, '')]
+    if missing:
+        raise ValueError(f'corrective close missing fields: {missing}')
+    metadata = {
+        'classification': CORRECTIVE_CLOSE_CLASSIFICATION,
+        'correction': True, 'symbol': str(symbol).upper(), 'side': str(side).upper(),
+        'quantity': str(qty), 'gross_realized_pnl': str(gross),
+        'trading_fee': str(fee), 'net_realized_pnl': str(net),
+        'order_id': str(order_id), 'client_order_id': str(client_order_id),
+        'exchange_trade_id': str(exchange_trade_id),
+        'original_trade_id': str(original_trade_id), 'related_trade_id': str(original_trade_id),
+        'reason': str(reason), 'source': str(source), 'idempotency_id': str(idempotency_key),
+        'opening_bot_version': str(bot_version), 'position_zero_confirmed': True,
+    }
+    realized_reference = f'{idempotency_key}:realized_pnl'
+    fee_reference = f'{idempotency_key}:trading_fee'
+    existing_realized = _validated_existing_reference(ledger_file, realized_reference, TYPE_REALIZED_PNL, net)
+    existing_fee = _validated_existing_reference(ledger_file, fee_reference, TYPE_COMMISSION, fee)
+    realized = existing_realized or register_realized_pnl(
+        float(net), source=source,
+        description='Residual cleanup corrective close; realized PnL net of trading fee',
+        reference_id=realized_reference, metadata=metadata, timestamp=timestamp,
+        ledger_file=ledger_file)
+    commission = existing_fee or register_commission(
+        float(fee), source=source,
+        description='Residual cleanup corrective close; trading fee informational only',
+        reference_id=fee_reference, metadata=metadata, timestamp=timestamp,
+        ledger_file=ledger_file)
+    return {'classification': CORRECTIVE_CLOSE_CLASSIFICATION,
+            'idempotency_key': idempotency_key,
+            'already_recorded': bool(existing_realized and existing_fee),
+            'realized_pnl': realized, 'commission': commission}

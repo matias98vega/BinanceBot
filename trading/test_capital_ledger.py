@@ -169,6 +169,41 @@ class CapitalLedgerTests(unittest.TestCase):
         self.assertEqual(len(self._lines()), 1)
         self.assertEqual(first["accounting_convention"], "realized_pnl_net_of_fees_plus_signed_funding")
 
+    def test_corrective_close_is_idempotent_net_and_does_not_change_trade_counts(self):
+        kwargs = dict(
+            gross_realized_pnl='0.02760000', trading_fee='0.00212108',
+            net_realized_pnl='0.02547892', symbol='AMDUSDT', side='SHORT',
+            quantity='0.01', order_id='352126125',
+            client_order_id='amd-cleanup-1784951245-230ccfd',
+            exchange_trade_id='16670048', original_trade_id='short_AMD_1',
+            reason='precision_quantity_split_mismatch', timestamp='2026-07-25T20:29:47Z',
+            idempotency_key='amd-cleanup-352126125-16670048',
+            bot_version='v1.2-sizing-v2', position_zero_confirmed=True,
+            ledger_file=self.ledger_file)
+        before = analytics_engine._empty_stats()['general']
+        first = capital_ledger.register_corrective_close(**kwargs)
+        second = capital_ledger.register_corrective_close(**kwargs)
+        totals = capital_ledger.get_totals_by_type(ledger_file=self.ledger_file)
+
+        self.assertFalse(first['already_recorded'])
+        self.assertTrue(second['already_recorded'])
+        self.assertEqual(len(self._lines()), 2)
+        self.assertEqual(totals['realized_pnl'], 0.02547892)
+        self.assertEqual(totals['commission'], 0.00212108)
+        self.assertEqual(before['trades'], 0)
+        self.assertEqual(before['win_rate'], 0.0)
+
+    def test_corrective_close_rejects_double_fee_subtraction(self):
+        with self.assertRaisesRegex(ValueError, 'gross_realized_pnl - trading_fee'):
+            capital_ledger.register_corrective_close(
+                gross_realized_pnl='0.02760000', trading_fee='0.00212108',
+                net_realized_pnl='0.02335784', symbol='AMDUSDT', side='SHORT',
+                quantity='0.01', order_id='1', client_order_id='c1',
+                exchange_trade_id='2', original_trade_id='t1', reason='x',
+                timestamp='2026-07-25T20:29:47Z', idempotency_key='k1',
+                bot_version='v1.2-sizing-v2', position_zero_confirmed=True,
+                ledger_file=self.ledger_file)
+
 
 if __name__ == '__main__':
     unittest.main()

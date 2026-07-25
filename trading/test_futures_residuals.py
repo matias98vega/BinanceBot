@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
+from decimal import Decimal, ROUND_DOWN
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -11,6 +12,19 @@ import futures_residuals
 
 
 class FuturesResidualTests(unittest.TestCase):
+    def test_odd_partial_split_can_leave_confirmed_one_step_residual(self):
+        initial = Decimal('0.03')
+        step = Decimal('0.01')
+        partial = (initial * Decimal('0.5')).quantize(step, rounding=ROUND_DOWN)
+        local_remaining = (initial * Decimal('0.5')).quantize(step, rounding=ROUND_DOWN)
+        exchange_after_partial = initial - partial
+        exchange_after_local_close = exchange_after_partial - local_remaining
+
+        self.assertEqual(partial, Decimal('0.01'))
+        self.assertEqual(local_remaining, Decimal('0.01'))
+        self.assertEqual(exchange_after_partial, Decimal('0.02'))
+        self.assertEqual(exchange_after_local_close, Decimal('0.01'))
+
     def _client(self, symbol='SPCXUSDT', before_amt='-0.01', before_notional='-1.46',
                 after_amt='0', after_notional='0', open_orders=None):
         client = Mock()

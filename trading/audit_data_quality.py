@@ -941,10 +941,15 @@ def _audit_feature_records(path, records, report, trade_ids=None):
         report.recommendations.add('Revisar persistencia de market.regime en Feature Store.')
 
 
-def _audit_capital_ledger(path, records, report):
+def _audit_capital_ledger(path, records, report, closed_trade_ids=None):
     initials = [r for r in records if str(r.get('type') or '').lower() == 'initial_capital']
     if len(initials) > 1:
         report.error(path, f'INITIAL_CAPITAL duplicado: {len(initials)}')
+    event_ids = [str(r.get('event_id')) for r in records if r.get('event_id')]
+    if len(event_ids) != len(set(event_ids)):
+        report.error(path, 'event_id duplicado en capital ledger')
+    corrective = {}
+    identity_owners = {'order_id': {}, 'client_order_id': {}, 'exchange_trade_id': {}}
     for record in records:
         complete = True
         movement_type = str(record.get('type') or '').lower()
@@ -994,10 +999,54 @@ def _audit_capital_ledger(path, records, report):
             if metadata.get('pre_bootstrap_pnl_excluded') is not True:
                 report.error(path, 'INITIAL_CAPITAL no excluye PnL pre-bootstrap')
                 complete = False
+        metadata = record.get('metadata') if isinstance(record.get('metadata'), dict) else {}
+        if metadata.get('classification') == 'RESIDUAL_CLEANUP_CORRECTIVE_CLOSE':
+            key = str(metadata.get('idempotency_id') or '')
+            if not key:
+                report.error(path, 'corrective close sin idempotency_id')
+                complete = False
+            corrective.setdefault(key, []).append(record)
+            for field in identity_owners:
+                value = str(metadata.get(field) or '')
+                owner = identity_owners[field].get(value)
+                if value and owner not in (None, key):
+                    report.error(path, f'corrective close {field} repetido entre idempotency keys')
+                    complete = False
+                if value:
+                    identity_owners[field][value] = key
         if _has_sensitive_metadata(record.get('metadata')):
             report.error(path, 'metadata contiene datos sensibles')
             complete = False
         report.completeness(path, complete)
+    for key, group in corrective.items():
+        kinds = [str(row.get('type') or '').lower() for row in group]
+        if sorted(kinds) != ['commission', 'realized_pnl']:
+            report.error(path, f'corrective close {key} requiere un REALIZED_PNL y una COMMISSION')
+            continue
+        metadata = group[0].get('metadata') or {}
+        required = ('symbol', 'side', 'quantity', 'gross_realized_pnl', 'trading_fee',
+                    'net_realized_pnl', 'order_id', 'client_order_id', 'exchange_trade_id',
+                    'original_trade_id', 'reason', 'source', 'opening_bot_version')
+        missing = [field for field in required if metadata.get(field) in (None, '')]
+        if missing:
+            report.error(path, f'corrective close {key} metadata faltante: {missing}')
+        if metadata.get('correction') is not True or metadata.get('position_zero_confirmed') is not True:
+            report.error(path, f'corrective close {key} sin correction/position_zero_confirmed')
+        gross, fee, net = (metadata.get(name) for name in
+                           ('gross_realized_pnl', 'trading_fee', 'net_realized_pnl'))
+        if not all(_is_number(value) for value in (gross, fee, net)):
+            report.error(path, f'corrective close {key} PnL/fee invalido')
+        elif abs(float(gross) - float(fee) - float(net)) > 1e-8:
+            report.error(path, f'corrective close {key} gross-fee != net')
+        realized = next((row for row in group if row.get('type') == 'realized_pnl'), {})
+        commission = next((row for row in group if row.get('type') == 'commission'), {})
+        if _is_number(net) and abs(float(realized.get('amount', 0)) - float(net)) > 1e-8:
+            report.error(path, f'corrective close {key} REALIZED_PNL no coincide con neto')
+        if _is_number(fee) and abs(float(commission.get('amount', 0)) - float(fee)) > 1e-8:
+            report.error(path, f'corrective close {key} COMMISSION no coincide con fee')
+        original = str(metadata.get('original_trade_id') or '')
+        if closed_trade_ids is not None and original not in closed_trade_ids:
+            report.error(path, f'corrective close {key} trade original inexistente/no cerrado={original}')
 
 
 def _audit_bot_state(path, data, report):
@@ -1267,7 +1316,7 @@ def audit_project(project_dir=PROJECT_DIR):
 
     ledger_path = _project_path(history_dir, 'capital_ledger.jsonl')
     if ledger_path in history_records:
-        _audit_capital_ledger(ledger_path, history_records[ledger_path], report)
+        _audit_capital_ledger(ledger_path, history_records[ledger_path], report, closed_trade_ids)
     else:
         report.informational_warning(ledger_path, 'capital accounting incomplete: ledger no inicializado; PnL Trading y ROI Trading deben mostrarse N/A')
         report.recommendations.add('Capital accounting: ejecutar reconcile_capital_ledger.py --dry-run antes de un bootstrap explícito.')

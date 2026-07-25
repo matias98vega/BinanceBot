@@ -1,3 +1,7 @@
+# Corrective accounting event retention
+
+Capital-ledger corrective pairs and their Timeline/Operational evidence are append-only audit records. They follow the same retention and future multi-shard integrity rules as their parent datasets; they must not be compacted independently.
+
 # Archive and retention policy
 
 `data/history/pre_entry_gate_evidence.jsonl` is forward-only durable operational evidence. Keep at least 90 days hot and at least 12 months total. Do not delete evidence before ENFORCE activation and its post-activation review.

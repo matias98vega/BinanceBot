@@ -1,3 +1,9 @@
+# 2026-07-25 — AMD residual corrective accounting
+
+- Recorded the exchange-confirmed AMDUSDT 0.01 residual cleanup as idempotent REALIZED_PNL net of fee plus informational COMMISSION.
+- Preserved the original CLOSED trade and trade counts; added auditor and regression coverage for the 0.03 odd-step split.
+- No strategy, sizing, order payload, gate mode or bot version changed.
+
 # 2026-07-22 — Durable pre-entry gate evidence
 
 - Added forward-only sanitized GATE_EVALUATION/GATE_ENTRY_OUTCOME evidence with deterministic identity and Decimal metrics.

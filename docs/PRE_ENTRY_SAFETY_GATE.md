@@ -1,3 +1,7 @@
+# 2026-07-25 corrective incident note
+
+The AMDUSDT orphan/unprotected residual was closed by an authorized human operator and recorded separately as `RESIDUAL_CLEANUP_CORRECTIVE_CLOSE`. Gate evaluations were not rewritten; normal forward-only observations determine subsequent state.
+
 # Pre-entry state/exchange safety gate
 
 Versionado: `AUDIT_ONLY` es la capability no conductual `preentry-audit-v1`. Pasar a `ENFORCE` puede bloquear entradas y requiere otra `bot_version` aprobada; ver `VERSIONING_POLICY.md`. Ese cambio no está activo.
