@@ -172,10 +172,20 @@ class AnalyticsLogger:
             'status': 'CLOSED',
         }
         record.update({k: v for k, v in extra.items() if v is not None})
-        opening_version = self._opening_bot_version(trade_id)
-        if opening_version:
-            record['bot_version'] = opening_version
-        version_history.attach_version_metadata(record)
+        resolution = history.resolve_derived_trade_version(
+            trade_id,
+            event_context=record,
+            records=self._iter_records(),
+        )
+        history.attach_derived_trade_version(record, resolution)
+        if not resolution.get('resolved'):
+            import logging
+            logging.warning(
+                'analytics close version unresolved trade_id=%s classification=%s reason=%s',
+                trade_id,
+                resolution.get('classification'),
+                resolution.get('reason'),
+            )
 
         self._append(record)
         try:
@@ -193,10 +203,9 @@ class AnalyticsLogger:
         self._record_history_close(record, extra)
         return record
 
-    def _opening_bot_version(self, trade_id):
-        base_id = str(trade_id or '').removesuffix(':partial')
-        if not base_id or not os.path.exists(self.path):
-            return None
+    def _iter_records(self):
+        if not os.path.exists(self.path):
+            return
         try:
             with open(self.path, encoding='utf-8') as stream:
                 for line in stream:
@@ -204,11 +213,10 @@ class AnalyticsLogger:
                         row = json.loads(line)
                     except (json.JSONDecodeError, TypeError):
                         continue
-                    if row.get('trade_id') == base_id and row.get('status') == 'OPEN':
-                        return row.get('bot_version')
+                    if isinstance(row, dict):
+                        yield row
         except OSError:
-            return None
-        return None
+            return
 
     def log_event(self, event_type, **fields):
         record = {
@@ -370,6 +378,7 @@ class AnalyticsLogger:
                 exit_reason=record.get('exit_reason'),
                 pnl_usdt=record.get('pnl_usdt'),
                 fees=extra.get('fees') if isinstance(extra, dict) else None,
+                bot_version=record.get('bot_version'),
             )
             try:
                 import analytics_engine
@@ -385,6 +394,7 @@ class AnalyticsLogger:
                     'pnl_usdt': record.get('pnl_usdt'),
                     'pnl_pct': record.get('pnl_pct'),
                     'duration_minutes': record.get('duration_minutes'),
+                    'bot_version': record.get('bot_version'),
                     'status': 'CLOSED',
                     'result': 'WIN' if (record.get('pnl_usdt') or 0) > 0 else 'LOSS' if (record.get('pnl_usdt') or 0) < 0 else 'BREAKEVEN',
                 })

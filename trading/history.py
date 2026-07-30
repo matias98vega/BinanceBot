@@ -121,6 +121,96 @@ def _bot_version():
     return version_history.current_version()
 
 
+def base_trade_id(trade_id):
+    """Return the opening trade id for a derived close or partial event."""
+    return str(trade_id or '').removesuffix(':partial')
+
+
+def resolve_derived_trade_version(
+    trade_id,
+    *,
+    event_context=None,
+    trade_context=None,
+    records=None,
+    trades_file=None,
+):
+    """Resolve a derived event version without falling back to runtime metadata.
+
+    An explicit event version is already canonical context and is preserved.  If
+    it is absent, the version must come from the exact base trade context or its
+    persisted opening event.  Missing evidence is returned explicitly instead
+    of being silently labelled with the currently deployed bot version.
+    """
+    base_id = base_trade_id(trade_id)
+    for source, context in (
+        ('event_context', event_context),
+        ('trade_context', trade_context),
+    ):
+        if isinstance(context, dict) and context.get('bot_version'):
+            return {
+                'resolved': True,
+                'bot_version': context['bot_version'],
+                'source': source,
+                'base_trade_id': base_id,
+            }
+
+    candidates = records
+    if candidates is None and trades_file:
+        candidates = _iter_version_records(trades_file)
+    for row in candidates or ():
+        if not isinstance(row, dict) or row.get('trade_id') != base_id:
+            continue
+        if row.get('event_type') == 'TRADE_OPEN' or row.get('status') == 'OPEN':
+            if row.get('bot_version'):
+                return {
+                    'resolved': True,
+                    'bot_version': row['bot_version'],
+                    'source': 'opening_event',
+                    'base_trade_id': base_id,
+                }
+
+    return {
+        'resolved': False,
+        'classification': 'UNRESOLVED_DERIVED_EVENT_VERSION',
+        'reason': 'exact_opening_version_not_found',
+        'base_trade_id': base_id,
+    }
+
+
+def attach_derived_trade_version(record, resolution):
+    """Attach canonical close metadata while excluding runtime bot fallback."""
+    if resolution.get('resolved'):
+        if not record.get('bot_version'):
+            record['bot_version'] = resolution['bot_version']
+    else:
+        record.pop('bot_version', None)
+        record['bot_version_resolution'] = {
+            key: resolution[key]
+            for key in ('classification', 'reason', 'base_trade_id')
+            if resolution.get(key) is not None
+        }
+    metadata = version_history.get_current_version_metadata()
+    record.setdefault('strategy_version', metadata['strategy_version'])
+    record.setdefault('data_schema_version', metadata['data_schema_version'])
+    return record
+
+
+def _iter_version_records(path):
+    if not path or not os.path.exists(path):
+        return
+    try:
+        with open(path, encoding='utf-8') as stream:
+            for line in stream:
+                try:
+                    row = json.loads(line)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if isinstance(row, dict):
+                    yield row
+    except OSError:
+        return
+
+
 class HistoryStore:
     def __init__(self, trades_file=DEFAULT_TRADES_FILE, decisions_file=DEFAULT_DECISIONS_FILE,
                  snapshots_file=DEFAULT_SNAPSHOTS_FILE, timeline_recorder=None):
@@ -210,6 +300,7 @@ class HistoryStore:
         side=None,
         symbol=None,
         fees=None,
+        bot_version=None,
         extra=None,
     ):
         closed_iso = _iso(closed_at)
@@ -236,7 +327,19 @@ class HistoryStore:
         }
         if isinstance(extra, dict):
             record['extra'] = extra
-        version_history.attach_version_metadata(record)
+        resolution = resolve_derived_trade_version(
+            trade_id,
+            event_context={'bot_version': bot_version} if bot_version else None,
+            trades_file=self.trades_file,
+        )
+        attach_derived_trade_version(record, resolution)
+        if not resolution.get('resolved'):
+            logging.warning(
+                'history close version unresolved trade_id=%s classification=%s reason=%s',
+                trade_id,
+                resolution.get('classification'),
+                resolution.get('reason'),
+            )
         self._append(self.trades_file, record)
         self.timeline_recorder.record_event(
             'history_trade_close',
