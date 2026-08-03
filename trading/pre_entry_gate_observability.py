@@ -32,7 +32,9 @@ def evaluate_and_record(*, local_state, cycle_id=None, evidence_context=None, **
     try:
         context = pre_entry_gate_evidence.cached_observation_context(
             local_state, (evidence_context or {}).get('mark_prices'))
-        pre_entry_gate_evidence.capture_evaluation(result, local_state, cycle_id=cycle_id, context=context)
+        capture = pre_entry_gate_evidence.capture_evaluation(result, local_state, cycle_id=cycle_id, context=context)
+        if isinstance(capture.get('shadow_v2'), dict):
+            result = {**result, 'shadow_v2': capture['shadow_v2']}
     except Exception as exc:
         logging.warning('pre-entry evidence observation failed: %s', exc)
     record_result(result, local_state, cycle_id=cycle_id)

@@ -131,4 +131,24 @@ Políticas observacionales: `CURRENT`, `STEP_ONLY`, `RELATIVE_ONLY`, `NOTIONAL_O
 
 `enforce_relevant_evaluation` exige candidato en pre-entry, evaluación completa y capacidad/reconciliación aptas. `false_block_rate` divide falsos positivos shadow entre evaluaciones bloqueantes enforce-relevant; no incluye ciclos sin candidato, gestión, Telegram ni heartbeats. Con menos de 30 evaluaciones se informa muestra baja.
 
-ENFORCE continúa bloqueado. Repetir revisión tras 24–48 horas adicionales con casos SAFE y representación técnica y real de LONG/SHORT.
+### Shadow step/dust v2
+
+`preentry-tolerance-shadow-v2` es una evaluación aditiva, pura y observacional. Se persiste dentro de nuevos `GATE_EVALUATION` sin elevar el schema general 1, no reescribe registros previos y el analyzer reproduce filas v1 que todavía no tienen esa sección. Las políticas shadow v1 continúan presentes.
+
+V2 clasifica `SAFE_NON_OPERABLE_DUST` solamente para un mismatch de posición LONG gestionada y protegida, con observación completa/fresca, sin fallback, orphan, unknown order ni riesgo de reconciliación, cantidades signed finitas y mismo signo, filtros positivos y precio auditable. Con Decimal exige simultáneamente:
+
+```text
+difference = abs(exchange_quantity - local_quantity)
+conservative_price = max(precios positivos y frescos persistidos)
+difference_notional = max(notional persistido válido, difference * conservative_price)
+difference < step_size
+difference < min_qty
+difference_notional < minimum_notional
+difference_notional <= 0.50 USDT
+```
+
+Igualar un step o `minQty` bloquea. Un mismatch de posición SHORT usa `BLOCK_UNVALIDATED_SIDE`; esto no impide que un candidato SHORT coexista con dust LONG seguro. Datos faltantes, stale, ambiguos o inválidos fallan cerrados. Los reasons tienen orden estable y cubren evidencia incompleta, filtros/precio, side, protección, reconciliación, operabilidad, step, cap y acumulación observacional. Si hay varios mismatches, todos deben ser seguros.
+
+`GATE_ENTRY_OUTCOME` futuro conserva decisión CURRENT, decisión v2 y `outcome_reason=null` cuando el pipeline no conoce la causa; no inventa una causa ni modifica la apertura. La metadata de acumulación es nullable y nunca suma repetidamente el mismo residual.
+
+La captura v2 puede retirarse sin tocar CURRENT. `pre_entry_safety_gate.py` no importa v2 y `safe_to_enter`, `entry_allowed`, tolerancias y modo continúan sin cambios. Revisar shadow v2 durante al menos 28 días y 300 casos completos, con balance LONG/SHORT y casos de frontera. ENFORCE continúa bloqueado y requiere evaluación, versión conductual y rollback separados.

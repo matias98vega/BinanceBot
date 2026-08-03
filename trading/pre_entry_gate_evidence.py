@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 import pre_entry_tolerance_shadow
+import pre_entry_tolerance_shadow_v2
 import version_history
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -81,6 +82,20 @@ def _mismatch_record(item, result, local_state, context):
         'position_managed': bool(positions), 'position_protected': protected_check.get('passed') is True,
         'protection_type': 'OCO' if side == 'LONG' and protected_check.get('passed') is True else 'REDUCE_ONLY' if side == 'SHORT' and protected_check.get('passed') is True else None,
         'current_quantity_tolerance': _canonical_decimal(effective),
+        'candidate_side': result.get('side'),
+        'fallback_used': False,
+        'price_sources': [{
+            'source': 'POSITION_MANAGEMENT_CURRENT_PRICE',
+            'price': _canonical_decimal(price),
+            'timestamp': result.get('observed_at'),
+            'age_seconds': _canonical_decimal((result.get('freshness') or {}).get('age_seconds')),
+            'fresh': (result.get('freshness') or {}).get('exchange') == 'FRESH',
+        }] if price is not None else [],
+        'accumulated_dust': {
+            'first_seen_at': None, 'last_seen_at': None, 'observation_count': None,
+            'current_difference': _canonical_decimal(absolute),
+            'max_observed_difference': None, 'reconciliation_count': None,
+        },
     }
     evidence.update({
         'exchange_state_complete': _check(result, 'EXCHANGE_READ_COMPLETE').get('passed') is True,
@@ -104,6 +119,7 @@ def build_evaluation(result, local_state, cycle_id=None, context=None):
     exchange_complete = _check(result, 'EXCHANGE_READ_COMPLETE').get('passed') is True
     local_valid = _check(result, 'LOCAL_STATE_VALID').get('passed') is True
     relevant = capacity.get('passed') is True and reconciliation.get('passed') is True
+    mismatch_records = [_mismatch_record(item, result, local_state or {}, context or {}) for item in mismatches]
     record = {
         'evidence_schema_version': EVIDENCE_SCHEMA_VERSION,
         'evidence_capture_version': EVIDENCE_CAPTURE_VERSION,
@@ -122,7 +138,7 @@ def build_evaluation(result, local_state, cycle_id=None, context=None):
         'evaluation_duration_ms': _canonical_decimal(result.get('duration_ms')),
         'exchange_state_complete': exchange_complete, 'local_state_valid': local_valid,
         'data_source': result.get('source'), 'fallback_used': False,
-        'mismatches': [_mismatch_record(item, result, local_state or {}, context or {}) for item in mismatches],
+        'mismatches': mismatch_records,
         'orphan_detected': orphan, 'unknown_order_detected': unknown,
         'position_protected': protected,
         'reconciliation_blocked': reconciliation.get('passed') is False,
@@ -136,11 +152,13 @@ def build_evaluation(result, local_state, cycle_id=None, context=None):
         'trade_opened_after_evaluation': None, 'opened_trade_id': None, 'opened_timestamp': None,
         'seconds_to_open': None, 'opened_same_symbol': None, 'opened_same_side': None,
     }
+    record['shadow_v2'] = pre_entry_tolerance_shadow_v2.evaluate_evidence_record(record)
     return record
 
 
 def build_outcome(result, position, cycle_id=None, opened_at=None):
     opened = isinstance(position, dict) and bool(position.get('id'))
+    shadow_v2 = result.get('shadow_v2') if isinstance(result.get('shadow_v2'), dict) else {}
     evaluation_ts = result.get('observed_at')
     opened_at = opened_at or (_iso(position.get('entry_time')) if opened and isinstance(position.get('entry_time'), str) else _iso() if opened else None)
     seconds = None
@@ -155,6 +173,11 @@ def build_outcome(result, position, cycle_id=None, opened_at=None):
         'event_type': 'GATE_ENTRY_OUTCOME', 'timestamp': _iso(), 'cycle_id': cycle_id,
         'bot_version': version_history.current_version(), 'strategy_version': version_history.STRATEGY_VERSION,
         'evaluation_id': evaluation_id(result, cycle_id), 'trade_opened': opened,
+        'current_decision': result.get('status'),
+        'shadow_v2_decision': shadow_v2.get('decision'),
+        'shadow_v2_policy_version': shadow_v2.get('policy_version'),
+        'outcome_reason': None,
+        'candidate_side': result.get('side'),
         'trade_id': position.get('id') if opened else None,
         'symbol': position.get('symbol') if opened else result.get('symbol'),
         'side': str(position.get('direction') or '').upper() if opened else result.get('side'),
@@ -193,7 +216,8 @@ def append_record(record, path=None):
 
 def capture_evaluation(result, local_state, cycle_id=None, context=None, path=None):
     try:
-        return append_record(build_evaluation(result, local_state, cycle_id, context), path)
+        record = build_evaluation(result, local_state, cycle_id, context)
+        return {**append_record(record, path), 'shadow_v2': record.get('shadow_v2')}
     except Exception as exc:
         logging.warning('pre-entry evidence persistence failed: %s', exc)
         return {'written': False, 'error': str(exc)}

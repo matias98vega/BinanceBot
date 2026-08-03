@@ -54,3 +54,5 @@ Validate read-only with `python trading/check_version_consistency.py [--json|--e
 ## Durable pre-entry evidence epoch
 
 `preentry-evidence-v1` succeeds `preentry-audit-v1` as non-behavioral observability. It does not affect trade selection, management, accounting or ML datasets and does not change `bot_version`, `strategy_version` or feature schemas. Candidate tolerance policies remain offline; connecting one to `safe_to_enter` or `entry_allowed` would be behavioral and requires separate authorization and versioning.
+
+`preentry-tolerance-shadow-v2` is also non-behavioral while its result is only appended to evidence and replayed by read-only analysis. Its policy version is the additive identity; runtime remains `v1.3-partial-quantity-fix`. A registry capability should be added only with a truthful introducing commit, never by pointing at a prior unrelated commit. Feeding v2 into CURRENT, `safe_to_enter` or `entry_allowed` remains a behavioral change requiring separate approval and bot versioning.
