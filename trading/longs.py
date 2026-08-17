@@ -144,6 +144,10 @@ def open_long(candidate, state, max_longs=None, pre_entry_gate_result=None):
     except Exception as e:
         return None, f'Error filtros {sym}: {e}'
 
+    spot_status = str(filters.get('status') or '').strip().upper()
+    if spot_status != 'TRADING':
+        return None, f'SPOT_SYMBOL_NOT_TRADING: {sym} status={spot_status or "UNKNOWN"}'
+
     price = BINANCE.get_spot_price(sym)
     qty   = utils.round_step(capital / price, step)
 
@@ -177,7 +181,9 @@ def open_long(candidate, state, max_longs=None, pre_entry_gate_result=None):
     # Compra MARKET (con backoff ante errores transitorios de API)
     buy = None
     last_err = None
+    attempts = 0
     for _attempt in range(4):
+        attempts = _attempt + 1
         params = {
             'symbol':   sym,
             'side':     'BUY',
@@ -190,16 +196,19 @@ def open_long(candidate, state, max_longs=None, pre_entry_gate_result=None):
             decision_timeline.record_order_event('order_opened', sym, 'LONG', f'LONG {sym} buy filled', details=buy)
             break  # éxito
         except Exception as e:
-            if hasattr(e, 'code'):
+            if hasattr(e, 'code') or hasattr(e, 'status'):
                 utils.log_binance_http_error('spot market buy', sym, 'BUY', 'MARKET', params, e)
             last_err = e
+            if not utils.is_retryable_binance_error(e):
+                break
             if _attempt < 3:
                 _delay = 10 * (2 ** _attempt)  # 10s, 20s, 40s
                 import logging
                 logging.warning(f'LONG {sym}: intento {_attempt+1} fallido ({e}), reintentando en {_delay}s')
                 time.sleep(_delay)
     if buy is None:
-        return None, f'Error al comprar {sym} tras 4 intentos: {last_err}'
+        label = 'intento' if attempts == 1 else 'intentos'
+        return None, f'Error al comprar {sym} tras {attempts} {label}: {utils.format_binance_error_for_user(last_err)}'
 
     # Precio real de fill
     exec_qty = float(buy.get('executedQty', qty))

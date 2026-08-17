@@ -28,6 +28,10 @@ def format_cycle_summary(long_count, max_longs, short_count, max_shorts,
     )
 
 
+def format_open_failure_alert(direction, symbol, message):
+    return f'⚠️ FALLÓ apertura {str(direction).upper()} {symbol}: {message}'
+
+
 def should_skip_lifecycle_after_residual_cleanup(pos):
     return bool((pos or {}).get('closed_by_residual_cleanup'))
 
@@ -406,7 +410,7 @@ class CycleRunner:
                     utils.send_alert(utils.format_trade_open_alert(pos, best_long, btc_ctx.get('trend')))
                 else:
                     self.out(f'âš ï¸ LONG no abierto: {msg}')
-                    utils.send_alert(f'⚠️ FALLÓ apertura LONG {best_long["symbol"]}: {msg}')
+                    utils.send_alert(format_open_failure_alert('LONG', best_long['symbol'], msg))
                     # Log detallado para debugging
                     import logging
                     logging.error(f'LONG fallido {best_long["symbol"]}: {msg}')
@@ -474,7 +478,7 @@ class CycleRunner:
                     utils.send_alert(utils.format_trade_open_alert(pos, best_short, btc_ctx.get('trend')))
                 else:
                     self.out(f'âš ï¸ SHORT no abierto: {msg}')
-                    utils.send_alert(f'⚠️ FALLÓ apertura SHORT {best_short["symbol"]}: {msg}')
+                    utils.send_alert(format_open_failure_alert('SHORT', best_short['symbol'], msg))
                     # Log detallado para debugging
                     import logging
                     logging.error(f'SHORT fallido {best_short["symbol"]}: {msg}')

@@ -623,7 +623,7 @@ class TelegramStatsTests(unittest.TestCase):
              patch.object(telegram_commands, '_server_uptime', return_value='N/A'):
             text = telegram_commands._render_page('system')['text']
 
-        self.assertIn('Bot version: v1.3-partial-quantity-fix', text)
+        self.assertIn('Bot version: v1.4-spot-market-status-guard', text)
         self.assertIn('Strategy version: current', text)
         self.assertIn('Schema version: v1', text)
 

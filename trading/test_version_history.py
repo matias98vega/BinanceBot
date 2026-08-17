@@ -20,19 +20,19 @@ import version_history
 
 class VersionHistoryTests(unittest.TestCase):
     def test_current_version_reads_version_file(self):
-        self.assertEqual('v1.3-partial-quantity-fix', version_history.current_version())
+        self.assertEqual('v1.4-spot-market-status-guard', version_history.current_version())
 
     def test_history_exposes_schema_current_and_versions(self):
         payload = version_history.get_version_history()
 
         self.assertEqual(1, payload['schema_version'])
-        self.assertEqual('v1.3-partial-quantity-fix', payload['current_version'])
+        self.assertEqual('v1.4-spot-market-status-guard', payload['current_version'])
         self.assertTrue(payload['versions'])
 
     def test_current_version_metadata(self):
         self.assertEqual(
             {
-                'bot_version': 'v1.3-partial-quantity-fix',
+                'bot_version': 'v1.4-spot-market-status-guard',
                 'strategy_version': 'current',
                 'data_schema_version': 'v1',
             },
@@ -45,7 +45,7 @@ class VersionHistoryTests(unittest.TestCase):
         result = version_history.attach_version_metadata(record)
 
         self.assertIs(result, record)
-        self.assertEqual('v1.3-partial-quantity-fix', record['bot_version'])
+        self.assertEqual('v1.4-spot-market-status-guard', record['bot_version'])
         self.assertEqual('current', record['strategy_version'])
         self.assertEqual('v1', record['data_schema_version'])
         self.assertTrue(version_history.has_top_level_version_metadata(record))
@@ -64,7 +64,7 @@ class VersionHistoryTests(unittest.TestCase):
 
         version_history.attach_version_metadata(record, overwrite=True)
 
-        self.assertEqual('v1.3-partial-quantity-fix', record['bot_version'])
+        self.assertEqual('v1.4-spot-market-status-guard', record['bot_version'])
         self.assertEqual('current', record['strategy_version'])
         self.assertEqual('v1', record['data_schema_version'])
 
@@ -106,7 +106,7 @@ class VersionHistoryTests(unittest.TestCase):
         with patch.object(bot_state, 'get_system_statuses', return_value={'bot': 'UNKNOWN', 'guardian': 'UNKNOWN', 'dashboard': 'UNKNOWN'}):
             payload = bot_state.build_bot_state(state={'positions': []}, btc_ctx={'trend': 'neutral'})
 
-        self.assertEqual('v1.3-partial-quantity-fix', payload['bot_version'])
+        self.assertEqual('v1.4-spot-market-status-guard', payload['bot_version'])
         self.assertEqual('current', payload['strategy_version'])
         self.assertEqual('v1', payload['data_schema_version'])
 
@@ -119,7 +119,7 @@ class VersionHistoryTests(unittest.TestCase):
             with open(path, encoding='utf-8') as f:
                 data = json.load(f)
 
-        self.assertEqual('v1.3-partial-quantity-fix', data.get('bot_version'))
+        self.assertEqual('v1.4-spot-market-status-guard', data.get('bot_version'))
         self.assertEqual('current', data.get('strategy_version'))
         self.assertEqual('v1', data.get('data_schema_version'))
         self.assertTrue(version_history.has_top_level_version_metadata(data))
@@ -240,10 +240,10 @@ class VersionHistoryTests(unittest.TestCase):
             with open(path, encoding='utf-8') as f:
                 persisted = json.loads(f.readline())
 
-        self.assertEqual('v1.3-partial-quantity-fix', record['bot_version'])
+        self.assertEqual('v1.4-spot-market-status-guard', record['bot_version'])
         self.assertEqual('current', record['strategy_version'])
         self.assertEqual('v1', record['data_schema_version'])
-        self.assertEqual('v1.3-partial-quantity-fix', persisted.get('bot_version'))
+        self.assertEqual('v1.4-spot-market-status-guard', persisted.get('bot_version'))
         self.assertTrue(version_history.has_top_level_version_metadata(persisted))
 
     def test_history_trade_records_include_metadata(self):
@@ -258,10 +258,10 @@ class VersionHistoryTests(unittest.TestCase):
             with open(store.trades_file, encoding='utf-8') as f:
                 persisted = json.loads(f.readline())
 
-        self.assertEqual('v1.3-partial-quantity-fix', record['bot_version'])
+        self.assertEqual('v1.4-spot-market-status-guard', record['bot_version'])
         self.assertEqual('current', record['strategy_version'])
         self.assertEqual('v1', record['data_schema_version'])
-        self.assertEqual('v1.3-partial-quantity-fix', persisted.get('bot_version'))
+        self.assertEqual('v1.4-spot-market-status-guard', persisted.get('bot_version'))
         self.assertTrue(version_history.has_top_level_version_metadata(persisted))
 
     def test_analytics_trade_record_includes_metadata(self):
@@ -275,17 +275,17 @@ class VersionHistoryTests(unittest.TestCase):
             with open(logger.path, encoding='utf-8') as f:
                 persisted = json.loads(f.readline())
 
-        self.assertEqual('v1.3-partial-quantity-fix', record['bot_version'])
+        self.assertEqual('v1.4-spot-market-status-guard', record['bot_version'])
         self.assertEqual('current', record['strategy_version'])
         self.assertEqual('v1', record['data_schema_version'])
-        self.assertEqual('v1.3-partial-quantity-fix', persisted.get('bot_version'))
+        self.assertEqual('v1.4-spot-market-status-guard', persisted.get('bot_version'))
         self.assertTrue(version_history.has_top_level_version_metadata(persisted))
 
     def test_feature_record_includes_metadata(self):
         record = feature_store._record_from_kwargs({'trade_id': 't1', 'symbol': 'ETHUSDT', 'side': 'LONG'})
 
-        self.assertEqual('v1.3-partial-quantity-fix', record['bot_version'])
-        self.assertEqual('v1.3-partial-quantity-fix', record['identification']['bot_version'])
+        self.assertEqual('v1.4-spot-market-status-guard', record['bot_version'])
+        self.assertEqual('v1.4-spot-market-status-guard', record['identification']['bot_version'])
         self.assertEqual('v1', record['data_schema_version'])
 
     def test_feature_writer_persists_top_level_metadata(self):
@@ -300,8 +300,8 @@ class VersionHistoryTests(unittest.TestCase):
             with open(path, encoding='utf-8') as f:
                 persisted = json.loads(f.readline())
 
-        self.assertEqual('v1.3-partial-quantity-fix', record['bot_version'])
-        self.assertEqual('v1.3-partial-quantity-fix', persisted.get('bot_version'))
+        self.assertEqual('v1.4-spot-market-status-guard', record['bot_version'])
+        self.assertEqual('v1.4-spot-market-status-guard', persisted.get('bot_version'))
         self.assertTrue(version_history.has_top_level_version_metadata(persisted))
 
     def test_futures_reconciliation_status_includes_metadata(self):
@@ -311,10 +311,10 @@ class VersionHistoryTests(unittest.TestCase):
             with open(path, encoding='utf-8') as f:
                 data = json.load(f)
 
-        self.assertEqual('v1.3-partial-quantity-fix', payload['bot_version'])
+        self.assertEqual('v1.4-spot-market-status-guard', payload['bot_version'])
         self.assertEqual('current', payload['strategy_version'])
         self.assertEqual('v1', payload['data_schema_version'])
-        self.assertEqual('v1.3-partial-quantity-fix', data.get('bot_version'))
+        self.assertEqual('v1.4-spot-market-status-guard', data.get('bot_version'))
         self.assertEqual('current', data.get('strategy_version'))
         self.assertEqual('v1', data.get('data_schema_version'))
         self.assertTrue(version_history.has_top_level_version_metadata(data))
@@ -325,7 +325,7 @@ class VersionHistoryTests(unittest.TestCase):
             residuals.classify_unprotectable_residual('SOLUSDT', 'SOL', 0.1, 1.0, 5.0, path=path)
             data = residuals.load_status(path)
 
-        self.assertEqual('v1.3-partial-quantity-fix', data['bot_version'])
+        self.assertEqual('v1.4-spot-market-status-guard', data['bot_version'])
         self.assertEqual('current', data['strategy_version'])
         self.assertEqual('v1', data['data_schema_version'])
         self.assertTrue(version_history.has_top_level_version_metadata(data))

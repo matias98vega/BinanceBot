@@ -39,7 +39,7 @@ def extract_http_error_details(http_err):
         'raw_body': raw_body[:1000] if raw_body else '',
         'endpoint': getattr(http_err, 'binance_endpoint', None),
         'method': getattr(http_err, 'binance_method', None),
-        'payload': getattr(http_err, 'binance_payload', None),
+        'payload': safe_order_context(getattr(http_err, 'binance_payload', None) or {}),
     }
     if raw_body:
         try:
@@ -49,6 +49,10 @@ def extract_http_error_details(http_err):
                 details['msg'] = data.get('msg')
         except Exception:
             pass
+    context = safe_order_context(details.get('payload') or {})
+    details['context'] = context
+    details['classification'] = interpret_binance_error(details, context)
+    details['retryable'] = is_retryable_binance_details(details)
     return details
 
 
@@ -63,23 +67,72 @@ def interpret_binance_error(details, params=None):
     code = details.get('code') if isinstance(details, dict) else None
     msg = str((details or {}).get('msg') or (details or {}).get('raw_body') or '').lower()
     params = params if isinstance(params, dict) else {}
-    if code in (-1013, -1111) or 'lot_size' in msg or 'step size' in msg or 'quantity' in msg:
-        return 'LOT_SIZE/precision/quantity'
-    if 'price_filter' in msg or 'tick size' in msg or 'price' in msg and params.get('price'):
-        return 'PRICE_FILTER/price precision'
+    if 'market is closed' in msg:
+        return 'MARKET_CLOSED'
+    if 'lot_size' in msg or 'step size' in msg:
+        return 'LOT_SIZE/FILTER'
     if 'min_notional' in msg or 'notional' in msg:
-        return 'MIN_NOTIONAL'
-    if 'would immediately trigger' in msg or 'stop' in msg and params.get('stopPrice'):
-        return 'STOP_PRICE would trigger / invalid stop'
-    if 'reduceonly' in msg or 'reduce only' in msg:
-        return 'reduceOnly conflict'
+        return 'MIN_NOTIONAL/FILTER'
+    if 'precision' in msg or code == -1111:
+        return 'PRECISION/QUANTITY'
+    if 'invalid quantity' in msg or 'quantity' in msg:
+        return 'INVALID_QUANTITY'
+    if 'invalid symbol' in msg or code == -1121:
+        return 'INVALID_SYMBOL'
     if 'insufficient' in msg or code == -2019:
-        return 'insufficient balance/margin'
+        return 'INSUFFICIENT_BALANCE'
+    if 'mandatory parameter' in msg or 'invalid parameter' in msg or code in (-1100, -1102):
+        return 'INVALID_PARAMS'
+    if 'price_filter' in msg or 'tick size' in msg or 'price' in msg and params.get('price'):
+        return 'PRICE_FILTER/PRICE_PRECISION'
+    if 'would immediately trigger' in msg or 'stop' in msg and params.get('stopPrice'):
+        return 'STOP_PRICE_INVALID'
+    if 'reduceonly' in msg or 'reduce only' in msg:
+        return 'REDUCE_ONLY_CONFLICT'
     if 'position' in msg:
-        return 'position state/conflict'
+        return 'POSITION_STATE_CONFLICT'
+    if code == -1013:
+        return 'ORDER_FILTER'
     if code in (-2010, -2021):
-        return 'order rejected by Binance filters'
-    return 'unknown'
+        return 'ORDER_REJECTED'
+    status = details.get('status') if isinstance(details, dict) else None
+    if status in (418, 429):
+        return 'RATE_LIMIT'
+    if isinstance(status, int) and 500 <= status <= 599:
+        return 'SERVER_ERROR'
+    return 'UNKNOWN'
+
+
+def is_retryable_binance_details(details):
+    """Only rate limits and server failures are retryable HTTP outcomes."""
+    if not isinstance(details, dict):
+        return False
+    status = details.get('status')
+    try:
+        status = int(status) if status is not None else None
+    except (TypeError, ValueError):
+        status = None
+    return status in (418, 429) or (status is not None and 500 <= status <= 599)
+
+
+def is_retryable_binance_error(error):
+    """Classify retryability without treating deterministic Binance 4xx as transient."""
+    details = extract_http_error_details(error)
+    if details.get('status') is not None or details.get('code') is not None or details.get('msg'):
+        return bool(details.get('retryable'))
+    return isinstance(error, (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError))
+
+
+def format_binance_error_for_user(error):
+    """Return sanitized Binance code/message for operator-facing failure alerts."""
+    details = extract_http_error_details(error)
+    code, msg, status = details.get('code'), details.get('msg'), details.get('status')
+    if code is not None or msg:
+        label = f'Binance {code if code is not None else "?"}: {msg or "Unknown error"}'
+        return f'{label} (HTTP {status})' if status is not None else label
+    if status is not None:
+        return f'HTTP {status}: {details.get("reason") or str(error)}'
+    return str(error)
 
 
 def log_binance_http_error(operation, symbol=None, side=None, order_type=None, params=None, error=None):
@@ -329,14 +382,26 @@ def get_spot_filters(symbol):
     if symbol not in _spot_info_cache:
         _spot_info_cache[symbol] = spot_public('/api/v3/exchangeInfo', {'symbol': symbol})
     info = _spot_info_cache[symbol]
-    filters = info['symbols'][0]['filters']
-    result = {}
+    symbol_info = info['symbols'][0]
+    filters = symbol_info['filters']
+    result = {
+        'status': symbol_info.get('status'),
+        'base_asset_precision': symbol_info.get('baseAssetPrecision'),
+        'quote_precision': symbol_info.get('quotePrecision'),
+    }
     for f in filters:
         if f['filterType'] == 'LOT_SIZE':
             result['step_size'] = float(f['stepSize'])
             result['min_qty']   = float(f['minQty'])
+            result['max_qty']   = float(f['maxQty'])
+        if f['filterType'] == 'MARKET_LOT_SIZE':
+            result['market_step_size'] = float(f['stepSize'])
+            result['market_min_qty']   = float(f['minQty'])
+            result['market_max_qty']   = float(f['maxQty'])
         if f['filterType'] in ('MIN_NOTIONAL', 'NOTIONAL'):
             result['min_notional'] = float(f.get('minNotional', f.get('notional', 5)))
+            if f.get('maxNotional') not in (None, ''):
+                result['max_notional'] = float(f['maxNotional'])
         if f['filterType'] == 'PRICE_FILTER':
             result['tick_size'] = float(f['tickSize'])
     return result

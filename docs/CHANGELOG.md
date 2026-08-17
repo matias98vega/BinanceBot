@@ -1,3 +1,11 @@
+# 2026-08-17 — Spot market status guard v1.4
+
+- New runtime `v1.4-spot-market-status-guard`; existing trades retain their opening version.
+- Spot Long rejects symbols whose exchange status is not `TRADING` before any order POST.
+- Deterministic Binance 4xx order errors are not retried; transient rate-limit, server and network failures keep bounded retries.
+- Binance error alerts retain sanitized code/message context without credentials or signatures.
+- No strategy, scoring, sizing, TP/SL, Guardian, SHORT or historical-data changes.
+
 # 2026-07-25 — Partial quantity integrity v1.3
 
 - SHORT partials use Decimal, symbol stepSize and confirmed executedQty; remaining is exact subtraction.

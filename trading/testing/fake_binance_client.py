@@ -99,7 +99,9 @@ class FakeBinanceClient:
 
     def get_spot_filters(self, symbol):
         self._call('get_spot_filters', symbol=symbol)
-        return self.state.filters(symbol).as_dict()
+        result = self.state.filters(symbol).as_dict()
+        result['status'] = self.state.spot_status(symbol)
+        return result
 
     def get_futures_filters(self, symbol):
         self._call('get_futures_filters', symbol=symbol)
@@ -113,9 +115,12 @@ class FakeBinanceClient:
 
     def _exchange_symbol(self, symbol, futures):
         f = self.state.filters(symbol, futures)
-        return {'symbol': symbol, 'filters': [
+        return {'symbol': symbol, 'status': 'TRADING' if futures else self.state.spot_status(symbol),
+                'baseAssetPrecision': 8, 'quotePrecision': 8, 'filters': [
             {'filterType': 'PRICE_FILTER', 'tickSize': str(f.tick_size)},
-            {'filterType': 'LOT_SIZE', 'stepSize': str(f.step_size), 'minQty': str(f.min_qty)},
+            {'filterType': 'LOT_SIZE', 'stepSize': str(f.step_size), 'minQty': str(f.min_qty), 'maxQty': str(f.max_qty)},
+            {'filterType': 'MARKET_LOT_SIZE', 'stepSize': str(f.market_step_size),
+             'minQty': str(f.market_min_qty), 'maxQty': str(f.market_max_qty)},
             {'filterType': 'MIN_NOTIONAL', 'minNotional': str(f.min_notional), 'notional': str(f.min_notional)},
         ]}
 

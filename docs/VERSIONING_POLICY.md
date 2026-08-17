@@ -1,6 +1,6 @@
 # Functional versioning and capability epochs
 
-BinanceBot separates trading behavior from schemas, tooling and observability. The current runtime is `v1.3-partial-quantity-fix`, an approved behavioral position-management release.
+BinanceBot separates trading behavior from schemas, tooling and observability. The current runtime is `v1.4-spot-market-status-guard`, an approved behavioral Spot entry-safety release.
 
 ## Taxonomy
 
@@ -48,6 +48,7 @@ Compare by opening version and report period, sample size, win rate, PnL, expect
 - v1.2: Sizing v2.
 - v1.2.x: reliability, accounting, replay and offline evaluation capabilities.
 - v1.3: exact partial quantity integrity; remaining derives from confirmed executedQty.
+- v1.4: Spot Long requires exchange status `TRADING` and deterministic 4xx order failures do not retry.
 
 Validate read-only with `python trading/check_version_consistency.py [--json|--explain|--strict]`.
 
@@ -55,4 +56,4 @@ Validate read-only with `python trading/check_version_consistency.py [--json|--e
 
 `preentry-evidence-v1` succeeds `preentry-audit-v1` as non-behavioral observability. It does not affect trade selection, management, accounting or ML datasets and does not change `bot_version`, `strategy_version` or feature schemas. Candidate tolerance policies remain offline; connecting one to `safe_to_enter` or `entry_allowed` would be behavioral and requires separate authorization and versioning.
 
-`preentry-tolerance-shadow-v2` is also non-behavioral while its result is only appended to evidence and replayed by read-only analysis. Its policy version is the additive identity; runtime remains `v1.3-partial-quantity-fix`. A registry capability should be added only with a truthful introducing commit, never by pointing at a prior unrelated commit. Feeding v2 into CURRENT, `safe_to_enter` or `entry_allowed` remains a behavioral change requiring separate approval and bot versioning.
+`preentry-tolerance-shadow-v2` is also non-behavioral while its result is only appended to evidence and replayed by read-only analysis. Its policy version is the additive identity; runtime remains `v1.4-spot-market-status-guard`. A registry capability should be added only with a truthful introducing commit, never by pointing at a prior unrelated commit. Feeding v2 into CURRENT, `safe_to_enter` or `entry_allowed` remains a behavioral change requiring separate approval and bot versioning.

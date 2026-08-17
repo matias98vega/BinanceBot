@@ -17,7 +17,11 @@ class SymbolFilters:
     tick_size: Decimal = Decimal('0.01')
     step_size: Decimal = Decimal('0.001')
     min_qty: Decimal = Decimal('0.001')
+    max_qty: Decimal = Decimal('1000000')
     min_notional: Decimal = Decimal('5')
+    market_step_size: Decimal = Decimal('0.001')
+    market_min_qty: Decimal = Decimal('0.001')
+    market_max_qty: Decimal = Decimal('1000000')
 
     def as_dict(self):
         return {key: float(value) for key, value in vars(self).items()}
@@ -35,6 +39,7 @@ class FakeExchangeState:
     klines: dict = field(default_factory=dict)
     spot_filters: dict = field(default_factory=dict)
     futures_filters: dict = field(default_factory=dict)
+    spot_statuses: dict = field(default_factory=dict)
     orders: dict = field(default_factory=dict)
     order_lists: dict = field(default_factory=dict)
     futures_positions: dict = field(default_factory=dict)
@@ -70,6 +75,12 @@ class FakeExchangeState:
         table = self.futures_filters if futures else self.spot_filters
         table[str(symbol).upper()] = SymbolFilters(**{key: dec(value) for key, value in values.items()})
 
+    def set_spot_status(self, symbol, status):
+        self.spot_statuses[str(symbol).upper()] = status
+
+    def spot_status(self, symbol):
+        return self.spot_statuses.get(str(symbol).upper(), 'TRADING')
+
     def advance(self, seconds=1):
         self.epoch_ms += int(dec(seconds) * 1000)
         return self.epoch_ms
@@ -101,7 +112,7 @@ class FakeExchangeState:
         return deepcopy({
             'epoch_ms': self.epoch_ms, 'spot_balances': self.spot_balances,
             'futures_wallet_balance': self.futures_wallet_balance, 'prices': self.prices,
-            'orders': self.orders, 'order_lists': self.order_lists,
+            'spot_statuses': self.spot_statuses, 'orders': self.orders, 'order_lists': self.order_lists,
             'futures_positions': self.futures_positions, 'leverage': self.leverage,
             'trades': self.trades, 'transfers': self.transfers, 'calls': self.calls,
         })

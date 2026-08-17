@@ -110,7 +110,7 @@ class TradeHardeningTests(unittest.TestCase):
     @patch('utils.get_usdt_spot', return_value=100.0)
     @patch('utils.get_spot_price', return_value=1.0)
     @patch('utils.get_spot_filters', return_value={
-        'step_size': 0.1, 'min_qty': 0.1, 'min_notional': 1.0, 'tick_size': 0.0001
+        'status': 'TRADING', 'step_size': 0.1, 'min_qty': 0.1, 'min_notional': 1.0, 'tick_size': 0.0001
     })
     @patch('utils.log_binance_http_error', wraps=utils.log_binance_http_error)
     @patch('utils.get_asset_spot', side_effect=[9.5, 9.4])

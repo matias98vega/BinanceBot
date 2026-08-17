@@ -13,7 +13,7 @@ TRADING_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(TRADING_DIR)
 VERSION_FILE = os.path.join(PROJECT_DIR, 'VERSION')
 SCHEMA_VERSION = 1
-BOT_VERSION = os.environ.get('BOT_VERSION') or 'v1.3-partial-quantity-fix'
+BOT_VERSION = os.environ.get('BOT_VERSION') or 'v1.4-spot-market-status-guard'
 STRATEGY_VERSION = os.environ.get('STRATEGY_VERSION') or 'current'
 DATA_SCHEMA_VERSION = os.environ.get('DATA_SCHEMA_VERSION') or 'v1'
 VERSION_FIELDS = ('bot_version', 'strategy_version', 'data_schema_version')
@@ -130,7 +130,7 @@ VERSION_HISTORY = [
         'version': 'v1.3-partial-quantity-fix',
         'label': 'Exact partial quantity integrity',
         'started_at': '2026-07-25T00:00:00Z',
-        'ended_at': None,
+        'ended_at': '2026-08-17T23:50:18Z',
         'capabilities': [
             'Partial closes derive remaining managed quantity from confirmed executedQty',
             'Decimal stepSize arithmetic preserves partial plus remaining equals initial',
@@ -144,6 +144,28 @@ VERSION_HISTORY = [
         'fixes': [
             'Odd step-aligned quantities no longer round both halves independently',
             'Remaining protection uses the confirmed exchange remainder',
+        ],
+        'data_policy': 'trusted_if_auditor_clean',
+        'confidence': 'high',
+    },
+    {
+        'version': 'v1.4-spot-market-status-guard',
+        'label': 'Spot market status entry guard',
+        'started_at': '2026-08-17T23:50:18Z',
+        'ended_at': None,
+        'capabilities': [
+            'Spot Long entries require the exchange symbol status to be TRADING',
+            'Deterministic Binance 4xx order rejections fail closed without retry',
+            'Transient HTTP, rate-limit and network failures retain bounded retries',
+        ],
+        'known_bugs': [],
+        'limitations': [
+            'Applies only to future Spot Long entry attempts; historical trades are immutable',
+            'Does not change candidate selection, scoring, sizing, protection or Short behavior',
+        ],
+        'fixes': [
+            'Closed or halted Spot symbols are rejected before order submission',
+            'Operator-facing failures preserve sanitized Binance code and message',
         ],
         'data_policy': 'trusted_if_auditor_clean',
         'confidence': 'high',

@@ -10,7 +10,7 @@ Estado conductual: partial-quantity-integrity-v1 desplegado; el gate permanece A
 >
 > Commit de referencia: `3134e76`
 >
-> Versión runtime: `v1.3-partial-quantity-fix`
+> Versión runtime: `v1.4-spot-market-status-guard`
 >
 > Estado general: motor live desplegado y observable; contabilidad confiable desde el bootstrap; fase actual centrada en confiabilidad y preparación estadística, sin ML conectado al trading.
 
