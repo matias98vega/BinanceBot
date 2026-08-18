@@ -1,6 +1,7 @@
 # 2026-08-17 — Spot market status guard v1.4
 
 - New runtime `v1.4-spot-market-status-guard`; existing trades retain their opening version.
+- Behavioral capability `spot-market-status-guard-v1` is anchored to implementation commit `7f3c8dcffdeb699a913b6324159b88a081b04d22`.
 - Spot Long rejects symbols whose exchange status is not `TRADING` before any order POST.
 - Deterministic Binance 4xx order errors are not retried; transient rate-limit, server and network failures keep bounded retries.
 - Binance error alerts retain sanitized code/message context without credentials or signatures.
