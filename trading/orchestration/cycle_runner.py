@@ -15,6 +15,7 @@ import longs
 import market
 import operational_state
 import pre_entry_gate_observability
+import preventive_futures_close
 import rebalance
 import shorts
 import utils
@@ -65,6 +66,46 @@ class CycleRunner:
         self.check_partial_long = check_partial_long_fn
         self.check_partial_short = check_partial_short_fn
         self.handle_close = handle_close_fn
+
+    def _append_preventive_trade_log(self, state, pos, pnl):
+        now = time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())
+        try:
+            with open(config.TRADES_LOG, encoding='utf-8') as existing_log:
+                trade_id = sum(1 for _ in existing_log) + 1
+            with open(config.TRADES_LOG, 'a', encoding='utf-8') as stream:
+                symbol = pos['symbol'].replace('USDT', '')
+                stream.write(
+                    f'{trade_id:3d}  | S {symbol}/USDT | {"PREVENTIVO":13} | '
+                    f'{pnl:+.4f}    | ${state["total_pnl_usdt"]:.4f}   | {now}\n'
+                )
+        except Exception as exc:
+            self.out(f'Log trade write failed: {exc}')
+
+    def _handle_preventive_short(self, state, active_positions, pos):
+        result = preventive_futures_close.attempt_preventive_short_close(self.binance, pos)
+        status = result['status']
+        symbol = pos['symbol']
+        if result.get('confirmed_close'):
+            fill_price = result['fill_price']
+            pnl = result['pnl']
+            self.out(f'  🔴 {symbol} short: cierre preventivo PnL={pnl:+.2f}')
+            self.safe_log_close(pos, fill_price, 'PREVENTIVE_BTC_MOMENTUM', pnl)
+            if pos in active_positions:
+                active_positions.remove(pos)
+            state['total_pnl_usdt'] = state.get('total_pnl_usdt', 0) + pnl
+            state['daily_pnl_usdt'] = state.get('daily_pnl_usdt', 0) + pnl
+            self._append_preventive_trade_log(state, pos, pnl)
+            if result.get('cleanup_errors'):
+                self.out(f'⚠️ {symbol}: cierre confirmado; cleanup de protecciones incompleto')
+            return result, False
+
+        if status == 'RESIDUAL_POSITION':
+            pos['quantity'] = result['remaining_quantity']
+        self.out(f'⚠️ {symbol}: cierre preventivo no finalizado ({status})')
+        # Flat without attributable execution is intentionally handed to the
+        # existing lifecycle so it can determine TP/SL/reconciliation cause.
+        defer_normal_lifecycle = status not in {'ALREADY_FLAT', 'FLAT_UNATTRIBUTED'}
+        return result, defer_normal_lifecycle
 
     def run(self):
         cycle_id = f'cycle_{int(time.time())}'
@@ -207,44 +248,42 @@ class CycleRunner:
         # â”€â”€ 1. GESTIONAR posiciones activas â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # â”€â”€ 1a. Cierre preventivo por momentum extremo de BTC â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         close_shorts, close_longs, close_reason = market.check_btc_momentum_close(btc_ctx)
+        preventive_deferred_positions = set()
         if close_shorts or close_longs:
             self.out(f'ðŸš¨ {close_reason}')
             utils.send_alert(close_reason)
-            
+
             # Cerrar posiciones afectadas
             for pos in active_positions[:]:
                 direction = pos['direction']
                 sym = pos['symbol']
-                
+
                 should_close = (direction == 'short' and close_shorts) or (direction == 'long' and close_longs)
                 if should_close:
-                    # Cerrar al mercado
                     if direction == 'short':
-                        price_now = self.binance.get_fut_price(sym)
-                        pnl = (pos['entry_price'] - price_now) * pos['quantity']
-                        # Cancelar TP si existe
-                        if pos.get('tp_order_id'):
-                            try:
-                                self.binance.fut_signed('DELETE', '/fapi/v1/order', {'symbol': sym, 'orderId': int(pos['tp_order_id'])})
-                            except: pass
-                    else:
-                        price_now = self.binance.get_spot_price(sym)
-                        pnl = (price_now - pos['entry_price']) * pos['quantity']
-                        # Cancelar OCO si existe
-                        if pos.get('oco_id'):
-                            try:
-                                self.binance.spot_signed('DELETE', '/api/v3/orderList', {'symbol': sym, 'orderListId': int(pos['oco_id'])})
-                            except: pass
-                    
+                        _, defer_normal = self._handle_preventive_short(state, active_positions, pos)
+                        if defer_normal:
+                            preventive_deferred_positions.add(id(pos))
+                        continue
+
+                    # LONG Spot preventive behavior is intentionally unchanged.
+                    price_now = self.binance.get_spot_price(sym)
+                    pnl = (price_now - pos['entry_price']) * pos['quantity']
+                    # Cancelar OCO si existe
+                    if pos.get('oco_id'):
+                        try:
+                            self.binance.spot_signed('DELETE', '/api/v3/orderList', {'symbol': sym, 'orderListId': int(pos['oco_id'])})
+                        except: pass
+
                     # Remover de posiciones
                     self.out(f'  ðŸ”´ {sym} {direction}: cierre preventivo PnL={pnl:+.2f}')
                     self.safe_log_close(pos, price_now, 'PREVENTIVE_BTC_MOMENTUM', pnl)
                     active_positions.remove(pos)
-                    
+
                     # Actualizar PnL
                     state['total_pnl_usdt'] = state.get('total_pnl_usdt', 0) + pnl
                     state['daily_pnl_usdt'] = state.get('daily_pnl_usdt', 0) + pnl
-                    
+
                     # Loggear trade
                     now = time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())
                     try:
@@ -256,7 +295,7 @@ class CycleRunner:
                             f.write(f'{trade_id:3d}  | {direction_tag} {sym.replace("USDT","")}/USDT | {label:13} | {pnl:+.4f}    | ${state["total_pnl_usdt"]:.4f}   | {now}\n')
                     except Exception as e:
                         self.out(f'Log trade write failed: {e}')
-            
+
             # Recargar lista despuÃ©s de cierres
             active_positions = state.get('positions', [])
 
@@ -267,6 +306,10 @@ class CycleRunner:
         for pos in active_positions:
             direction = pos['direction']
             sym       = pos['symbol']
+
+            if id(pos) in preventive_deferred_positions:
+                positions_to_keep.append(pos)
+                continue
 
             if direction == 'long':
                 # Chequear take profit parcial antes de la gestiÃ³n normal

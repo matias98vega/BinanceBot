@@ -102,6 +102,7 @@ class StoreAndAuditTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             fs.write_artifacts(result,d);self.assertEqual(12,len(os.listdir(d)))
     def test_strict_not_ready(self):
-        self.assertEqual(2,fs.main(['--strict']))
+        with tempfile.NamedTemporaryFile('w') as manifest:
+            self.assertEqual(2, fs.main(['--strict', '--manifest', manifest.name]))
 
 if __name__=='__main__':unittest.main()

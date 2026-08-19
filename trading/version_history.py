@@ -13,7 +13,7 @@ TRADING_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(TRADING_DIR)
 VERSION_FILE = os.path.join(PROJECT_DIR, 'VERSION')
 SCHEMA_VERSION = 1
-BOT_VERSION = os.environ.get('BOT_VERSION') or 'v1.4-spot-market-status-guard'
+BOT_VERSION = os.environ.get('BOT_VERSION') or 'v1.5-preventive-futures-close-fix'
 STRATEGY_VERSION = os.environ.get('STRATEGY_VERSION') or 'current'
 DATA_SCHEMA_VERSION = os.environ.get('DATA_SCHEMA_VERSION') or 'v1'
 VERSION_FIELDS = ('bot_version', 'strategy_version', 'data_schema_version')
@@ -152,7 +152,7 @@ VERSION_HISTORY = [
         'version': 'v1.4-spot-market-status-guard',
         'label': 'Spot market status entry guard',
         'started_at': '2026-08-17T23:50:18Z',
-        'ended_at': None,
+        'ended_at': '2026-08-19T17:04:55Z',
         'capabilities': [
             'Spot Long entries require the exchange symbol status to be TRADING',
             'Deterministic Binance 4xx order rejections fail closed without retry',
@@ -166,6 +166,28 @@ VERSION_HISTORY = [
         'fixes': [
             'Closed or halted Spot symbols are rejected before order submission',
             'Operator-facing failures preserve sanitized Binance code and message',
+        ],
+        'data_policy': 'trusted_if_auditor_clean',
+        'confidence': 'high',
+    },
+    {
+        'version': 'v1.5-preventive-futures-close-fix',
+        'label': 'Confirmed preventive Futures SHORT closes',
+        'started_at': '2026-08-19T17:04:55Z',
+        'ended_at': None,
+        'capabilities': [
+            'Preventive SHORT Futures exits submit one real BUY MARKET reduce-only order',
+            'Local close persistence requires fresh exchange-flat confirmation and attributable fill evidence',
+            'Ambiguous, residual and direction-mismatch outcomes fail closed into existing lifecycle handling',
+        ],
+        'known_bugs': [],
+        'limitations': [
+            'Applies only to preventive SHORT Futures closes; LONG Spot preventive behavior is unchanged',
+            'Historical preventive records remain immutable and are not backfilled',
+        ],
+        'fixes': [
+            'Preventive SHORT Futures closes no longer log theoretical closes without exchange execution',
+            'TP/SL protection remains active until the post-order exchange position is confirmed flat',
         ],
         'data_policy': 'trusted_if_auditor_clean',
         'confidence': 'high',

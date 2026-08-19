@@ -77,7 +77,7 @@ def validate(project_dir=PROJECT_DIR, trades_path=DEFAULT_TRADES, commit_checker
 
     if version_history.current_version() not in valid_versions:
         errors.append(_issue('UNREGISTERED_RUNTIME_VERSION', 'current runtime bot_version is not registered'))
-    if version_history.current_version() != 'v1.4-spot-market-status-guard':
+    if version_history.current_version() != 'v1.5-preventive-futures-close-fix':
         errors.append(_issue('UNEXPECTED_RUNTIME_VERSION', 'runtime current_version must match the approved behavioral release'))
     if any(item['id'] == 'feature-capture-v2' and item['behavioral'] for item in capabilities):
         errors.append(_issue('FEATURE_SCHEMA_COUPLED_TO_BEHAVIOR', 'passive feature schema must remain independent'))
