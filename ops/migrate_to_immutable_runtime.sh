@@ -12,8 +12,8 @@ set -Eeuo pipefail
 
 readonly WORKTREE="/home/binancebot/BinanceBot"
 readonly SCRIPT_REL="ops/migrate_to_immutable_runtime.sh"
-readonly BASELINE_COMMIT="820d2814d61da0f91c520a5a6c1323c0203b9832"
-readonly EXPECTED_COMMIT_SUBJECT="chore: add immutable runtime migration script"
+readonly BASELINE_COMMIT="9cb86796645b913c844e1170729a745f482fbb98"
+readonly EXPECTED_COMMIT_SUBJECT="fix: support immutable release validation and rollback"
 readonly RUNTIME_ROOT="/opt/binancebot"
 readonly RELEASES_ROOT="${RUNTIME_ROOT}/releases"
 readonly VENVS_ROOT="${RUNTIME_ROOT}/venvs"
@@ -30,6 +30,12 @@ readonly GUARDIAN_SERVICE="binancebot-guardian.service"
 readonly GUARDIAN_TIMER="binancebot-guardian.timer"
 readonly POST_CUTOVER_CYCLES=3
 readonly POST_CUTOVER_TIMEOUT_SECONDS=720
+
+readonly -a EXPECTED_RELEASE_DIFF=(
+  "ops/migrate_to_immutable_runtime.sh"
+  "trading/check_version_consistency.py"
+  "trading/test_version_consistency.py"
+)
 
 readonly -a REQUIRED_SERVICES=(
   "binancebot.service"
@@ -81,6 +87,8 @@ PREVIOUS_CURRENT=""
 CUTOVER_STARTED=0
 ROLLBACK_RUNNING=0
 REUSE_RELEASE=0
+ROLLBACK_LOCK_DIR=""
+ROLLBACK_STATE_FILE=""
 
 timestamp() {
   date -u +%Y-%m-%dT%H:%M:%SZ
@@ -92,6 +100,25 @@ section() {
 
 info() {
   printf '%s %s\n' "$(timestamp)" "$*"
+}
+
+claim_rollback() {
+  [[ -n "$ROLLBACK_LOCK_DIR" && "$ROLLBACK_LOCK_DIR" == "${TEMP_ROOT}/rollback.lock" ]] || return 1
+  mkdir "$ROLLBACK_LOCK_DIR" 2>/dev/null
+}
+
+set_rollback_state() {
+  local state="$1"
+  [[ -n "$ROLLBACK_STATE_FILE" && "$ROLLBACK_STATE_FILE" == "${TEMP_ROOT}/rollback.state" ]] || return 1
+  printf '%s\n' "$state" > "$ROLLBACK_STATE_FILE"
+}
+
+rollback_incomplete() {
+  local original_rc="$1"
+  shift
+  set_rollback_state "INCOMPLETE:$*" || true
+  printf '[RESULT] MIGRATION_ROLLBACK_INCOMPLETE %s\n' "$*"
+  exit "$original_rc"
 }
 
 die() {
@@ -168,7 +195,6 @@ restore_initial_runtime() {
     local wait_deadline=$((SECONDS + 300))
     while systemctl is-active --quiet "$service" || [[ "$(systemctl show "$service" -p ActiveState --value 2>/dev/null)" == "activating" ]]; do
       if (( SECONDS >= wait_deadline )); then
-        printf '[RESULT] MIGRATION_ROLLBACK_INCOMPLETE active_oneshot=%s\n' "$service"
         return 1
       fi
       sleep 5
@@ -212,27 +238,26 @@ restore_initial_runtime() {
 rollback() {
   local original_rc="${1:-1}"
   (( ROLLBACK_RUNNING == 0 )) || exit "$original_rc"
+  claim_rollback || exit "$original_rc"
   ROLLBACK_RUNNING=1
   trap - ERR
   set +e
+  set_rollback_state "STARTED" || rollback_incomplete "$original_rc" "state_file_unavailable"
 
   section "ROLLBACK" "Restoring the pre-migration runtime"
   if ! restore_initial_runtime; then
-    printf '[RESULT] MIGRATION_ROLLBACK_INCOMPLETE restore_failed\n'
-    exit "$original_rc"
+    rollback_incomplete "$original_rc" "restore_failed"
   fi
 
   local service timer
   for service in "${RESIDENT_SERVICES[@]}"; do
     if [[ "${INITIAL_ACTIVE[$service]:-inactive}" == "active" ]] && ! systemctl is-active --quiet "$service"; then
-      printf '[RESULT] MIGRATION_ROLLBACK_INCOMPLETE resident=%s\n' "$service"
-      exit "$original_rc"
+      rollback_incomplete "$original_rc" "resident=${service}"
     fi
   done
   for timer in "${TIMER_UNITS[@]}"; do
     if [[ "${INITIAL_ACTIVE[$timer]:-inactive}" == "active" ]] && ! systemctl is-active --quiet "$timer"; then
-      printf '[RESULT] MIGRATION_ROLLBACK_INCOMPLETE timer=%s\n' "$timer"
-      exit "$original_rc"
+      rollback_incomplete "$original_rc" "timer=${timer}"
     fi
   done
 
@@ -254,11 +279,11 @@ rollback() {
       fi
     done
     if (( restored_cycle != 1 )); then
-      printf '[RESULT] MIGRATION_ROLLBACK_INCOMPLETE natural_cycle_not_confirmed\n'
-      exit "$original_rc"
+      rollback_incomplete "$original_rc" "natural_cycle_not_confirmed"
     fi
   fi
 
+  set_rollback_state "COMPLETED" || rollback_incomplete "$original_rc" "state_file_unavailable"
   printf '[RESULT] MIGRATION_ROLLED_BACK\n'
   printf 'MIGRATION_LOG=%s\n' "$LOG_PATH"
   exit "$original_rc"
@@ -306,10 +331,14 @@ readonly RELEASE_COMMIT
 [[ "$RELEASE_COMMIT" == "$(git rev-parse origin/main)" ]] || die "BLOCKED_BASELINE_MISMATCH" "HEAD differs from origin/main"
 [[ "$(git rev-parse "${RELEASE_COMMIT}^")" == "$BASELINE_COMMIT" ]] || die "BLOCKED_BASELINE_MISMATCH" "release commit parent is not the audited baseline"
 [[ "$(git show -s --format=%s "$RELEASE_COMMIT")" == "$EXPECTED_COMMIT_SUBJECT" ]] || die "BLOCKED_BASELINE_MISMATCH" "unexpected release commit subject"
-[[ "$(git rev-list --count "${BASELINE_COMMIT}..${RELEASE_COMMIT}")" == "1" ]] || die "BLOCKED_BASELINE_MISMATCH" "expected exactly one migration-script commit"
-mapfile -t migration_diff < <(git diff --name-only "${BASELINE_COMMIT}..${RELEASE_COMMIT}")
-[[ "${#migration_diff[@]}" == "1" && "${migration_diff[0]}" == "$SCRIPT_REL" ]] || die "BLOCKED_BASELINE_MISMATCH" "release commit contains files outside ${SCRIPT_REL}"
-git cat-file -e "${RELEASE_COMMIT}:${SCRIPT_REL}" || die "BLOCKED_BASELINE_MISMATCH" "script is absent from release commit"
+[[ "$(git rev-list --count "${BASELINE_COMMIT}..${RELEASE_COMMIT}")" == "1" ]] || die "BLOCKED_BASELINE_MISMATCH" "expected exactly one migration-fix commit"
+mapfile -t migration_diff < <(git diff --name-only "${BASELINE_COMMIT}..${RELEASE_COMMIT}" | LC_ALL=C sort)
+mapfile -t expected_diff < <(printf '%s\n' "${EXPECTED_RELEASE_DIFF[@]}" | LC_ALL=C sort)
+[[ "${#migration_diff[@]}" == "${#expected_diff[@]}" ]] || die "BLOCKED_BASELINE_MISMATCH" "unexpected release diff size"
+for index in "${!expected_diff[@]}"; do
+  [[ "${migration_diff[$index]}" == "${expected_diff[$index]}" ]] || die "BLOCKED_BASELINE_MISMATCH" "unexpected release file: ${migration_diff[$index]}"
+  git cat-file -e "${RELEASE_COMMIT}:${expected_diff[$index]}" || die "BLOCKED_BASELINE_MISMATCH" "release file is absent: ${expected_diff[$index]}"
+done
 info "BRANCH=main"
 info "RELEASE_COMMIT=${RELEASE_COMMIT}"
 info "WORKING_TREE=CLEAN"
@@ -370,6 +399,9 @@ readonly OLD_PYTHON="${WORKTREE}/.venv/bin/python"
 
 readonly TEMP_ROOT="/var/tmp/binancebot-immutable-runtime-${UTC_STAMP}"
 install -d -m 0700 -o root -g root "$TEMP_ROOT"
+ROLLBACK_LOCK_DIR="${TEMP_ROOT}/rollback.lock"
+ROLLBACK_STATE_FILE="${TEMP_ROOT}/rollback.state"
+readonly ROLLBACK_LOCK_DIR ROLLBACK_STATE_FILE
 readonly OLD_FREEZE="${TEMP_ROOT}/old-freeze.txt"
 "$OLD_PYTHON" -m pip freeze --all | LC_ALL=C sort > "$OLD_FREEZE"
 if grep -Eq '(^-e |@ file:|/home/binancebot)' "$OLD_FREEZE"; then
@@ -378,6 +410,10 @@ fi
 "$OLD_PYTHON" -m pip check
 info "PYTHON_VERSION=$("$OLD_PYTHON" --version 2>&1)"
 info "PACKAGE_COUNT=$(wc -l < "$OLD_FREEZE")"
+
+section "PRECHECK" "Build-time version consistency and release metadata inputs"
+"$OLD_PYTHON" "${WORKTREE}/trading/check_version_consistency.py" --strict
+info "BUILD_TIME_VERSION_CONSISTENCY=PASS"
 
 section "PRECHECK" "Fresh read-only production safety gate"
 PYTHONPATH="${WORKTREE}/trading" "$OLD_PYTHON" - <<'PY'
@@ -556,6 +592,7 @@ section "RELEASE" "Materializing source from the exact Git commit"
 if [[ -e "$RELEASE_FINAL" ]]; then
   [[ -f "${RELEASE_FINAL}/.release-commit" ]] || die "BLOCKED_EXISTING_RELEASE_INVALID" "$RELEASE_FINAL"
   [[ "$(<"${RELEASE_FINAL}/.release-commit")" == "$RELEASE_COMMIT" ]] || die "BLOCKED_EXISTING_RELEASE_INVALID" "commit marker mismatch"
+  [[ -f "${RELEASE_FINAL}/.release-version-commits.json" ]] || die "BLOCKED_EXISTING_RELEASE_INVALID" "version commit metadata missing"
   [[ ! -e "${RELEASE_FINAL}/.BUILDING" ]] || die "BLOCKED_EXISTING_RELEASE_INVALID" "BUILDING marker present"
   VALIDATION_ROOT="$RELEASE_FINAL"
   REUSE_RELEASE=1
@@ -565,6 +602,9 @@ else
   touch "${RELEASE_BUILD}/.BUILDING"
   git archive --format=tar "$RELEASE_COMMIT" | tar -x -C "$RELEASE_BUILD"
   printf '%s\n' "$RELEASE_COMMIT" > "${RELEASE_BUILD}/.release-commit"
+  "$OLD_PYTHON" "${WORKTREE}/trading/check_version_consistency.py" \
+    --emit-release-metadata "$RELEASE_COMMIT" \
+    > "${RELEASE_BUILD}/.release-version-commits.json"
 fi
 
 section "RELEASE" "Creating or validating the dedicated virtualenv"
@@ -651,6 +691,7 @@ section "VERIFY" "Offline validation from the release candidate"
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONPYCACHEPREFIX="${TEMP_ROOT}/pycache"
 (
+  trap - ERR
   cd "$VALIDATION_ROOT"
   bash -n scripts/run_once.sh
   .venv/bin/python -m py_compile trading/*.py

@@ -67,6 +67,44 @@ class CapabilityHistoryTests(unittest.TestCase):
         self.assertIsNone(report['deployed_model_version'])
         self.assertEqual('v1.5-preventive-futures-close-fix', version_history.current_version())
 
+    def _write_release_metadata(self, directory, *, tamper=False):
+        release_commit = '9cb86796645b913c844e1170729a745f482fbb98'
+        commits = sorted({str(item.get('introduced_by_commit') or '') for item in capability_history.CAPABILITIES})
+        if tamper:
+            commits = commits[:-1]
+        metadata = {
+            'schema_version': 1,
+            'release_commit': release_commit,
+            'registry_sha256': check_version_consistency._registry_sha256(),
+            'verified_commits': commits,
+        }
+        with open(os.path.join(directory, '.release-commit'), 'w', encoding='ascii') as stream:
+            stream.write(release_commit + '\n')
+        with open(os.path.join(directory, '.release-version-commits.json'), 'w', encoding='utf-8') as stream:
+            json.dump(metadata, stream)
+
+    def test_gitless_release_uses_registry_bound_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write_release_metadata(tmp)
+            report = check_version_consistency.validate(project_dir=tmp, trades_path='/missing')
+        self.assertTrue(report['strict_valid'], report)
+        self.assertEqual('release_metadata', report['commit_validation_source'])
+        self.assertEqual('9cb86796645b913c844e1170729a745f482fbb98', report['release_commit'])
+
+    def test_gitless_tree_without_release_metadata_remains_invalid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report = check_version_consistency.validate(project_dir=tmp, trades_path='/missing')
+        self.assertFalse(report['strict_valid'])
+        self.assertEqual('unavailable', report['commit_validation_source'])
+        self.assertTrue(all(item['code'] == 'UNKNOWN_INTRODUCING_COMMIT' for item in report['errors']))
+
+    def test_tampered_release_metadata_remains_invalid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write_release_metadata(tmp, tamper=True)
+            report = check_version_consistency.validate(project_dir=tmp, trades_path='/missing')
+        self.assertFalse(report['strict_valid'])
+        self.assertEqual('unavailable', report['commit_validation_source'])
+
 
 class TradeVersionConsistencyTests(unittest.TestCase):
     def _report(self, rows):

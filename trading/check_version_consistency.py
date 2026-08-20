@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Read-only consistency checks for version metadata and capability epochs."""
 import argparse
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -12,6 +14,9 @@ import version_history
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_TRADES = os.path.join(PROJECT_DIR, 'data', 'history', 'trades.jsonl')
+RELEASE_COMMIT_FILE = '.release-commit'
+RELEASE_METADATA_FILE = '.release-version-commits.json'
+FULL_COMMIT_RE = re.compile(r'^[0-9a-f]{40}$')
 
 
 def _issue(code, message, **details):
@@ -22,6 +27,73 @@ def _commit_exists(commit, project_dir):
     result = subprocess.run(['git', 'cat-file', '-e', f'{commit}^{{commit}}'], cwd=project_dir,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
     return result.returncode == 0
+
+
+def _git_checkout_available(project_dir):
+    result = subprocess.run(['git', 'rev-parse', '--is-inside-work-tree'], cwd=project_dir,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    return result.returncode == 0
+
+
+def _registry_payload():
+    return {
+        'capabilities': capability_history.CAPABILITIES,
+        'versions': version_history.VERSION_HISTORY,
+        'current_version': version_history.current_version(),
+        'strategy_version': version_history.STRATEGY_VERSION,
+    }
+
+
+def _registry_sha256():
+    payload = json.dumps(_registry_payload(), sort_keys=True, separators=(',', ':'), ensure_ascii=True)
+    return hashlib.sha256(payload.encode('ascii')).hexdigest()
+
+
+def build_release_metadata(release_commit, project_dir=PROJECT_DIR):
+    if not FULL_COMMIT_RE.fullmatch(str(release_commit or '')) or not _commit_exists(release_commit, project_dir):
+        raise ValueError('release commit is not available in the build checkout')
+    commits = sorted({str(item.get('introduced_by_commit') or '') for item in capability_history.CAPABILITIES})
+    missing = [commit for commit in commits if not commit or not _commit_exists(commit, project_dir)]
+    if missing:
+        raise ValueError('capability registry contains commits unavailable in the build checkout')
+    return {
+        'schema_version': 1,
+        'release_commit': release_commit,
+        'registry_sha256': _registry_sha256(),
+        'verified_commits': commits,
+    }
+
+
+def _read_release_metadata(project_dir):
+    marker_path = os.path.join(project_dir, RELEASE_COMMIT_FILE)
+    metadata_path = os.path.join(project_dir, RELEASE_METADATA_FILE)
+    try:
+        with open(marker_path, encoding='ascii') as stream:
+            release_commit = stream.read().strip()
+        with open(metadata_path, encoding='utf-8') as stream:
+            metadata = json.load(stream)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    expected_commits = sorted({str(item.get('introduced_by_commit') or '') for item in capability_history.CAPABILITIES})
+    valid = (
+        isinstance(metadata, dict)
+        and metadata.get('schema_version') == 1
+        and FULL_COMMIT_RE.fullmatch(release_commit)
+        and metadata.get('release_commit') == release_commit
+        and metadata.get('registry_sha256') == _registry_sha256()
+        and metadata.get('verified_commits') == expected_commits
+    )
+    return metadata if valid else None
+
+
+def _default_commit_validation(project_dir):
+    if _git_checkout_available(project_dir):
+        return (lambda commit: _commit_exists(commit, project_dir)), 'git', None
+    metadata = _read_release_metadata(project_dir)
+    if metadata:
+        verified = frozenset(metadata['verified_commits'])
+        return (lambda commit: commit in verified), 'release_metadata', metadata['release_commit']
+    return (lambda commit: False), 'unavailable', None
 
 
 def _read_trades(path):
@@ -50,7 +122,16 @@ def validate(project_dir=PROJECT_DIR, trades_path=DEFAULT_TRADES, commit_checker
     valid_versions = {item['version'] for item in version_history.VERSION_HISTORY} | {'legacy/unknown'}
     if len(ids) != len(set(ids)):
         errors.append(_issue('DUPLICATE_CAPABILITY_ID', 'Capability ids must be unique'))
-    checker = commit_checker or (lambda commit: _commit_exists(commit, project_dir))
+    if commit_checker is None:
+        checker, commit_validation_source, release_commit = _default_commit_validation(project_dir)
+        if commit_validation_source == 'release_metadata':
+            info.append(_issue(
+                'RELEASE_COMMIT_REFERENCES_BUILD_VERIFIED',
+                'Commit existence was verified in the build checkout and bound to this release metadata.',
+                release_commit=release_commit,
+            ))
+    else:
+        checker, commit_validation_source, release_commit = commit_checker, 'injected', None
     previous_date = None
     for item in capabilities:
         cap_id = item.get('id')
@@ -122,6 +203,8 @@ def validate(project_dir=PROJECT_DIR, trades_path=DEFAULT_TRADES, commit_checker
 
     return {
         'schema_version': 1, 'valid': not errors, 'strict_valid': not errors,
+        'commit_validation_source': commit_validation_source,
+        'release_commit': release_commit,
         'runtime_bot_version': version_history.current_version(),
         'strategy_version': version_history.STRATEGY_VERSION,
         'feature_schema_independent': True, 'deployed_model_version': None,
@@ -155,7 +238,16 @@ def main(argv=None):
     parser.add_argument('--explain', action='store_true')
     parser.add_argument('--strict', action='store_true')
     parser.add_argument('--trades', default=DEFAULT_TRADES, help=argparse.SUPPRESS)
+    parser.add_argument('--emit-release-metadata', metavar='COMMIT', help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.emit_release_metadata:
+        try:
+            metadata = build_release_metadata(args.emit_release_metadata)
+        except ValueError as exc:
+            print(f'ERROR: {exc}', file=sys.stderr)
+            return 1
+        print(json.dumps(metadata, indent=2, sort_keys=True))
+        return 0
     report = validate(trades_path=args.trades)
     print(json.dumps(report, indent=2, sort_keys=True) if args.json else _text(report, args.explain))
     return 1 if args.strict and not report['strict_valid'] else 0
