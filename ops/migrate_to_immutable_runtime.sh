@@ -12,8 +12,8 @@ set -Eeuo pipefail
 
 readonly WORKTREE="/home/binancebot/BinanceBot"
 readonly SCRIPT_REL="ops/migrate_to_immutable_runtime.sh"
-readonly BASELINE_COMMIT="9cb86796645b913c844e1170729a745f482fbb98"
-readonly EXPECTED_COMMIT_SUBJECT="fix: support immutable release validation and rollback"
+readonly BASELINE_COMMIT="eac98265503f48a230a2742c7d396fb9fdd5a2d4"
+readonly EXPECTED_COMMIT_SUBJECT="fix: harden systemd parsing in immutable migration"
 readonly RUNTIME_ROOT="/opt/binancebot"
 readonly RELEASES_ROOT="${RUNTIME_ROOT}/releases"
 readonly VENVS_ROOT="${RUNTIME_ROOT}/venvs"
@@ -33,8 +33,6 @@ readonly POST_CUTOVER_TIMEOUT_SECONDS=720
 
 readonly -a EXPECTED_RELEASE_DIFF=(
   "ops/migrate_to_immutable_runtime.sh"
-  "trading/check_version_consistency.py"
-  "trading/test_version_consistency.py"
 )
 
 readonly -a REQUIRED_SERVICES=(
@@ -156,7 +154,7 @@ resolve_original_exec_start() {
       unit_files+=("$drop_in_path")
     done
   fi
-  awk '/^[[:space:]]*ExecStart=/{value=substr($0,index($0,"=")+1); if(length(value)==0) count=0; else values[++count]=value} END{for(index=1; index<=count; index++) print values[index]}' "${unit_files[@]}"
+  awk '/^[[:space:]]*ExecStart=/{value=substr($0,index($0,"=")+1); if(length(value)==0) count=0; else values[++count]=value} END{for(i=1; i<=count; i++) print values[i]}' "${unit_files[@]}"
 }
 
 record_unit_state() {
@@ -758,7 +756,7 @@ section "SYSTEMD" "Creating path-only service overrides"
 for service in "${SERVICE_UNITS[@]}"; do
   [[ "$service" =~ ^[A-Za-z0-9_.@-]+\.service$ ]] || die "BLOCKED_SYSTEMD_EXECSTART" "unsafe service name"
   if ! original_exec_output="$(resolve_original_exec_start "$service")"; then
-    die "BLOCKED_SYSTEMD_EXECSTART" "cannot read fragment/drop-ins for ${service}"
+    die "BLOCKED_SYSTEMD_EXECSTART" "cannot read or parse fragment/drop-ins for ${service}"
   fi
   [[ -n "$original_exec_output" ]] || die "BLOCKED_SYSTEMD_EXECSTART" "cannot resolve ${service}"
   mapfile -t original_execs <<< "$original_exec_output"
