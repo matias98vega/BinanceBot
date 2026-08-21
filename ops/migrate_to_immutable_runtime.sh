@@ -12,8 +12,8 @@ set -Eeuo pipefail
 
 readonly WORKTREE="/home/binancebot/BinanceBot"
 readonly SCRIPT_REL="ops/migrate_to_immutable_runtime.sh"
-readonly BASELINE_COMMIT="eac98265503f48a230a2742c7d396fb9fdd5a2d4"
-readonly EXPECTED_COMMIT_SUBJECT="fix: harden systemd parsing in immutable migration"
+readonly BASELINE_COMMIT="efa75c278f7c31bdfc0140793b5750a8853fcd55"
+readonly EXPECTED_COMMIT_SUBJECT="fix: support atomic state writes through immutable symlinks"
 readonly RUNTIME_ROOT="/opt/binancebot"
 readonly RELEASES_ROOT="${RUNTIME_ROOT}/releases"
 readonly VENVS_ROOT="${RUNTIME_ROOT}/venvs"
@@ -33,6 +33,10 @@ readonly POST_CUTOVER_TIMEOUT_SECONDS=720
 
 readonly -a EXPECTED_RELEASE_DIFF=(
   "ops/migrate_to_immutable_runtime.sh"
+  "trading/atomic_persistence.py"
+  "trading/bot_state.py"
+  "trading/telegram_alerts.py"
+  "trading/test_atomic_persistence.py"
 )
 
 readonly -a REQUIRED_SERVICES=(
@@ -863,7 +867,7 @@ for resident in binancebot-dashboard.service binancebot-telegram.service; do
 done
 
 for service in "${SERVICE_UNITS[@]}"; do
-  if journalctl -u "$service" --since "$UTC_STARTED" --no-pager | grep -Eqi 'Traceback|ImportError|ModuleNotFoundError|Permission denied'; then
+  if journalctl -u "$service" --since "$UTC_STARTED" --no-pager | grep -Eqi 'Traceback|ImportError|ModuleNotFoundError|PermissionError|Permission denied'; then
     die "BLOCKED_POST_CUTOVER_LOG_ERROR" "${service} import/permission error"
   fi
 done

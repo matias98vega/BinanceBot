@@ -8,6 +8,7 @@ import time
 import urllib.parse
 import urllib.request
 
+from atomic_persistence import atomic_write_text
 from config_loader import PROJECT_DIR, load_dotenv
 from notification_guard import external_notifications_disabled, log_suppressed
 
@@ -102,11 +103,8 @@ def _read_state():
 def _write_state(state):
     try:
         os.makedirs(os.path.dirname(ALERT_STATE_FILE), exist_ok=True)
-        tmp = f'{ALERT_STATE_FILE}.tmp'
-        with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump(state, f, separators=(',', ':'), ensure_ascii=False)
-            f.write('\n')
-        os.replace(tmp, ALERT_STATE_FILE)
+        serialized = json.dumps(state, separators=(',', ':'), ensure_ascii=False) + '\n'
+        atomic_write_text(ALERT_STATE_FILE, serialized, mode=0o600)
         try:
             os.chmod(ALERT_STATE_FILE, 0o600)
         except Exception:

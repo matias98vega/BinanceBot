@@ -11,6 +11,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import version_history
+from atomic_persistence import atomic_write_text
 from config_loader import PROJECT_DIR, load_dotenv
 
 
@@ -1170,11 +1171,8 @@ def build_bot_state(
 def persist_bot_state(payload):
     payload = version_history.attach_version_metadata(payload)
     os.makedirs(os.path.dirname(BOT_STATE_FILE), exist_ok=True)
-    tmp = f'{BOT_STATE_FILE}.tmp'
-    with open(tmp, 'w', encoding='utf-8') as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-        f.write('\n')
-    os.replace(tmp, BOT_STATE_FILE)
+    serialized = json.dumps(payload, ensure_ascii=False, indent=2) + '\n'
+    atomic_write_text(BOT_STATE_FILE, serialized, mode=0o600)
     try:
         os.chmod(BOT_STATE_FILE, 0o600)
     except Exception:
