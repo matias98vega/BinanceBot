@@ -21,6 +21,22 @@ import shorts
 import utils
 
 
+PREVENTIVE_BTC_RISE_CLOSE_SHORTS_EVENT = 'preventive_btc_rise:close_shorts'
+PREVENTIVE_BTC_FALL_CLOSE_LONGS_EVENT = 'preventive_btc_fall:close_longs'
+
+
+def sync_preventive_telegram_alert(close_shorts, close_longs, message):
+    """Send once per preventive BTC episode and rearm inactive directions."""
+    if close_shorts:
+        utils.send_alert(message, event_key=PREVENTIVE_BTC_RISE_CLOSE_SHORTS_EVENT)
+    else:
+        utils.rearm_telegram_alert_event(PREVENTIVE_BTC_RISE_CLOSE_SHORTS_EVENT)
+    if close_longs:
+        utils.send_alert(message, event_key=PREVENTIVE_BTC_FALL_CLOSE_LONGS_EVENT)
+    else:
+        utils.rearm_telegram_alert_event(PREVENTIVE_BTC_FALL_CLOSE_LONGS_EVENT)
+
+
 def format_cycle_summary(long_count, max_longs, short_count, max_shorts,
                          spot_used, spot_total, futures_used, futures_total):
     return (
@@ -248,10 +264,10 @@ class CycleRunner:
         # â”€â”€ 1. GESTIONAR posiciones activas â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # â”€â”€ 1a. Cierre preventivo por momentum extremo de BTC â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         close_shorts, close_longs, close_reason = market.check_btc_momentum_close(btc_ctx)
+        sync_preventive_telegram_alert(close_shorts, close_longs, close_reason)
         preventive_deferred_positions = set()
         if close_shorts or close_longs:
             self.out(f'ðŸš¨ {close_reason}')
-            utils.send_alert(close_reason)
 
             # Cerrar posiciones afectadas
             for pos in active_positions[:]:

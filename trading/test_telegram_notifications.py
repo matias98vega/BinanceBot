@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
+import contextlib
+import io
+import json
 import os
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(__file__))
 
 import bot_state
+import market
 import notification_guard
 import telegram_alerts
 import telegram_commands
 import utils
+from orchestration import cycle_runner
 
 
 class TelegramNotificationConfigTests(unittest.TestCase):
@@ -105,6 +111,151 @@ class TelegramNotificationConfigTests(unittest.TestCase):
 
         self.assertEqual({'ok': False, 'suppressed': True}, response)
         urlopen.assert_not_called()
+
+
+class TelegramPreventiveEpisodeTests(unittest.TestCase):
+    SHORT_EVENT = cycle_runner.PREVENTIVE_BTC_RISE_CLOSE_SHORTS_EVENT
+    LONG_EVENT = cycle_runner.PREVENTIVE_BTC_FALL_CLOSE_LONGS_EVENT
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(dir='/tmp')
+        self.state_path = os.path.join(self.temp.name, 'telegram_alert_state.json')
+        self.env = patch.dict(os.environ, {
+            'BINANCEBOT_TEST_MODE': '',
+            'BINANCEBOT_DISABLE_EXTERNAL_NOTIFICATIONS': '',
+            'TELEGRAM_ALERTS_ENABLED': 'true',
+            'TELEGRAM_BOT_TOKEN': 'offline-fixture-token',
+            'TELEGRAM_CHAT_ID': 'offline-fixture-chat',
+            'TELEGRAM_ALERT_LEVEL': 'WARNING',
+            'TELEGRAM_ALERT_COOLDOWN_SECONDS': '1800',
+        }, clear=False)
+        self.env.start()
+        self.state_file = patch.object(telegram_alerts, 'ALERT_STATE_FILE', self.state_path)
+        self.state_file.start()
+        self.notifications = patch.object(
+            telegram_alerts,
+            'external_notifications_disabled',
+            return_value=False,
+        )
+        self.notifications.start()
+        self.transport = patch.object(telegram_alerts, '_send_raw', return_value=True)
+        self.send_raw = self.transport.start()
+
+    def tearDown(self):
+        self.transport.stop()
+        self.notifications.stop()
+        self.state_file.stop()
+        self.env.stop()
+        self.temp.cleanup()
+
+    @staticmethod
+    def _message(change):
+        close_shorts, close_longs, message = market.check_btc_momentum_close({
+            'change_4h': change,
+        })
+        return close_shorts, close_longs, message
+
+    def _send(self, change, event_key=None):
+        close_shorts, close_longs, message = self._message(change)
+        if event_key is None:
+            event_key = self.SHORT_EVENT if close_shorts else self.LONG_EVENT
+        return telegram_alerts.send_telegram_alert(
+            'WARNING',
+            'BinanceBot',
+            message,
+            notification_type='WARNING',
+            event_key=event_key,
+        )
+
+    def _state(self):
+        with open(self.state_path, encoding='utf-8') as stream:
+            return json.load(stream)
+
+    def test_t1_first_activation_sends(self):
+        self.assertTrue(self._send(4.10))
+        self.assertEqual(1, self.send_raw.call_count)
+        self.assertTrue(self._state()['event_conditions'][self.SHORT_EVENT]['active'])
+
+    def test_t2_same_event_with_different_percentage_is_suppressed(self):
+        self.assertTrue(self._send(4.10))
+        self.assertFalse(self._send(4.18))
+        self.assertEqual(1, self.send_raw.call_count)
+
+    def test_t3_ten_active_cycles_send_exactly_once(self):
+        results = [self._send(value) for value in (4.10, 4.18, 4.07, 4.24, 4.31,
+                                                    4.12, 4.46, 4.09, 4.27, 4.15)]
+        self.assertEqual(1, sum(result is True for result in results))
+        self.assertEqual(1, self.send_raw.call_count)
+
+    def test_t4_inactive_transition_rearms(self):
+        self.assertTrue(self._send(4.10))
+        self.assertTrue(telegram_alerts.rearm_alert_event(self.SHORT_EVENT))
+        event = self._state()['event_conditions'][self.SHORT_EVENT]
+        self.assertFalse(event['active'])
+        self.assertIn('rearmed_at', event)
+
+    def test_t5_reactivation_sends_second_episode(self):
+        self.assertTrue(self._send(4.10))
+        self.assertTrue(telegram_alerts.rearm_alert_event(self.SHORT_EVENT))
+        self.assertTrue(self._send(4.18))
+        self.assertEqual(2, self.send_raw.call_count)
+
+    def test_t6_persisted_active_state_survives_simulated_restart(self):
+        self.assertTrue(self._send(4.10))
+        persisted = self._state()['event_conditions'][self.SHORT_EVENT]
+        self.assertTrue(persisted['active'])
+        with patch.object(telegram_alerts, '_read_state', wraps=telegram_alerts._read_state) as read_state:
+            self.assertFalse(self._send(4.18))
+        read_state.assert_called()
+        self.assertEqual(1, self.send_raw.call_count)
+
+    def test_t7_different_direction_uses_independent_event_key(self):
+        self.assertTrue(self._send(4.10, self.SHORT_EVENT))
+        self.assertTrue(self._send(-4.10, self.LONG_EVENT))
+        self.assertEqual(2, self.send_raw.call_count)
+        with patch.object(cycle_runner.utils, 'send_alert') as send_alert, \
+             patch.object(cycle_runner.utils, 'rearm_telegram_alert_event') as rearm:
+            cycle_runner.sync_preventive_telegram_alert(True, False, 'fixture')
+        send_alert.assert_called_once_with('fixture', event_key=self.SHORT_EVENT)
+        rearm.assert_called_once_with(self.LONG_EVENT)
+
+    def test_t8_display_message_changes_but_event_identity_is_stable(self):
+        first = self._message(4.10)[2]
+        second = self._message(4.18)[2]
+        self.assertNotEqual(first, second)
+        self.assertIn('+4.1%', first)
+        self.assertIn('+4.2%', second)
+        first_fp = telegram_alerts._fingerprint(
+            'WARNING', 'BinanceBot', first, event_key=self.SHORT_EVENT)
+        second_fp = telegram_alerts._fingerprint(
+            'WARNING', 'BinanceBot', second, event_key=self.SHORT_EVENT)
+        self.assertEqual(first_fp, second_fp)
+
+    def test_t9_corrupt_state_warns_sends_and_rebuilds_safe_state(self):
+        with open(self.state_path, 'w', encoding='utf-8') as stream:
+            stream.write('{invalid fixture')
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.assertTrue(self._send(4.10))
+            self.assertFalse(self._send(4.18))
+        self.assertIn('Telegram alert state read failed', stderr.getvalue())
+        self.assertTrue(self._state()['event_conditions'][self.SHORT_EVENT]['active'])
+        self.assertEqual(1, self.send_raw.call_count)
+
+    def test_t10_transport_is_mocked_and_never_uses_network(self):
+        with patch.object(telegram_alerts.urllib.request, 'urlopen') as urlopen:
+            self.assertTrue(self._send(4.10))
+        self.send_raw.assert_called_once()
+        urlopen.assert_not_called()
+
+    def test_write_failure_keeps_visibility_retry_without_trading_mutation(self):
+        stderr = io.StringIO()
+        with patch.object(telegram_alerts, '_write_state', return_value=False), \
+             contextlib.redirect_stderr(stderr):
+            self.assertTrue(self._send(4.10))
+            self.assertTrue(self._send(4.18))
+        self.assertEqual(2, self.send_raw.call_count)
+        self.assertIn('state_persisted=false', stderr.getvalue())
 
 
 class ObservableCapacityTests(unittest.TestCase):

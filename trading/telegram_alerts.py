@@ -86,8 +86,13 @@ def _normalize_text(value):
     return ' '.join(str(value or '').strip().split())
 
 
-def _fingerprint(level, title, message):
-    raw = f'{_normalize_text(level).upper()}|{_normalize_text(title)}|{_normalize_text(message)}'
+def _normalize_event_key(value):
+    return _normalize_text(value).lower()
+
+
+def _fingerprint(level, title, message, event_key=None):
+    identity = f'event:{_normalize_event_key(event_key)}' if event_key else _normalize_text(message)
+    raw = f'{_normalize_text(level).upper()}|{_normalize_text(title)}|{identity}'
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()
 
 
@@ -96,7 +101,10 @@ def _read_state():
         with open(ALERT_STATE_FILE, encoding='utf-8') as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
-    except Exception:
+    except FileNotFoundError:
+        return {}
+    except Exception as exc:
+        print(f'Telegram alert state read failed: {exc}', file=sys.stderr)
         return {}
 
 
@@ -109,8 +117,10 @@ def _write_state(state):
             os.chmod(ALERT_STATE_FILE, 0o600)
         except Exception:
             pass
+        return True
     except Exception as exc:
         print(f'Telegram alert state write failed: {exc}', file=sys.stderr)
+        return False
 
 
 def _cooldown_suppressed(level, title, message, cooldown):
@@ -126,20 +136,65 @@ def _cooldown_suppressed(level, title, message, cooldown):
     return False, fp
 
 
-def _record_sent(level, title, message, fingerprint):
-    if level == 'CRITICAL' or not fingerprint:
-        return
+def _event_active(event_key):
+    state = _read_state()
+    events = state.get('event_conditions') if isinstance(state.get('event_conditions'), dict) else {}
+    previous = events.get(_normalize_event_key(event_key))
+    return bool(isinstance(previous, dict) and previous.get('active') is True)
+
+
+def rearm_alert_event(event_key):
+    """Persist ACTIVE -> INACTIVE for one semantic alert episode."""
+    event_key = _normalize_event_key(event_key)
+    if not event_key:
+        return False
+    state = _read_state()
+    events = state.get('event_conditions') if isinstance(state.get('event_conditions'), dict) else {}
+    previous = events.get(event_key)
+    if not isinstance(previous, dict) or previous.get('active') is not True:
+        return False
+    now = time.time()
+    events[event_key] = {
+        **previous,
+        'active': False,
+        'rearmed_at': now,
+    }
+    state['event_conditions'] = events
+    state['updated_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now))
+    persisted = _write_state(state)
+    if persisted:
+        print(f'Telegram alert event rearmed: event_key={event_key}', file=sys.stderr)
+    return persisted
+
+
+def _record_sent(level, title, message, fingerprint, event_key=None):
+    if (level == 'CRITICAL' and not event_key) or not fingerprint:
+        return False
     state = _read_state()
     alerts = state.get('alerts') if isinstance(state.get('alerts'), dict) else {}
+    now = time.time()
     alerts[fingerprint] = {
-        'last_sent': time.time(),
+        'last_sent': now,
         'level': level,
         'title': _normalize_text(title),
         'message': _normalize_text(message)[:500],
     }
     state['alerts'] = alerts
-    state['updated_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
-    _write_state(state)
+    event_key = _normalize_event_key(event_key)
+    if event_key:
+        events = state.get('event_conditions') if isinstance(state.get('event_conditions'), dict) else {}
+        events[event_key] = {
+            'active': True,
+            'activated_at': now,
+            'last_sent': now,
+            'level': level,
+            'title': _normalize_text(title),
+            'message': _normalize_text(message)[:500],
+            'fingerprint': fingerprint,
+        }
+        state['event_conditions'] = events
+    state['updated_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now))
+    return _write_state(state)
 
 
 def _format_alert(level, title, message):
@@ -172,7 +227,7 @@ def _send_raw(token, chat_id, text):
     return bool(payload.get('ok'))
 
 
-def send_telegram_alert(level, title, message, notification_type=None):
+def send_telegram_alert(level, title, message, notification_type=None, event_key=None):
     """
     Send a Telegram alert if enabled and above threshold.
     Returns True only when Telegram accepts the request. Never raises.
@@ -195,13 +250,29 @@ def send_telegram_alert(level, title, message, notification_type=None):
             print('Telegram alerts enabled but TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing', file=sys.stderr)
             return False
 
-        suppressed, fp = _cooldown_suppressed(level, title, message, cooldown)
-        if suppressed:
-            return False
+        event_key = _normalize_event_key(event_key)
+        if event_key:
+            fp = _fingerprint(level, title, message, event_key=event_key)
+            if _event_active(event_key):
+                print(
+                    f'Telegram alert suppressed: event_key={event_key} reason=active_episode',
+                    file=sys.stderr,
+                )
+                return False
+        else:
+            suppressed, fp = _cooldown_suppressed(level, title, message, cooldown)
+            if suppressed:
+                return False
 
         sent = _send_raw(token, chat_id, _format_alert(level, title, message))
         if sent:
-            _record_sent(level, title, message, fp)
+            persisted = _record_sent(level, title, message, fp, event_key=event_key)
+            if event_key:
+                print(
+                    f'Telegram alert sent: event_key={event_key} '
+                    f'reason=episode_activated state_persisted={str(bool(persisted)).lower()}',
+                    file=sys.stderr,
+                )
         return sent
     except Exception as exc:
         print(f'Telegram alert failed: {exc}', file=sys.stderr)

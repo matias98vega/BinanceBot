@@ -677,7 +677,7 @@ def format_rebalance_alert(message):
     ])
 
 
-def send_alert(msg):
+def send_alert(msg, event_key=None):
     try:
         from notification_guard import external_notifications_disabled, log_suppressed
         if external_notifications_disabled():
@@ -728,7 +728,13 @@ def send_alert(msg):
         elif 'sl' in lower:
             level = 'WARNING'
             kind = 'SL'
-        send_telegram_alert(level, 'BinanceBot', msg, notification_type=kind)
+        send_telegram_alert(
+            level,
+            'BinanceBot',
+            msg,
+            notification_type=kind,
+            event_key=event_key,
+        )
     except Exception:
         pass
     try:
@@ -740,6 +746,18 @@ def send_alert(msg):
         ], timeout=10, capture_output=True)
     except Exception:
         pass
+
+def rearm_telegram_alert_event(event_key):
+    """Rearm a semantic Telegram alert without affecting trading state."""
+    try:
+        from notification_guard import external_notifications_disabled
+        if external_notifications_disabled():
+            return False
+        from telegram_alerts import rearm_alert_event
+        return rearm_alert_event(event_key)
+    except Exception:
+        return False
+
 
 # ── Logs ──────────────────────────────────────────────────────────────────────
 def log_trade(trade_num, symbol, direction, result, pnl, capital_after):
