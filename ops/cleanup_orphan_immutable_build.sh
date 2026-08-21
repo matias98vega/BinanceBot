@@ -44,8 +44,70 @@ check_symlink_tree() {
   done <<<"$links"
 }
 
+check_systemd_unit_files() {
+  local target="$1"
+  local required_root="$2"
+  shift 2
+  local link link_target links references resolved root status
+  local -a roots=("$required_root")
+
+  [[ -d "$required_root" && -r "$required_root" ]] || \
+    die "BLOCKED_REFERENCE_CHECK_FAILED" \
+      "required systemd unit directory is unavailable: ${required_root}"
+  for root in "$@"; do
+    [[ -e "$root" || -L "$root" ]] || continue
+    [[ -d "$root" && -r "$root" ]] || \
+      die "BLOCKED_REFERENCE_CHECK_FAILED" \
+        "cannot inspect systemd unit directory: ${root}"
+    roots+=("$root")
+  done
+
+  # Do not use grep -R here: it follows systemd enablement symlinks and turns an
+  # unrelated dangling unit symlink into status 2. Regular files and symlinks
+  # are deliberately inspected separately so true read errors still fail closed.
+  if references="$(grep -rFl -- "$target" "${roots[@]}")"; then
+    die "BLOCKED_BUILDING_DIR_IN_USE" \
+      "systemd unit file references target: ${references%%$'\n'*}"
+  else
+    status=$?
+    [[ "$status" -eq 1 ]] || \
+      die "BLOCKED_REFERENCE_CHECK_FAILED" "cannot inspect systemd unit files"
+  fi
+
+  if ! links="$(find -P "${roots[@]}" -type l -print)"; then
+    die "BLOCKED_REFERENCE_CHECK_FAILED" "cannot inspect systemd unit symlinks"
+  fi
+  while IFS= read -r link; do
+    [[ -n "$link" ]] || continue
+    if ! link_target="$(readlink -- "$link")"; then
+      die "BLOCKED_REFERENCE_CHECK_FAILED" "cannot inspect systemd symlink=${link}"
+    fi
+    resolved="$(readlink -f -- "$link" 2>/dev/null || true)"
+    case "$link_target" in
+      "$target"|"$target/"*)
+        die "BLOCKED_BUILDING_DIR_IN_USE" "systemd symlink=${link}" ;;
+    esac
+    case "$resolved" in
+      "$target"|"$target/"*)
+        die "BLOCKED_BUILDING_DIR_IN_USE" "systemd symlink=${link}" ;;
+    esac
+    [[ ! -d "$link" ]] || \
+      die "BLOCKED_REFERENCE_CHECK_FAILED" "systemd directory symlink=${link}"
+    if [[ -f "$link" ]]; then
+      if grep -Fq -- "$target" "$link"; then
+        die "BLOCKED_BUILDING_DIR_IN_USE" "systemd symlink file=${link}"
+      else
+        status=$?
+        [[ "$status" -eq 1 ]] || \
+          die "BLOCKED_REFERENCE_CHECK_FAILED" \
+            "cannot inspect systemd symlink file=${link}"
+      fi
+    fi
+  done <<<"$links"
+}
+
 check_systemd_references() {
-  local references status unit units values
+  local unit units values
   if ! units="$(systemctl list-units --all --type=service --type=timer --no-legend --no-pager)"; then
     die "BLOCKED_REFERENCE_CHECK_FAILED" "cannot enumerate systemd units"
   fi
@@ -61,14 +123,8 @@ check_systemd_references() {
     fi
   done <<<"$units"
 
-  if references="$(grep -RFl -- "$TARGET" \
-      /etc/systemd/system /lib/systemd/system /usr/lib/systemd/system 2>/dev/null)"; then
-    die "BLOCKED_BUILDING_DIR_IN_USE" "systemd unit file references target: ${references%%$'\n'*}"
-  else
-    status=$?
-    [[ "$status" -eq 1 ]] || \
-      die "BLOCKED_REFERENCE_CHECK_FAILED" "cannot inspect systemd unit files"
-  fi
+  check_systemd_unit_files "$TARGET" \
+    /etc/systemd/system /lib/systemd/system /usr/lib/systemd/system
 }
 
 check_process_references() {
@@ -104,6 +160,20 @@ check_process_references() {
     fi
   done
 }
+
+if [[ "${1:-}" == "--test-systemd-unit-files" ]]; then
+  [[ "$#" -ge 3 ]] || \
+    die "BLOCKED_INVALID_TEST_ARGUMENTS" \
+      "usage: --test-systemd-unit-files TARGET REQUIRED_ROOT [OPTIONAL_ROOT ...]"
+  shift
+  require_command find
+  require_command grep
+  require_command readlink
+  check_systemd_unit_files "$@"
+  printf '[RESULT] SYSTEMD_UNIT_FILE_CHECK_PASSED\n'
+  exit 0
+fi
+[[ "$#" -eq 0 ]] || die "BLOCKED_INVALID_ARGUMENTS" "cleanup accepts no arguments"
 
 [[ "$EUID" -eq 0 ]] || die "BLOCKED_NOT_ROOT" "run explicitly as root"
 
