@@ -52,6 +52,14 @@ readonly -a MUTABLE_PATHS=(
   "trading/telegram_offset.json"
   "trading/reports"
 )
+readonly -a ISOLATED_VALIDATION_EXTRA_FILES=(
+  "trading/state.json"
+  "trading/bot_state.json"
+  "data/history/futures_reconciliation_status.json"
+  "data/history/rebalance_status.json"
+  "rebalance_status.json"
+  "data/analysis/ml_dataset_audit/summary.json"
+)
 
 declare -A INITIAL_ACTIVE=()
 declare -A INITIAL_ENABLED=()
@@ -69,6 +77,10 @@ RELEASE_FINAL=""
 VENV_BUILD=""
 VENV_FINAL=""
 VALIDATION_ROOT=""
+VALIDATION_PYTHON=""
+VALIDATION_SANDBOX=""
+ISOLATED_STATE_ROOT=""
+VALIDATION_GROUP=""
 PRODUCTION_PYTHON=""
 CANDIDATE_VERSION=""
 RELEASE_SOURCE_FINGERPRINT=""
@@ -79,6 +91,7 @@ CURRENT_SWITCHED=0
 ROLLBACK_RUNNING=0
 ROLLBACK_LOCK_DIR=""
 ROLLBACK_STATE_FILE=""
+REUSE_RELEASE=0
 
 now_utc() {
   date -u +%Y-%m-%dT%H:%M:%SZ
@@ -291,32 +304,109 @@ on_error() {
   exit "$rc"
 }
 
-snapshot_mutable() {
-  local destination="$1" relative target
-  {
-    for relative in "${MUTABLE_PATHS[@]}"; do
-      target="$(readlink "${CURRENT_BEFORE}/${relative}")"
-      [[ "$target" == /* ]] || die "BLOCKED_MUTABLE_LINK_INVALID" "$relative"
-      if [[ -f "$target" ]]; then
-        printf '%s\0' "$target"
-      elif [[ -d "$target" ]]; then
-        find -P "$target" -type f -print0
-      else
-        die "BLOCKED_MUTABLE_STATE_MISSING" "$target"
-      fi
-    done
-  } | LC_ALL=C sort -z -u | xargs -0 -r sha256sum > "$destination"
+file_prefix_preserved() {
+  local before="$1" after="$2" before_size after_size
+  [[ -f "$before" && -f "$after" ]] || return 1
+  before_size="$(stat -c '%s' "$before")"
+  after_size="$(stat -c '%s' "$after")"
+  (( after_size >= before_size )) || return 1
+  cmp -s -n "$before_size" "$before" "$after"
+}
+
+mutable_change_allowed() {
+  local change_type="$1" actor="$2" cycle_correlated="$3" candidate_isolated="$4" before="$5" after="$6"
+  [[ "$candidate_isolated" == "true" && "$actor" == "production" ]] || return 1
+  case "$change_type" in
+    append)
+      [[ "$cycle_correlated" == "true" ]] && file_prefix_preserved "$before" "$after"
+      ;;
+    atomic)
+      [[ "$cycle_correlated" == "true" && -f "$after" ]]
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+candidate_validation_isolated() {
+  local root="$1" relative path
+  for relative in "${MUTABLE_PATHS[@]}"; do
+    path="${root}/${relative}"
+    [[ ! -e "$path" && ! -L "$path" ]] || return 1
+  done
+  [[ ! -e "${root}/.env" && ! -L "${root}/.env" ]] || return 1
+  [[ -L "${root}/.venv" ]] || return 1
+}
+
+prepare_candidate_validation_tree() {
+  local root="$1" python_target="$2" relative path
+  for relative in "${MUTABLE_PATHS[@]}"; do
+    path="${root}/${relative}"
+    [[ "$path" == "${root}/"* && "$path" != "$root" ]] || return 1
+    if [[ -e "$path" || -L "$path" ]]; then
+      rm -rf -- "$path"
+    fi
+  done
+  rm -f -- "${root}/.env" "${root}/.venv"
+  ln -s "$python_target" "${root}/.venv"
+  candidate_validation_isolated "$root"
+}
+
+copy_file_stable() {
+  local source="$1" destination="$2" attempt before after temporary
+  [[ -f "$source" ]] || return 1
+  install -d -m 0750 "$(dirname "$destination")"
+  temporary="${destination}.copy.$$"
+  for attempt in 1 2 3; do
+    before="$(stat -c '%i|%s|%y' "$source")"
+    cp --reflink=auto --preserve=mode,timestamps -- "$source" "$temporary"
+    after="$(stat -c '%i|%s|%y' "$source")"
+    if [[ "$before" == "$after" ]] && cmp -s "$source" "$temporary"; then
+      mv -f -- "$temporary" "$destination"
+      return 0
+    fi
+    rm -f -- "$temporary"
+  done
+  return 1
+}
+
+prepare_isolated_state_snapshot() {
+  local source relative
+  install -d -m 0711 -o root -g root "$VALIDATION_SANDBOX"
+  install -d -m 0750 -o root -g "$VALIDATION_GROUP" "$ISOLATED_STATE_ROOT"
+  for source in "${CURRENT_BEFORE}"/data/history/*.jsonl "${CURRENT_BEFORE}"/trading/*.jsonl; do
+    [[ -f "$source" ]] || continue
+    relative="${source#${CURRENT_BEFORE}/}"
+    copy_file_stable "$source" "${ISOLATED_STATE_ROOT}/${relative}" || \
+      die "BLOCKED_UNSTABLE_VALIDATION_SNAPSHOT" "$relative"
+  done
+  for relative in "${ISOLATED_VALIDATION_EXTRA_FILES[@]}"; do
+    source="${CURRENT_BEFORE}/${relative}"
+    [[ -f "$source" ]] || continue
+    copy_file_stable "$source" "${ISOLATED_STATE_ROOT}/${relative}" || \
+      die "BLOCKED_UNSTABLE_VALIDATION_SNAPSHOT" "$relative"
+  done
+  chown -R root:"$VALIDATION_GROUP" "$ISOLATED_STATE_ROOT"
+  find -P "$ISOLATED_STATE_ROOT" -type d -exec chmod 0550 {} +
+  find -P "$ISOLATED_STATE_ROOT" -type f -exec chmod 0440 {} +
+}
+
+snapshot_isolated_state() {
+  local destination="$1"
+  find -P "$ISOLATED_STATE_ROOT" -type f -print0 | LC_ALL=C sort -z | \
+    xargs -0 -r sha256sum > "$destination"
 }
 
 link_candidate_mutable_state() {
-  local relative release_path source_link target
+  local release_root="$1" venv_target="$2" relative release_path source_link target
   for relative in "${MUTABLE_PATHS[@]}"; do
-    release_path="${VALIDATION_ROOT}/${relative}"
+    release_path="${release_root}/${relative}"
     source_link="${CURRENT_BEFORE}/${relative}"
     [[ -L "$source_link" ]] || die "BLOCKED_MUTABLE_LINK_INVALID" "$source_link"
     target="$(readlink "$source_link")"
     [[ "$target" == /* ]] || die "BLOCKED_MUTABLE_LINK_INVALID" "$source_link"
-    [[ "$release_path" == "${VALIDATION_ROOT}/"* && "$release_path" != "$VALIDATION_ROOT" ]] || \
+    [[ "$release_path" == "${release_root}/"* && "$release_path" != "$release_root" ]] || \
       die "BLOCKED_RELEASE_PATH_INVALID" "$release_path"
     if [[ -e "$release_path" || -L "$release_path" ]]; then
       rm -rf -- "$release_path"
@@ -325,14 +415,26 @@ link_candidate_mutable_state() {
     ln -s "$target" "$release_path"
   done
   [[ -L "${CURRENT_BEFORE}/.env" ]] || die "BLOCKED_ENV_MISMATCH" "current .env"
-  rm -f -- "${VALIDATION_ROOT}/.env" "${VALIDATION_ROOT}/.venv"
-  ln -s "$(readlink "${CURRENT_BEFORE}/.env")" "${VALIDATION_ROOT}/.env"
-  ln -s "$VENV_BUILD" "${VALIDATION_ROOT}/.venv"
+  rm -f -- "${release_root}/.env" "${release_root}/.venv"
+  ln -s "$(readlink "${CURRENT_BEFORE}/.env")" "${release_root}/.env"
+  ln -s "$venv_target" "${release_root}/.venv"
 }
 
 validate_telegram_state_compatibility() {
-  local python="$1"
-  PYTHONPATH="${VALIDATION_ROOT}/trading" "$python" - "$TEMP_ROOT" <<'PY'
+  local python="$1" source_copy target_dir
+  target_dir="${VALIDATION_SANDBOX}/telegram"
+  install -d -m 0700 -o nobody -g "$VALIDATION_GROUP" "$target_dir"
+  source_copy="${target_dir}/source.json"
+  copy_file_stable "${WORKTREE}/trading/telegram_alert_state.json" "$source_copy" || return 1
+  chown nobody:"$VALIDATION_GROUP" "$source_copy"
+  chmod 0600 "$source_copy"
+  runuser -u nobody -- env -i \
+    HOME="${VALIDATION_SANDBOX}/home" \
+    PATH="/usr/local/bin:/usr/bin:/bin" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPYCACHEPREFIX="${VALIDATION_SANDBOX}/pycache" \
+    PYTHONPATH="${VALIDATION_ROOT}/trading" \
+    "$python" - "$source_copy" "${target_dir}/candidate.json" <<'PY'
 import json
 import shutil
 import sys
@@ -340,9 +442,8 @@ from pathlib import Path
 
 import telegram_alerts
 
-root = Path(sys.argv[1])
-source = Path('/home/binancebot/BinanceBot/trading/telegram_alert_state.json')
-target = root / 'telegram-alert-state-compatibility.json'
+source = Path(sys.argv[1])
+target = Path(sys.argv[2])
 original = json.loads(source.read_text(encoding='utf-8'))
 if not isinstance(original, dict):
     raise SystemExit('BLOCKED_TELEGRAM_STATE_MIGRATION_REQUIRED')
@@ -370,24 +471,56 @@ print('TELEGRAM_STATE_BACKWARD_COMPATIBLE=true')
 PY
 }
 
-run_candidate_validation() {
-  export PYTHONDONTWRITEBYTECODE=1
-  export PYTHONPYCACHEPREFIX="${TEMP_ROOT}/pycache"
-  export BINANCEBOT_TEST_MODE=true
-  export BINANCEBOT_DISABLE_EXTERNAL_NOTIFICATIONS=true
-  (
-    trap - ERR
-    cd "$VALIDATION_ROOT"
-    bash -n scripts/run_once.sh
-    .venv/bin/python -m py_compile trading/*.py
-    .venv/bin/python -m py_compile trading/orchestration/*.py
-    .venv/bin/python -m py_compile dashboard/app.py
-    .venv/bin/python -m unittest discover -s trading
-    .venv/bin/python trading/check_version_consistency.py --strict
-    .venv/bin/python trading/audit_data_quality.py
-    .venv/bin/python -m pip check
-  )
-  validate_telegram_state_compatibility "${VENV_BUILD}/bin/python"
+run_candidate_isolated_validation() {
+  install -d -m 0700 -o nobody -g "$VALIDATION_GROUP" \
+    "${VALIDATION_SANDBOX}/home" "${VALIDATION_SANDBOX}/pycache"
+  candidate_validation_isolated "$VALIDATION_ROOT" || \
+    die "VERIFICATION_FAILED" "candidate mutable state is not isolated"
+  runuser -u nobody -- env -i \
+    HOME="${VALIDATION_SANDBOX}/home" \
+    PATH="/usr/local/bin:/usr/bin:/bin" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPYCACHEPREFIX="${VALIDATION_SANDBOX}/pycache" \
+    BINANCEBOT_TEST_MODE=true \
+    BINANCEBOT_DISABLE_EXTERNAL_NOTIFICATIONS=true \
+    BINANCE_API_KEY=offline-fixture-key \
+    BINANCE_API_SECRET=offline-fixture-secret \
+    bash -c '
+      set -Eeuo pipefail
+      cd "$1"
+      bash -n scripts/run_once.sh
+      .venv/bin/python -m py_compile trading/*.py
+      .venv/bin/python -m py_compile trading/orchestration/*.py
+      .venv/bin/python -m py_compile dashboard/app.py
+      .venv/bin/python -m unittest discover -s trading
+      .venv/bin/python -m pip check
+    ' _ "$VALIDATION_ROOT"
+  validate_telegram_state_compatibility "$VALIDATION_PYTHON"
+}
+
+run_candidate_data_validation() {
+  local trades_path="${ISOLATED_STATE_ROOT}/data/history/trades.jsonl"
+  snapshot_isolated_state "$MUTABLE_BEFORE"
+  runuser -u nobody -- env -i \
+    HOME="${VALIDATION_SANDBOX}/home" \
+    PATH="/usr/local/bin:/usr/bin:/bin" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPYCACHEPREFIX="${VALIDATION_SANDBOX}/pycache" \
+    PYTHONPATH="${VALIDATION_ROOT}/trading" \
+    "$VALIDATION_PYTHON" "${VALIDATION_ROOT}/trading/check_version_consistency.py" \
+      --strict --trades "$trades_path"
+  runuser -u nobody -- env -i \
+    HOME="${VALIDATION_SANDBOX}/home" \
+    PATH="/usr/local/bin:/usr/bin:/bin" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPYCACHEPREFIX="${VALIDATION_SANDBOX}/pycache" \
+    PYTHONPATH="${VALIDATION_ROOT}/trading" \
+    "$VALIDATION_PYTHON" "${VALIDATION_ROOT}/trading/audit_data_quality.py" \
+      --project-dir "$ISOLATED_STATE_ROOT"
+  snapshot_isolated_state "$MUTABLE_AFTER"
+  cmp -s "$MUTABLE_BEFORE" "$MUTABLE_AFTER" || \
+    die "VERIFICATION_FAILED" "candidate data validation changed isolated state"
+  info "CANDIDATE_VALIDATION_CANNOT_WRITE_PRODUCTION_STATE=true"
 }
 
 run_get_only_safety_gate() {
@@ -509,7 +642,7 @@ main() {
     printf '[RESULT] BLOCKED_NOT_ROOT\n'
     exit 1
   fi
-  for command_name in awk bash chmod chown cmp date find git grep install journalctl ln mkdir mv readlink rm runuser sed sha256sum sleep sort stat systemctl tar tee touch wc xargs; do
+  for command_name in awk bash chmod chown cmp cp date env find git grep id install journalctl ln mkdir mv readlink rm runuser sed sha256sum sleep sort stat systemctl tar tee touch wc xargs; do
     require_command "$command_name"
   done
 
@@ -547,10 +680,14 @@ main() {
   RELEASE_FINAL="${RELEASES_ROOT}/${RELEASE_COMMIT}"
   VENV_BUILD="${VENVS_ROOT}/${RELEASE_COMMIT}.building"
   VENV_FINAL="${VENVS_ROOT}/${RELEASE_COMMIT}"
-  VALIDATION_ROOT="$RELEASE_BUILD"
-  MUTABLE_BEFORE="${TEMP_ROOT}/mutable-before.sha256"
-  MUTABLE_AFTER="${TEMP_ROOT}/mutable-after.sha256"
+  VALIDATION_SANDBOX="/var/tmp/binancebot-candidate-validation-${UTC_STAMP}"
+  ISOLATED_STATE_ROOT="${VALIDATION_SANDBOX}/state"
+  VALIDATION_GROUP="$(id -gn nobody)"
+  MUTABLE_BEFORE="${TEMP_ROOT}/isolated-before.sha256"
+  MUTABLE_AFTER="${TEMP_ROOT}/isolated-after.sha256"
   [[ ! -e "$RELEASE_BUILD" && ! -e "$VENV_BUILD" ]] || die "BLOCKED_INCOMPLETE_CANDIDATE_EXISTS" "$RELEASE_COMMIT"
+  [[ ! -e "$VALIDATION_SANDBOX" ]] || die "BLOCKED_VALIDATION_SANDBOX_EXISTS" "$VALIDATION_SANDBOX"
+  install -d -m 0711 -o root -g root "$VALIDATION_SANDBOX"
   validate_systemd_contract || die "BLOCKED_SYSTEMD_CONTRACT" "drop-ins do not point to current"
   local unit
   for unit in "${SERVICE_UNITS[@]}" "${TIMER_UNITS[@]}"; do record_unit_state "$unit"; done
@@ -567,7 +704,7 @@ main() {
   info "RELEASE_COMMIT=${RELEASE_COMMIT}"
   info "CANDIDATE_VERSION=${CANDIDATE_VERSION}"
 
-  section "PREPARE" "Materializing and validating candidate before pause"
+  section "PREPARE" "Materializing and validating isolated candidate before pause"
   install -d -m 0755 -o root -g root "$RELEASES_ROOT" "$VENVS_ROOT"
   if [[ -e "$RELEASE_FINAL" || -e "$VENV_FINAL" ]]; then
     [[ -d "$RELEASE_FINAL" && -d "$VENV_FINAL" ]] || die "BLOCKED_EXISTING_RELEASE_INVALID" "$RELEASE_COMMIT"
@@ -576,12 +713,15 @@ main() {
     "$VENV_FINAL/bin/python" -m pip freeze --all | LC_ALL=C sort > "${TEMP_ROOT}/reuse-freeze.txt"
     cmp -s "${TEMP_ROOT}/production-freeze.txt" "${TEMP_ROOT}/reuse-freeze.txt" || \
       die "BLOCKED_VENV_NOT_REPRODUCIBLE" "reused venv differs"
-    VALIDATION_ROOT="$RELEASE_FINAL"
-    snapshot_mutable "$MUTABLE_BEFORE"
-    run_candidate_validation
-    snapshot_mutable "$MUTABLE_AFTER"
-    cmp -s "$MUTABLE_BEFORE" "$MUTABLE_AFTER" || \
-      die "VERIFICATION_FAILED" "reused candidate validation changed mutable state"
+    REUSE_RELEASE=1
+    VALIDATION_ROOT="${VALIDATION_SANDBOX}/source"
+    VALIDATION_PYTHON="${VENV_FINAL}/bin/python"
+    install -d -m 0755 -o root -g root "$VALIDATION_ROOT"
+    git archive --format=tar "$RELEASE_COMMIT" | tar -x -C "$VALIDATION_ROOT"
+    cp -- "${RELEASE_FINAL}/.release-commit" "${VALIDATION_ROOT}/.release-commit"
+    cp -- "${RELEASE_FINAL}/.release-version-commits.json" "${VALIDATION_ROOT}/.release-version-commits.json"
+    prepare_candidate_validation_tree "$VALIDATION_ROOT" "$VENV_FINAL" || \
+      die "VERIFICATION_FAILED" "reused candidate isolation"
     info "REUSING_VALIDATED_RELEASE=${RELEASE_FINAL}"
   else
     install -d -m 0755 -o root -g root "$RELEASE_BUILD"
@@ -596,19 +736,36 @@ main() {
     "$VENV_BUILD/bin/python" -m pip freeze --all | LC_ALL=C sort > "${TEMP_ROOT}/candidate-freeze.txt"
     cmp -s "${TEMP_ROOT}/production-freeze.txt" "${TEMP_ROOT}/candidate-freeze.txt" || \
       die "BLOCKED_VENV_NOT_REPRODUCIBLE" "candidate venv differs"
-    link_candidate_mutable_state
-    release_source_manifest "$VALIDATION_ROOT" "${TEMP_ROOT}/release-tree-pre-validation.sha256"
+    VALIDATION_ROOT="$RELEASE_BUILD"
+    VALIDATION_PYTHON="${VENV_BUILD}/bin/python"
+    prepare_candidate_validation_tree "$VALIDATION_ROOT" "$VENV_BUILD" || \
+      die "VERIFICATION_FAILED" "candidate isolation"
+  fi
+
+  release_source_manifest "$VALIDATION_ROOT" "${TEMP_ROOT}/release-tree-pre-validation.sha256"
+  if (( REUSE_RELEASE == 1 )); then
+    cmp -s "${RELEASE_FINAL}/.release-tree.sha256" "${TEMP_ROOT}/release-tree-pre-validation.sha256" || \
+      die "BLOCKED_EXISTING_RELEASE_INVALID" "reused validation source differs"
+  else
     install -m 0644 -o root -g root "${TEMP_ROOT}/release-tree-pre-validation.sha256" "${VALIDATION_ROOT}/.release-tree.sha256"
-    snapshot_mutable "$MUTABLE_BEFORE"
-    run_candidate_validation
-    snapshot_mutable "$MUTABLE_AFTER"
-    cmp -s "$MUTABLE_BEFORE" "$MUTABLE_AFTER" || die "VERIFICATION_FAILED" "candidate validation changed mutable state"
-    release_source_manifest "$VALIDATION_ROOT" "${TEMP_ROOT}/release-tree-post-validation.sha256"
-    cmp -s "${VALIDATION_ROOT}/.release-tree.sha256" "${TEMP_ROOT}/release-tree-post-validation.sha256" || \
-      die "VERIFICATION_FAILED" "release source changed"
+  fi
+
+  run_candidate_isolated_validation
+  release_source_manifest "$VALIDATION_ROOT" "${TEMP_ROOT}/release-tree-post-tests.sha256"
+  cmp -s "${TEMP_ROOT}/release-tree-pre-validation.sha256" "${TEMP_ROOT}/release-tree-post-tests.sha256" || \
+    die "VERIFICATION_FAILED" "isolated tests changed release source"
+
+  prepare_isolated_state_snapshot
+  run_candidate_data_validation
+  release_source_manifest "$VALIDATION_ROOT" "${TEMP_ROOT}/release-tree-post-validation.sha256"
+  cmp -s "${TEMP_ROOT}/release-tree-pre-validation.sha256" "${TEMP_ROOT}/release-tree-post-validation.sha256" || \
+    die "VERIFICATION_FAILED" "isolated data validation changed release source"
+
+  if (( REUSE_RELEASE == 0 )); then
+    link_candidate_mutable_state "$RELEASE_BUILD" "$VENV_BUILD"
     mv -T "$VENV_BUILD" "$VENV_FINAL"
-    rm -f -- "${VALIDATION_ROOT}/.venv"
-    ln -s "$VENV_FINAL" "${VALIDATION_ROOT}/.venv"
+    rm -f -- "${RELEASE_BUILD}/.venv"
+    ln -s "$VENV_FINAL" "${RELEASE_BUILD}/.venv"
     rm -f -- "${RELEASE_BUILD}/.BUILDING"
     find -P "$RELEASE_BUILD" -type f -exec chown root:root {} + -exec chmod a-w {} +
     find -P "$RELEASE_BUILD" -type d -exec chown root:root {} + -exec chmod 0555 {} +
@@ -622,6 +779,7 @@ main() {
   runuser -u binancebot -- test ! -w "${VENV_FINAL}/bin/python" || die "BLOCKED_RELEASE_WRITABLE" "venv"
   RELEASE_SOURCE_FINGERPRINT="$(sha256sum "${RELEASE_FINAL}/.release-tree.sha256" | awk '{print $1}')"
   info "CANDIDATE_VALIDATION=READY"
+  info "CANDIDATE_STATE_LINKING=AFTER_ISOLATED_VALIDATION"
   info "RELEASE_SOURCE_FINGERPRINT=${RELEASE_SOURCE_FINGERPRINT}"
 
   section "SAFETY" "Fresh authenticated GET-only pre-cutover gate"
