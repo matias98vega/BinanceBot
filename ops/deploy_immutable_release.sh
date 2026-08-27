@@ -524,50 +524,75 @@ run_candidate_data_validation() {
 }
 
 run_get_only_safety_gate() {
-  PYTHONPATH="${RELEASE_FINAL}/trading" "${VENV_FINAL}/bin/python" - <<'PY'
+  CURRENT_RUNTIME="$CURRENT_BEFORE" \
+  CANDIDATE_RUNTIME="$RELEASE_FINAL" \
+  WORKTREE_RUNTIME="$WORKTREE" \
+  PYTHONPATH="${RELEASE_FINAL}/trading:${RELEASE_FINAL}/ops" \
+    "${VENV_FINAL}/bin/python" - <<'PY'
 import json
-from decimal import Decimal, InvalidOperation
+import os
 from pathlib import Path
 
 import binance_client
+from deploy_spot_safety import evaluate_pre_cutover_safety
 
-root = Path('/home/binancebot/BinanceBot')
-state = json.loads((root / 'trading/state.json').read_text(encoding='utf-8-sig'))
-bot_state = json.loads((root / 'trading/bot_state.json').read_text(encoding='utf-8-sig'))
-local_positions = state.get('positions') or []
-reconciliation = (((bot_state.get('positions') or {}).get('short') or {}).get('reconciliation') or {})
-
-def amount(value):
-    try:
-        return Decimal(str(value or '0'))
-    except (InvalidOperation, TypeError, ValueError):
-        raise SystemExit('BLOCKED_PRE_CUTOVER invalid position amount')
-
-client = binance_client.get_default_client()
 try:
+    root = Path(os.environ['WORKTREE_RUNTIME'])
+    state = json.loads((root / 'trading/state.json').read_text(encoding='utf-8-sig'))
+    bot_state = json.loads((root / 'trading/bot_state.json').read_text(encoding='utf-8-sig'))
+    local_positions = state.get('positions') if isinstance(state, dict) else None
+    spot_symbols = sorted({
+        str(position.get('symbol') or '').strip().upper()
+        for position in local_positions or []
+        if isinstance(position, dict)
+        and str(position.get('direction') or '').strip().lower() == 'long'
+        and str(position.get('symbol') or '').strip()
+    })
+    client = binance_client.get_default_client()
     exchange_positions = client.futures_position_risk({})
     futures_orders = client.futures_open_orders({})
     spot_orders = client.spot_signed('GET', '/api/v3/openOrders', {})
+    spot_account = client.spot_account()
+    spot_filters = {symbol: client.get_spot_filters(symbol) for symbol in spot_symbols}
 except Exception as exc:
     print('SAFETY_READ_ERROR=' + type(exc).__name__)
     raise SystemExit('BLOCKED_PRE_CUTOVER') from None
-open_positions = [row for row in exchange_positions if amount(row.get('positionAmt')) != 0]
-checks = {
-    'local_positions': len(local_positions) == 0,
-    'exchange_futures_positions': len(open_positions) == 0,
-    'managed_futures': reconciliation.get('managed_count') == 0,
-    'orphan_futures': reconciliation.get('orphan_count') == 0,
-    'unmanaged_futures': reconciliation.get('unmanaged_count') == 0,
-    'unprotected_futures': reconciliation.get('unprotected_count') == 0,
-    'desynced_futures': reconciliation.get('desynced_count') == 0,
-    'futures_reconciliation_aligned': reconciliation.get('aligned') is True and reconciliation.get('status') == 'ALINEADO',
-    'futures_open_orders': len(futures_orders) == 0,
-    'spot_open_orders': len(spot_orders) == 0,
-    'unknown_orders': isinstance(futures_orders, list) and isinstance(spot_orders, list),
-}
-for name, passed in checks.items():
+
+result = evaluate_pre_cutover_safety(
+    local_state=state,
+    bot_state=bot_state,
+    exchange_positions=exchange_positions,
+    futures_orders=futures_orders,
+    spot_orders=spot_orders,
+    spot_account=spot_account,
+    spot_filters=spot_filters,
+    current_root=os.environ['CURRENT_RUNTIME'],
+    candidate_root=os.environ['CANDIDATE_RUNTIME'],
+)
+for record in result['spot']['records']:
+    print(
+        'SPOT_DEPLOY_SAFETY '
+        f'trade_id={record["trade_id"] or "-"} '
+        f'symbol={record["symbol"] or "-"} '
+        f'managed={str(record["managed"]).lower()} '
+        f'balance_aligned={str(record["balance_aligned"]).lower()} '
+        f'oco={str(record["oco"]).lower()} '
+        f'qty_aligned={str(record["qty_aligned"]).lower()} '
+        f'status={record["status"]}'
+    )
+compatibility = result['compatibility']
+print(
+    'SPOT_RUNTIME_COMPATIBILITY '
+    f'status={compatibility["status"]} '
+    f'changed_critical_paths={",".join(compatibility["changed_critical_paths"]) or "none"} '
+    f'errors={",".join(compatibility["errors"]) or "none"}'
+)
+for name, passed in result['checks'].items():
     print(f'SAFETY_{name.upper()}={str(passed).lower()}')
-if not all(checks.values()):
+# Backward-compatible field: historically true meant both order responses were
+# known lists, despite the misleading UNKNOWN_ORDERS name.
+print(f'SAFETY_UNKNOWN_ORDERS={str(result["checks"]["order_fetch_known"]).lower()}')
+if not result['safe']:
     raise SystemExit('BLOCKED_PRE_CUTOVER')
 print('PRE_CUTOVER_SAFETY=PASS')
 PY

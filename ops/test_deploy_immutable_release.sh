@@ -264,11 +264,45 @@ test_state_isolation_contract() {
   pass 'T12 PREPARE failure leaves current intact'
 }
 
+test_spot_safety_contracts() {
+  local area output python_pass_count candidate venv previous current safety_body
+  area="${HARNESS_ROOT}/spot-safety"
+  output="$(
+    PYTHONDONTWRITEBYTECODE=1 "${WORKTREE}/.venv/bin/python" \
+      "${SCRIPT_DIR}/test_deploy_spot_safety.py" --temp-root "${area}/python"
+  )" || fail 'S1-S22/C1-C2 Python Spot safety fixtures failed'
+  printf '%s\n' "$output"
+  python_pass_count="$(grep -c '^\[PASS\] ' <<< "$output")"
+  [[ "$python_pass_count" -eq 24 ]] || fail "unexpected Spot Python assertion count: ${python_pass_count}"
+  PASS_COUNT=$((PASS_COUNT + python_pass_count))
+
+  candidate="${area}/isolated-candidate"
+  venv="${area}/isolated-venv"
+  mkdir -p "$candidate" "$venv"
+  ln -s "$venv" "${candidate}/.venv"
+  assert_true 'S23 candidate validation remains isolated' candidate_validation_isolated "$candidate"
+
+  mkdir -p "${area}/previous" "${area}/new"
+  current="${area}/current"
+  ln -s "${area}/previous" "$current"
+  previous="$(readlink -f "$current")"
+  assert_false 'S24 PREPARE failure is not cutover-ready' cutover_allowed FAILED READY
+  [[ "$(readlink -f "$current")" == "$previous" ]] || fail 'S24 PREPARE failure changed current'
+
+  safety_body="${area}/safety-body.txt"
+  sed -n '/^run_get_only_safety_gate()/,/^observe_natural_cycles()/p' "$DEPLOY_SCRIPT" > "$safety_body"
+  grep -q "spot_signed('GET'" "$safety_body" || fail 'S25 GET-only Spot order observation missing'
+  ! grep -Eq '(^|[^A-Z])(POST|PUT|DELETE|PATCH)([^A-Z]|$)|create_order|cancel_order|transfer|rebalance' \
+    "$safety_body" "${SCRIPT_DIR}/deploy_spot_safety.py" || fail 'S25 Binance mutation detected'
+  pass 'S25 deploy safety gate contains no Binance mutation'
+}
+
 test_candidate_contracts
 test_release_reuse
 test_cutover_and_rollback
 test_static_safety_contracts
 test_state_isolation_contract
+test_spot_safety_contracts
 
-[[ "$PASS_COUNT" -eq 30 ]] || fail "unexpected assertion count: ${PASS_COUNT}"
-printf '[RESULT] OFFLINE_DEPLOY_HARNESS_PASS D1-D15 T1-T12\n'
+[[ "$PASS_COUNT" -eq 57 ]] || fail "unexpected assertion count: ${PASS_COUNT}"
+printf '[RESULT] OFFLINE_DEPLOY_HARNESS_PASS D1-D15 T1-T12 S1-S25 C1-C2\n'
