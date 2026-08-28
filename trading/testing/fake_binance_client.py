@@ -157,6 +157,7 @@ class FakeBinanceClient:
         order_id = self.state.order_id()
         order = {'symbol': symbol, 'orderId': order_id, 'status': 'FILLED', 'type': 'MARKET', 'side': side,
                  'origQty': str(qty), 'executedQty': str(qty), 'cummulativeQuoteQty': str(notional),
+                 'clientOrderId': params.get('newClientOrderId') or f'fake_{order_id}',
                  'price': '0', 'time': self.state.epoch_ms,
                  'fills': [{'price': str(price), 'qty': str(qty), 'commission': str(commission), 'commissionAsset': commission_asset}]}
         self.state.orders[order_id] = order
@@ -283,7 +284,14 @@ class FakeBinanceClient:
         if (method, path) == ('POST', '/api/v3/order'): return self._spot_market(params)
         if (method, path) == ('POST', '/api/v3/order/oco'): return self._create_oco(params)
         if (method, path) == ('GET', '/api/v3/account'): return self.get_spot_account()
-        if (method, path) == ('GET', '/api/v3/order'): return deepcopy(self.state.orders[int(params['orderId'])])
+        if (method, path) == ('GET', '/api/v3/order'):
+            if params.get('orderId') not in (None, ''):
+                return deepcopy(self.state.orders[int(params['orderId'])])
+            client_order_id = params.get('origClientOrderId')
+            for order in self.state.orders.values():
+                if order.get('clientOrderId') == client_order_id:
+                    return deepcopy(order)
+            raise KeyError(f'Unknown fake clientOrderId: {client_order_id}')
         if (method, path) == ('GET', '/api/v3/orderList'): return deepcopy(self.state.order_lists[int(params['orderListId'])])
         if (method, path) == ('GET', '/api/v3/openOrders'):
             return [deepcopy(o) for o in self.state.orders.values() if o['status'] in ('NEW', 'PARTIALLY_FILLED') and (not params.get('symbol') or o['symbol'] == params['symbol'])]

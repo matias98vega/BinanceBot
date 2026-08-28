@@ -65,7 +65,7 @@ class CapabilityHistoryTests(unittest.TestCase):
         report = check_version_consistency.validate(trades_path='/missing', commit_checker=lambda commit: True)
         self.assertTrue(report['feature_schema_independent'])
         self.assertIsNone(report['deployed_model_version'])
-        self.assertEqual('v1.5-preventive-futures-close-fix', version_history.current_version())
+        self.assertEqual('v1.6-preventive-spot-close-fix', version_history.current_version())
 
     def _write_release_metadata(self, directory, *, tamper=False):
         release_commit = '9cb86796645b913c844e1170729a745f482fbb98'

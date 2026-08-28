@@ -16,6 +16,7 @@ import market
 import operational_state
 import pre_entry_gate_observability
 import preventive_futures_close
+import preventive_spot_close
 import rebalance
 import shorts
 import utils
@@ -122,6 +123,27 @@ class CycleRunner:
         # existing lifecycle so it can determine TP/SL/reconciliation cause.
         defer_normal_lifecycle = status not in {'ALREADY_FLAT', 'FLAT_UNATTRIBUTED'}
         return result, defer_normal_lifecycle
+
+    def _handle_preventive_long_spot(self, state, active_positions, pos):
+        result = preventive_spot_close.attempt_preventive_long_spot_close(self.binance, pos)
+        status = result['status']
+        symbol = pos['symbol']
+        if result.get('confirmed_close'):
+            fill_price = result['fill_price']
+            pnl = result['pnl']
+            self.out(f'  🔴 {symbol} long Spot: cierre preventivo PnL={pnl:+.2f}')
+            self.safe_log_close(pos, fill_price, 'PREVENTIVE_BTC_MOMENTUM', pnl)
+            if pos in active_positions:
+                active_positions.remove(pos)
+            state['total_pnl_usdt'] = state.get('total_pnl_usdt', 0) + pnl
+            state['daily_pnl_usdt'] = state.get('daily_pnl_usdt', 0) + pnl
+            self._append_preventive_trade_log(state, pos, pnl)
+            return result, False
+
+        self.out(f'⚠️ {symbol}: cierre preventivo LONG Spot no finalizado ({status})')
+        # Every unconfirmed outcome remains local and skips normal lifecycle for
+        # this cycle. A later cycle can recover protection or reconcile safely.
+        return result, True
 
     def run(self):
         cycle_id = f'cycle_{int(time.time())}'
@@ -282,35 +304,9 @@ class CycleRunner:
                             preventive_deferred_positions.add(id(pos))
                         continue
 
-                    # LONG Spot preventive behavior is intentionally unchanged.
-                    price_now = self.binance.get_spot_price(sym)
-                    pnl = (price_now - pos['entry_price']) * pos['quantity']
-                    # Cancelar OCO si existe
-                    if pos.get('oco_id'):
-                        try:
-                            self.binance.spot_signed('DELETE', '/api/v3/orderList', {'symbol': sym, 'orderListId': int(pos['oco_id'])})
-                        except: pass
-
-                    # Remover de posiciones
-                    self.out(f'  ðŸ”´ {sym} {direction}: cierre preventivo PnL={pnl:+.2f}')
-                    self.safe_log_close(pos, price_now, 'PREVENTIVE_BTC_MOMENTUM', pnl)
-                    active_positions.remove(pos)
-
-                    # Actualizar PnL
-                    state['total_pnl_usdt'] = state.get('total_pnl_usdt', 0) + pnl
-                    state['daily_pnl_usdt'] = state.get('daily_pnl_usdt', 0) + pnl
-
-                    # Loggear trade
-                    now = time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())
-                    try:
-                        with open(config.TRADES_LOG, encoding='utf-8') as existing_log:
-                            trade_id = sum(1 for _ in existing_log) + 1
-                        with open(config.TRADES_LOG, 'a', encoding='utf-8') as f:
-                            label = 'PREVENTIVO'
-                            direction_tag = 'L' if direction == 'long' else 'S'
-                            f.write(f'{trade_id:3d}  | {direction_tag} {sym.replace("USDT","")}/USDT | {label:13} | {pnl:+.4f}    | ${state["total_pnl_usdt"]:.4f}   | {now}\n')
-                    except Exception as e:
-                        self.out(f'Log trade write failed: {e}')
+                    _, defer_normal = self._handle_preventive_long_spot(state, active_positions, pos)
+                    if defer_normal:
+                        preventive_deferred_positions.add(id(pos))
 
             # Recargar lista despuÃ©s de cierres
             active_positions = state.get('positions', [])

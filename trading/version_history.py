@@ -13,7 +13,7 @@ TRADING_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(TRADING_DIR)
 VERSION_FILE = os.path.join(PROJECT_DIR, 'VERSION')
 SCHEMA_VERSION = 1
-BOT_VERSION = os.environ.get('BOT_VERSION') or 'v1.5-preventive-futures-close-fix'
+BOT_VERSION = os.environ.get('BOT_VERSION') or 'v1.6-preventive-spot-close-fix'
 STRATEGY_VERSION = os.environ.get('STRATEGY_VERSION') or 'current'
 DATA_SCHEMA_VERSION = os.environ.get('DATA_SCHEMA_VERSION') or 'v1'
 VERSION_FIELDS = ('bot_version', 'strategy_version', 'data_schema_version')
@@ -174,7 +174,7 @@ VERSION_HISTORY = [
         'version': 'v1.5-preventive-futures-close-fix',
         'label': 'Confirmed preventive Futures SHORT closes',
         'started_at': '2026-08-19T17:04:55Z',
-        'ended_at': None,
+        'ended_at': '2026-08-28T00:17:46Z',
         'capabilities': [
             'Preventive SHORT Futures exits submit one real BUY MARKET reduce-only order',
             'Local close persistence requires fresh exchange-flat confirmation and attributable fill evidence',
@@ -188,6 +188,30 @@ VERSION_HISTORY = [
         'fixes': [
             'Preventive SHORT Futures closes no longer log theoretical closes without exchange execution',
             'TP/SL protection remains active until the post-order exchange position is confirmed flat',
+        ],
+        'data_policy': 'trusted_if_auditor_clean',
+        'confidence': 'high',
+    },
+    {
+        'version': 'v1.6-preventive-spot-close-fix',
+        'label': 'Confirmed preventive Spot LONG closes',
+        'started_at': '2026-08-28T00:17:46Z',
+        'ended_at': None,
+        'capabilities': [
+            'Preventive LONG Spot exits use one idempotent SELL MARKET order after canonical OCO validation',
+            'Local close persistence requires attributable fill evidence and fresh post-order balance confirmation',
+            'Failed or partial exits retain local state and restore canonical OCO protection when safely possible',
+        ],
+        'known_bugs': [],
+        'limitations': [
+            'Applies only to preventive LONG Spot closes; preventive SHORT Futures behavior is unchanged',
+            'Historical preventive records remain immutable and are not backfilled',
+            'Other legacy Spot exit paths are outside this behavioral fix',
+        ],
+        'fixes': [
+            'Preventive LONG Spot no longer logs theoretical closes without exchange execution',
+            'The flow uses oco_order_list_id and never treats legacy oco_id as valid protection',
+            'Ambiguous execution and operable residuals fail closed without local deletion or total TRADE_CLOSE',
         ],
         'data_policy': 'trusted_if_auditor_clean',
         'confidence': 'high',

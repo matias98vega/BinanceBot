@@ -227,7 +227,7 @@ class SpotMarketStatusGuardTests(unittest.TestCase):
     def test_new_records_use_current_version_and_existing_opening_version_is_preserved(self):
         current = version_history.attach_version_metadata({})
         historical = version_history.attach_version_metadata({'bot_version': 'v1.0-alpha'})
-        self.assertEqual('v1.5-preventive-futures-close-fix', current['bot_version'])
+        self.assertEqual('v1.6-preventive-spot-close-fix', current['bot_version'])
         self.assertEqual('v1.0-alpha', historical['bot_version'])
 
 
