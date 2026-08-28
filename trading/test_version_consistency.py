@@ -55,6 +55,24 @@ class CapabilityHistoryTests(unittest.TestCase):
         self.assertEqual('7b181a17be705febb6b0a4d941a51ff356b609c0', capability['introduced_by_commit'])
         self.assertIn('LONG Spot is not covered', capability['notes'])
 
+    def test_preventive_spot_close_capability_references_fix_commit(self):
+        capability = next(
+            item for item in capability_history.CAPABILITIES
+            if item['id'] == 'preventive-spot-close-confirmation-v1'
+        )
+        self.assertEqual('IMPLEMENTED', capability['status'])
+        self.assertTrue(capability['behavioral'])
+        self.assertTrue(capability['affects_execution'])
+        self.assertTrue(capability['affects_trade_management'])
+        self.assertTrue(capability['affects_observability'])
+        self.assertFalse(capability['affects_trade_selection'])
+        self.assertFalse(capability['affects_accounting'])
+        self.assertEqual(('v1.6-preventive-spot-close-fix',), capability['bot_versions'])
+        self.assertEqual('preventive-futures-close-confirmation-v1', capability['predecessor'])
+        self.assertEqual('8e79c537ecc2e66a532d4ecbb86559f84c989391', capability['introduced_by_commit'])
+        self.assertIn('SHORT Futures behavior is unchanged', capability['notes'])
+        self.assertIn('historical records are not backfilled', capability['notes'])
+
     def test_gate_and_model_modes(self):
         self.assertFalse(capability_history.requires_bot_version({'pre_entry_gate_mode': 'AUDIT_ONLY'}))
         self.assertTrue(capability_history.requires_bot_version({'pre_entry_gate_mode': 'ENFORCE'}))
