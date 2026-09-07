@@ -4,13 +4,21 @@
 from __future__ import annotations
 
 import argparse
+import shutil
+import subprocess
 from pathlib import Path
 
 from deploy_spot_safety import (
+    PREVENTIVE_SPOT_CLOSE_PATH,
     SPOT_CRITICAL_FILES,
     check_spot_runtime_compatibility,
     evaluate_pre_cutover_safety,
 )
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PRODUCTION_COMMIT = "44fe2268deae2dd8c2d0ec05888ca0c1d82d5133"
+CANDIDATE_COMMIT = "2fb2f5a7dd5afa5735ebb0492b0daab770f566ad"
 
 
 def _position(symbol="ETHUSDT", quantity="1", order_list_id=101, trade_id=None):
@@ -132,6 +140,49 @@ def _write_runtime(root, *, alert_variant=False):
         )
 
 
+def _materialize_commit_runtime(root, commit):
+    paths = (
+        *SPOT_CRITICAL_FILES,
+        "trading/orchestration/cycle_runner.py",
+        "trading/utils.py",
+        PREVENTIVE_SPOT_CLOSE_PATH,
+    )
+    for relative in paths:
+        result = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "show", f"{commit}:{relative}"],
+            check=False,
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            if relative == PREVENTIVE_SPOT_CLOSE_PATH:
+                continue
+            raise AssertionError(
+                f"cannot materialize {commit}:{relative}: "
+                f"{result.stderr.decode('utf-8', errors='replace')}"
+            )
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(result.stdout)
+
+
+def _copy_runtime(source, target):
+    shutil.copytree(source, target)
+    return target
+
+
+def _append_semantic_change(path, label):
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(f"\n{label} = True\n")
+
+
+def _expect_incompatible(label, current, candidate, expected_path=None):
+    result = check_spot_runtime_compatibility(current, candidate)
+    if result["compatible"]:
+        raise AssertionError(f"{label} unexpectedly compatible: {result}")
+    if expected_path and expected_path not in result["changed_critical_paths"]:
+        raise AssertionError(f"{label} missing changed path {expected_path}: {result}")
+
+
 def _expect(number, label, case, expected, status=None):
     result = evaluate_pre_cutover_safety(**case)
     if result["safe"] is not expected:
@@ -240,15 +291,146 @@ def run(temp_root):
 
     compatibility = check_spot_runtime_compatibility(current, candidate)
     if not compatibility["compatible"]:
-        raise AssertionError(f"C1 alert-only delta should be compatible: {compatibility}")
-    print("[PASS] C1 alert-only runtime delta is compatible with open Spot")
+        raise AssertionError(f"C-prev1 alert-only delta should be compatible: {compatibility}")
+    print("[PASS] C-prev1 alert-only runtime delta is compatible with open Spot")
 
     critical = candidate / "trading/longs.py"
     critical.write_text("CONTRACT = 'changed'\n", encoding="utf-8")
     compatibility = check_spot_runtime_compatibility(current, candidate)
     if compatibility["compatible"] or "trading/longs.py" not in compatibility["changed_critical_paths"]:
-        raise AssertionError(f"C2 critical lifecycle delta should block: {compatibility}")
-    print("[PASS] C2 critical Spot lifecycle delta blocks open Spot")
+        raise AssertionError(f"C-prev2 critical lifecycle delta should block: {compatibility}")
+    print("[PASS] C-prev2 critical Spot lifecycle delta blocks open Spot")
+
+    real_current = temp_root / "real-current"
+    real_candidate = temp_root / "real-candidate"
+    _materialize_commit_runtime(real_current, PRODUCTION_COMMIT)
+    _materialize_commit_runtime(real_candidate, CANDIDATE_COMMIT)
+
+    compatibility = check_spot_runtime_compatibility(real_current, real_candidate)
+    if not compatibility["compatible"]:
+        raise AssertionError(f"C1 production-to-candidate transition should pass: {compatibility}")
+    print("[PASS] C1 44fe226 to 2fb2f5a audited Spot transition is compatible")
+
+    equivalent = _copy_runtime(real_candidate, temp_root / "c2-equivalent")
+    compatibility = check_spot_runtime_compatibility(real_current, equivalent)
+    if not compatibility["compatible"]:
+        raise AssertionError(f"C2 equivalent audited transition should pass: {compatibility}")
+    print("[PASS] C2 equivalent preventive Spot LONG delta is compatible")
+
+    extra_cycle = _copy_runtime(real_candidate, temp_root / "c3-cycle")
+    _append_semantic_change(
+        extra_cycle / "trading/orchestration/cycle_runner.py",
+        "UNRELATED_CYCLE_CHANGE",
+    )
+    _expect_incompatible(
+        "C3 cycle delta", real_current, extra_cycle,
+        "trading/orchestration/cycle_runner.py",
+    )
+    extra_helper = _copy_runtime(real_candidate, temp_root / "c3-helper")
+    _append_semantic_change(
+        extra_helper / PREVENTIVE_SPOT_CLOSE_PATH,
+        "UNRELATED_HELPER_CHANGE",
+    )
+    _expect_incompatible(
+        "C3 helper delta", real_current, extra_helper, PREVENTIVE_SPOT_CLOSE_PATH,
+    )
+    print("[PASS] C3 additional cycle/helper semantics remain incompatible")
+
+    strategy_change = _copy_runtime(real_candidate, temp_root / "c4-strategy")
+    cycle_path = strategy_change / "trading/orchestration/cycle_runner.py"
+    cycle_source = cycle_path.read_text(encoding="utf-8")
+    marker = "        state = utils.load_state()\n"
+    injected = (
+        marker
+        + "        state['strategy_score_override'] = 1\n"
+        + "        state['sizing_override'] = 1\n"
+    )
+    if cycle_source.count(marker) != 1:
+        raise AssertionError("C4 cycle fixture marker is not unique")
+    cycle_path.write_text(cycle_source.replace(marker, injected), encoding="utf-8")
+    _expect_incompatible(
+        "C4 strategy/sizing delta", real_current, strategy_change,
+        "trading/orchestration/cycle_runner.py",
+    )
+    print("[PASS] C4 strategy/scoring/sizing cycle changes remain incompatible")
+
+    for index, relative in enumerate((
+        "trading/orchestration/position_lifecycle.py",
+        "trading/longs.py",
+        "trading/sl_guardian.py",
+    )):
+        changed_runtime = _copy_runtime(real_candidate, temp_root / f"c5-{index}")
+        _append_semantic_change(changed_runtime / relative, "UNAUTHORIZED_LIFECYCLE_CHANGE")
+        _expect_incompatible(f"C5 {relative}", real_current, changed_runtime, relative)
+    print("[PASS] C5 lifecycle/OCO/Guardian changes remain incompatible")
+
+    binance_change = _copy_runtime(real_candidate, temp_root / "c6-binance")
+    _append_semantic_change(
+        binance_change / "trading/binance_client.py",
+        "UNAUTHORIZED_PAYLOAD_CHANGE",
+    )
+    _expect_incompatible(
+        "C6 BinanceClient delta", real_current, binance_change, "trading/binance_client.py",
+    )
+    print("[PASS] C6 BinanceClient/payload changes remain incompatible")
+
+    formatting = _copy_runtime(real_candidate, temp_root / "c7-formatting")
+    formatting_cycle = formatting / "trading/orchestration/cycle_runner.py"
+    formatting_cycle.write_text(
+        formatting_cycle.read_text(encoding="utf-8").replace(
+            "import preventive_spot_close\n",
+            "import    preventive_spot_close  # audited formatting-only change\n",
+            1,
+        ) + "\n# trailing formatting-only comment\n",
+        encoding="utf-8",
+    )
+    with (formatting / PREVENTIVE_SPOT_CLOSE_PATH).open("a", encoding="utf-8") as handle:
+        handle.write("\n# formatting-only helper comment\n")
+    compatibility = check_spot_runtime_compatibility(real_current, formatting)
+    if not compatibility["compatible"]:
+        raise AssertionError(f"C7 formatting-only change should pass: {compatibility}")
+    print("[PASS] C7 comments and formatting are normalized deterministically")
+
+    incomplete = _copy_runtime(real_candidate, temp_root / "c8-incomplete")
+    (incomplete / PREVENTIVE_SPOT_CLOSE_PATH).unlink()
+    missing_result = check_spot_runtime_compatibility(real_current, incomplete)
+    if missing_result["compatible"] or not any(
+        error == f"missing:{PREVENTIVE_SPOT_CLOSE_PATH}:candidate"
+        for error in missing_result["errors"]
+    ):
+        raise AssertionError(f"C8 missing helper did not fail closed: {missing_result}")
+    malformed = _copy_runtime(real_candidate, temp_root / "c8-malformed")
+    (malformed / "trading/orchestration/cycle_runner.py").write_text(
+        "def invalid(:\n", encoding="utf-8"
+    )
+    malformed_result = check_spot_runtime_compatibility(real_current, malformed)
+    if malformed_result["compatible"] or not malformed_result["errors"]:
+        raise AssertionError(f"C8 parse failure did not fail closed: {malformed_result}")
+    print("[PASS] C8 incomplete evidence and parser failures fail closed")
+
+    zero_spot = _base(real_current, extra_cycle)
+    zero_result = evaluate_pre_cutover_safety(**zero_spot)
+    if not zero_result["safe"] or zero_result["compatibility"]["status"] != "SPOT_RUNTIME_COMPATIBILITY_NOT_REQUIRED":
+        raise AssertionError(f"C9 zero-Spot policy regressed: {zero_result}")
+    print("[PASS] C9 zero Spot positions preserve compatibility-not-required policy")
+
+    futures_cases = []
+    futures_position = _base(real_current, real_candidate)
+    futures_position["exchange_positions"] = [{"symbol": "ETHUSDT", "positionAmt": "0.1"}]
+    futures_cases.append(futures_position)
+    futures_order = _base(real_current, real_candidate)
+    futures_order["futures_orders"] = [{"symbol": "ETHUSDT", "orderId": 1}]
+    futures_cases.append(futures_order)
+    futures_reconciliation = _base(real_current, real_candidate)
+    futures_reconciliation["bot_state"]["positions"]["short"]["reconciliation"].update(
+        aligned=False, status="DESALINEADO"
+    )
+    futures_cases.append(futures_reconciliation)
+    for case in futures_cases:
+        result = evaluate_pre_cutover_safety(**case)
+        if result["safe"]:
+            raise AssertionError(f"C10 unsafe Futures evidence passed: {result}")
+    print("[PASS] C10 Futures position/order/reconciliation policy remains restrictive")
 
 
 def main():

@@ -43,6 +43,18 @@ SPOT_CRITICAL_FILES = (
     "trading/sl_guardian.py",
 )
 
+PREVENTIVE_SPOT_CLOSE_PATH = "trading/preventive_spot_close.py"
+
+# Structural fingerprints for the one audited migration from the legacy inline
+# preventive LONG Spot block to the fail-closed helper. Comments and formatting
+# are ignored by AST normalization; every semantic change remains incompatible.
+_AUDITED_PREVENTIVE_SPOT_AST = {
+    "legacy_block": "44cb3f5cb67e53b61bb751bfb8db2d3306261428b8cad63bcc6dd1fdd9c538fe",
+    "helper_wiring": "a93cfdc95cf05e4c50fdc2017e028dc62afe9b97d43ba8e36678c0cc6c3f3bb8",
+    "helper_method": "7f5812b35138ee764bd2a5f44a110fac7b0af6cb588b7efc56abe2e92048b0a1",
+    "helper_module": "ef9752d4f7785ebc35af7310f6acb22902604fd22db981f0a406b16d74ba0d24",
+}
+
 _SYMBOL_RE = re.compile(r"^[A-Z0-9]{2,30}USDT$")
 _IGNORED_CYCLE_FUNCTIONS = frozenset({"sync_preventive_telegram_alert"})
 _IGNORED_CYCLE_CONSTANTS = frozenset(
@@ -369,6 +381,137 @@ class _CycleAlertCallStripper(ast.NodeTransformer):
         return self.generic_visit(node)
 
 
+def _ast_sha256(node):
+    payload = ast.dump(node, annotate_fields=True, include_attributes=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _statement_block_sha256(statements):
+    return _ast_sha256(ast.Module(body=list(statements), type_ignores=[]))
+
+
+def _single_named_member(container, node_type, name):
+    matches = [
+        item for item in container
+        if isinstance(item, node_type) and item.name == name
+    ]
+    if len(matches) != 1:
+        raise SafetyEvidenceError(f"expected one {name}, found {len(matches)}")
+    return matches[0]
+
+
+def _is_preventive_spot_import(node):
+    return (
+        isinstance(node, ast.Import)
+        and len(node.names) == 1
+        and node.names[0].name == "preventive_spot_close"
+        and node.names[0].asname is None
+    )
+
+
+def _normalize_audited_preventive_spot_flow(tree):
+    """Normalize only the exact audited legacy-to-helper transition."""
+    cycle_class = _single_named_member(tree.body, ast.ClassDef, "CycleRunner")
+    run_method = _single_named_member(cycle_class.body, ast.FunctionDef, "run")
+    helper_methods = [
+        item for item in cycle_class.body
+        if isinstance(item, ast.FunctionDef)
+        and item.name == "_handle_preventive_long_spot"
+    ]
+    helper_imports = [item for item in tree.body if _is_preventive_spot_import(item)]
+    helper_calls = [
+        item for item in ast.walk(run_method)
+        if isinstance(item, ast.Attribute)
+        and item.attr == "_handle_preventive_long_spot"
+    ]
+
+    flow_matches = []
+    for node in ast.walk(run_method):
+        if not isinstance(node, ast.If) or len(node.body) < 2:
+            continue
+        digest = _statement_block_sha256(node.body[1:])
+        if digest == _AUDITED_PREVENTIVE_SPOT_AST["legacy_block"]:
+            flow_matches.append(("legacy_block", node))
+        elif digest == _AUDITED_PREVENTIVE_SPOT_AST["helper_wiring"]:
+            flow_matches.append(("helper_wiring", node))
+
+    has_transition_components = bool(helper_methods or helper_imports or helper_calls)
+    if not flow_matches:
+        if has_transition_components:
+            raise SafetyEvidenceError("incomplete preventive Spot close integration")
+        return tree
+    if len(flow_matches) != 1:
+        raise SafetyEvidenceError("ambiguous preventive Spot close integration")
+
+    flow_kind, flow_node = flow_matches[0]
+    if flow_kind == "legacy_block":
+        if has_transition_components:
+            raise SafetyEvidenceError("legacy flow mixed with helper integration")
+    else:
+        if len(helper_imports) != 1 or len(helper_methods) != 1 or len(helper_calls) != 1:
+            raise SafetyEvidenceError("incomplete preventive Spot close integration")
+        if _ast_sha256(helper_methods[0]) != _AUDITED_PREVENTIVE_SPOT_AST["helper_method"]:
+            raise SafetyEvidenceError("unexpected preventive Spot helper method")
+        tree.body.remove(helper_imports[0])
+        cycle_class.body.remove(helper_methods[0])
+
+    flow_node.body[1:] = [
+        ast.Expr(value=ast.Constant(value="AUDITED_PREVENTIVE_SPOT_CLOSE_FLOW"))
+    ]
+    return tree
+
+
+def _normalized_module_ast(path):
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return ast.dump(tree, annotate_fields=True, include_attributes=False)
+
+
+def _cycle_uses_preventive_spot_helper(root):
+    path = root / "trading/orchestration/cycle_runner.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return any(
+        _is_preventive_spot_import(item)
+        or (
+            isinstance(item, ast.FunctionDef)
+            and item.name == "_handle_preventive_long_spot"
+        )
+        or (
+            isinstance(item, ast.Attribute)
+            and item.attr == "_handle_preventive_long_spot"
+        )
+        for item in ast.walk(tree)
+    )
+
+
+def _check_preventive_spot_helper(current_root, candidate_root, changed, errors):
+    current = current_root / PREVENTIVE_SPOT_CLOSE_PATH
+    candidate = candidate_root / PREVENTIVE_SPOT_CLOSE_PATH
+    try:
+        current_uses_helper = _cycle_uses_preventive_spot_helper(current_root)
+        candidate_uses_helper = _cycle_uses_preventive_spot_helper(candidate_root)
+    except (OSError, SyntaxError, UnicodeError) as exc:
+        errors.append(f"parse:{PREVENTIVE_SPOT_CLOSE_PATH}:dependency:{type(exc).__name__}")
+        return
+    if current_uses_helper and not current.is_file():
+        errors.append(f"missing:{PREVENTIVE_SPOT_CLOSE_PATH}:current")
+    if candidate_uses_helper and not candidate.is_file():
+        errors.append(f"missing:{PREVENTIVE_SPOT_CLOSE_PATH}:candidate")
+    if not current.is_file() and not candidate.is_file():
+        return
+    if not candidate.is_file():
+        changed.append(PREVENTIVE_SPOT_CLOSE_PATH)
+        return
+    try:
+        candidate_ast = _normalized_module_ast(candidate)
+        if current.is_file():
+            if _normalized_module_ast(current) != candidate_ast:
+                changed.append(PREVENTIVE_SPOT_CLOSE_PATH)
+        elif hashlib.sha256(candidate_ast.encode("utf-8")).hexdigest() != _AUDITED_PREVENTIVE_SPOT_AST["helper_module"]:
+            changed.append(PREVENTIVE_SPOT_CLOSE_PATH)
+    except (OSError, SyntaxError, UnicodeError) as exc:
+        errors.append(f"parse:{PREVENTIVE_SPOT_CLOSE_PATH}:{type(exc).__name__}")
+
+
 def _normalized_ast(path, profile):
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     normalized = copy.deepcopy(tree)
@@ -396,6 +539,8 @@ def _normalized_ast(path, profile):
                 continue
         body.append(node)
     normalized.body = body
+    if profile == "cycle_runner":
+        normalized = _normalize_audited_preventive_spot_flow(normalized)
     return ast.dump(normalized, annotate_fields=True, include_attributes=False)
 
 
@@ -425,8 +570,9 @@ def check_spot_runtime_compatibility(current_root, candidate_root):
         try:
             if _normalized_ast(current, profile) != _normalized_ast(candidate, profile):
                 changed.append(relative)
-        except (OSError, SyntaxError, UnicodeError) as exc:
+        except (OSError, SafetyEvidenceError, SyntaxError, UnicodeError) as exc:
             errors.append(f"parse:{relative}:{type(exc).__name__}")
+    _check_preventive_spot_helper(current_root, candidate_root, changed, errors)
     return {
         "compatible": not changed and not errors,
         "status": "SPOT_RUNTIME_COMPATIBLE" if not changed and not errors else "SPOT_RUNTIME_INCOMPATIBLE",
