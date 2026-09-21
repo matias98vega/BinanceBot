@@ -83,7 +83,20 @@ class CapabilityHistoryTests(unittest.TestCase):
         report = check_version_consistency.validate(trades_path='/missing', commit_checker=lambda commit: True)
         self.assertTrue(report['feature_schema_independent'])
         self.assertIsNone(report['deployed_model_version'])
-        self.assertEqual('v1.6-preventive-spot-close-fix', version_history.current_version())
+        self.assertEqual('v1.7-partial-spot-quantity-safety', version_history.current_version())
+
+    def test_partial_spot_quantity_safety_references_behavior_commit(self):
+        capability = next(
+            item for item in capability_history.CAPABILITIES
+            if item['id'] == 'partial-spot-quantity-safety-v1'
+        )
+        self.assertEqual('IMPLEMENTED', capability['status'])
+        self.assertTrue(capability['behavioral'])
+        self.assertTrue(capability['affects_execution'])
+        self.assertTrue(capability['affects_trade_management'])
+        self.assertEqual(('v1.7-partial-spot-quantity-safety',), capability['bot_versions'])
+        self.assertEqual('preventive-spot-close-confirmation-v1', capability['predecessor'])
+        self.assertEqual('140eb12631fc3b5381b4b44b7989f75e5b4ef3ba', capability['introduced_by_commit'])
 
     def _write_release_metadata(self, directory, *, tamper=False):
         release_commit = '9cb86796645b913c844e1170729a745f482fbb98'

@@ -212,6 +212,9 @@ class PartialSpotLongSafetyTests(unittest.TestCase):
         self.assertTrue(pos['recovery_pending'])
         self.assertEqual(len(client.order_calls), 1)
         self.assertFalse(client.oco_calls)
+        repeated = partial_spot_long.attempt_partial_long_spot(client, pos, 100000)
+        self.assertEqual(repeated['status'], 'RECOVERY_PENDING_REQUIRES_RECONCILIATION')
+        self.assertEqual(len(client.order_calls), 1)
 
     def test_p16_partial_execution_uses_exact_normalized_remaining(self):
         client, pos = OfflinePartialClient(), _position()
@@ -219,6 +222,42 @@ class PartialSpotLongSafetyTests(unittest.TestCase):
         result = partial_spot_long.attempt_partial_long_spot(client, pos, 100000)
         self.assertEqual(result['remaining_quantity'], 0.00013)
         self.assertEqual(client.oco_calls[-1]['quantity'], '0.00013')
+
+    def test_p17_dust_residual_uses_existing_handler(self):
+        client, pos = OfflinePartialClient(), _position()
+        normalizer = partial_spot_long._normalize
+        oco_checks = 0
+
+        def residual_becomes_dust(quantity, filters, price, market=False):
+            nonlocal oco_checks
+            if not market:
+                oco_checks += 1
+                if oco_checks == 2:
+                    return Decimal('0'), {'reason': 'below_min_notional'}
+            return normalizer(quantity, filters, price, market=market)
+
+        with patch.object(partial_spot_long, '_normalize', side_effect=residual_becomes_dust), \
+             patch.object(partial_spot_long.residuals, 'handle_unprotectable_spot_residual', return_value=True) as handler:
+            result = partial_spot_long.attempt_partial_long_spot(client, pos, 100000)
+        self.assertTrue(result['confirmed_execution'])
+        self.assertTrue(result['residual_recorded'])
+        self.assertEqual(handler.call_args.args[2], 0.00008)
+        self.assertFalse(client.oco_calls)
+
+    def test_live_partially_filled_status_does_not_finalize(self):
+        client, pos = OfflinePartialClient(), _position()
+        original = client.get_spot_order
+
+        def not_terminal(params):
+            order = original(params)
+            order['status'] = 'PARTIALLY_FILLED'
+            return order
+
+        client.get_spot_order = not_terminal
+        result = partial_spot_long.attempt_partial_long_spot(client, pos, 100000)
+        self.assertEqual(result['status'], 'AMBIGUOUS_SELL')
+        self.assertTrue(pos['recovery_pending'])
+        self.assertFalse(client.oco_calls)
 
     def test_p18_recovery_oco_failure_is_observable_and_state_remains(self):
         client, pos = OfflinePartialClient(), _position()
@@ -228,6 +267,9 @@ class PartialSpotLongSafetyTests(unittest.TestCase):
         self.assertEqual(pos['quantity'], 0.00008)
         self.assertTrue(pos['recovery_pending'])
         self.assertIn('offline OCO rejection', pos['protection_warning'])
+        repeated = partial_spot_long.attempt_partial_long_spot(client, pos, 100000)
+        self.assertEqual(repeated['status'], 'RECOVERY_PENDING_REQUIRES_RECONCILIATION')
+        self.assertEqual(len(client.order_calls), 1)
 
     def test_p19_invalid_oco_snapshot_does_not_cancel(self):
         client, pos = OfflinePartialClient(), _position()

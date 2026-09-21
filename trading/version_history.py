@@ -13,7 +13,7 @@ TRADING_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(TRADING_DIR)
 VERSION_FILE = os.path.join(PROJECT_DIR, 'VERSION')
 SCHEMA_VERSION = 1
-BOT_VERSION = os.environ.get('BOT_VERSION') or 'v1.6-preventive-spot-close-fix'
+BOT_VERSION = os.environ.get('BOT_VERSION') or 'v1.7-partial-spot-quantity-safety'
 STRATEGY_VERSION = os.environ.get('STRATEGY_VERSION') or 'current'
 DATA_SCHEMA_VERSION = os.environ.get('DATA_SCHEMA_VERSION') or 'v1'
 VERSION_FIELDS = ('bot_version', 'strategy_version', 'data_schema_version')
@@ -196,7 +196,7 @@ VERSION_HISTORY = [
         'version': 'v1.6-preventive-spot-close-fix',
         'label': 'Confirmed preventive Spot LONG closes',
         'started_at': '2026-08-28T00:17:46Z',
-        'ended_at': None,
+        'ended_at': '2026-09-21T19:55:00Z',
         'capabilities': [
             'Preventive LONG Spot exits use one idempotent SELL MARKET order after canonical OCO validation',
             'Local close persistence requires attributable fill evidence and fresh post-order balance confirmation',
@@ -212,6 +212,29 @@ VERSION_HISTORY = [
             'Preventive LONG Spot no longer logs theoretical closes without exchange execution',
             'The flow uses oco_order_list_id and never treats legacy oco_id as valid protection',
             'Ambiguous execution and operable residuals fail closed without local deletion or total TRADE_CLOSE',
+        ],
+        'data_policy': 'trusted_if_auditor_clean',
+        'confidence': 'high',
+    },
+    {
+        'version': 'v1.7-partial-spot-quantity-safety',
+        'label': 'Managed Spot partial quantity safety',
+        'started_at': '2026-09-21T19:55:00Z',
+        'ended_at': None,
+        'capabilities': [
+            'Partial LONG Spot quantities use exact Decimal normalization and fixed-point serialization',
+            'Canonical OCO validation completes before cancellation and recovery is capped to managed quantity',
+            'Ambiguous SELL outcomes use deterministic order lookup and retain recoverable local state',
+        ],
+        'known_bugs': [],
+        'limitations': [
+            'Applies only to future partial LONG Spot management; historical trades are immutable',
+            'Does not change partial percentage, TP/SL policy, strategy, sizing, Guardian or preventive exits',
+        ],
+        'fixes': [
+            'Small Spot quantities are never sent in scientific notation',
+            'OCO recovery no longer absorbs pre-existing free asset inventory',
+            'A failed or ambiguous partial cannot invent PnL or delete the managed position',
         ],
         'data_policy': 'trusted_if_auditor_clean',
         'confidence': 'high',

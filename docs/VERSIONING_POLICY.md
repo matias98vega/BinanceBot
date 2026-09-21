@@ -1,6 +1,6 @@
 # Functional versioning and capability epochs
 
-BinanceBot separates trading behavior from schemas, tooling and observability. The current runtime is `v1.4-spot-market-status-guard`, an approved behavioral Spot entry-safety release.
+BinanceBot separates trading behavior from schemas, tooling and observability. The current candidate runtime is `v1.7-partial-spot-quantity-safety`, an approved behavioral Spot execution-safety release.
 
 ## Taxonomy
 
@@ -49,8 +49,11 @@ Compare by opening version and report period, sample size, win rate, PnL, expect
 - v1.2.x: reliability, accounting, replay and offline evaluation capabilities.
 - v1.3: exact partial quantity integrity; remaining derives from confirmed executedQty.
 - v1.4: Spot Long requires exchange status `TRADING` and deterministic 4xx order failures do not retry.
+- v1.5: preventive Futures SHORT closes require attributable exchange evidence.
+- v1.6: preventive Spot LONG closes require attributable exchange evidence.
+- v1.7: partial Spot LONG quantities use fixed decimals and OCO recovery is capped to managed inventory.
 
-Validate read-only with `python trading/check_version_consistency.py [--json|--explain|--strict]`.
+Validate read-only with `.venv/bin/python trading/check_version_consistency.py [--json|--explain|--strict]`.
 
 ## Durable pre-entry evidence epoch
 

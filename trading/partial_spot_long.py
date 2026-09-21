@@ -256,7 +256,7 @@ def _fill_evidence(order, client_order_id, requested):
         and str(order.get('symbol') or '').upper()
         and str(order.get('side') or '').upper() == 'SELL'
         and str(order.get('type') or '').upper() == 'MARKET'
-        and status in {'FILLED', 'PARTIALLY_FILLED', 'EXPIRED'}
+        and status in {'FILLED', 'EXPIRED'}
         and executed > 0
         and executed <= requested
         and fill_price is not None
@@ -274,6 +274,8 @@ def _client_order_id(pos, symbol):
 
 def attempt_partial_long_spot(client, pos, price):
     """Attempt exactly one managed partial SELL and restore only managed protection."""
+    if pos.get('recovery_pending'):
+        return _result('RECOVERY_PENDING_REQUIRES_RECONCILIATION')
     symbol = str(pos.get('symbol') or '').upper()
     managed = _decimal(pos.get('quantity'))
     px = _decimal(price)
@@ -308,6 +310,8 @@ def attempt_partial_long_spot(client, pos, price):
     )
     if snapshot_error:
         return _result('INVALID_OCO_SNAPSHOT', error=snapshot_error)
+    if snapshot is None and before['locked'] > 0:
+        return _result('LOCKED_BALANCE_WITHOUT_CANONICAL_OCO')
 
     tick = _decimal(filters.get('tick_size'))
     if tick is None or tick <= 0:
@@ -344,10 +348,11 @@ def attempt_partial_long_spot(client, pos, price):
     except Exception as exc:
         _mark_unprotected(pos, managed, 'BALANCE_AFTER_CANCEL_UNKNOWN', exc)
         return _result('BALANCE_AFTER_CANCEL_UNKNOWN', error=str(exc))
-    if released['free'] < partial or released['total'] < managed:
-        restore = _restore_snapshot(client, pos, snapshot, managed, filters, px) if snapshot else {'restored': False}
+    if released['free'] < managed or released['total'] < managed:
+        restore = (_restore_snapshot(client, pos, snapshot, min(managed, released['free']), filters, px)
+                   if snapshot else {'restored': False})
         if not restore.get('restored'):
-            _mark_unprotected(pos, managed, 'BALANCE_NOT_RELEASED', 'insufficient released managed balance')
+            _mark_unprotected(pos, min(managed, released['total']), 'BALANCE_NOT_RELEASED', 'insufficient released managed balance')
         return _result('BALANCE_NOT_RELEASED', restore=restore)
 
     order = None
