@@ -11,7 +11,14 @@ import rebalance
 import residuals
 import shorts
 import utils
-from quantity_integrity import compute_partial_and_remaining, decimal_value, remaining_after_execution
+import partial_spot_long
+from quantity_integrity import (
+    compute_partial_and_remaining,
+    decimal_value,
+    format_decimal_quantity,
+    normalize_quantity_to_step,
+    remaining_after_execution,
+)
 
 
 def _state_contains_position(state, pos):
@@ -194,32 +201,33 @@ def recolocar_oco_long(pos, sym, qty_total, step, price, tp, entry, binance, out
     try:
         filters = binance.get_spot_filters(sym)
         tick = filters.get('tick_size', 0.0001)
-        qty = utils.round_step(qty_total, step)
+        managed_qty = decimal_value(pos.get('quantity', qty_total))
+        qty = normalize_quantity_to_step(min(decimal_value(qty_total), managed_qty), step)
         new_sl = utils.round_tick(entry * (1 - config.SL_MIN_DIST_PCT / 100), tick)
         new_sl_l = utils.round_tick(new_sl * 0.999, tick)
         new_tp = utils.round_tick(tp, tick)
         oco_params = {
-            'symbol': sym, 'side': 'SELL', 'quantity': str(qty),
+            'symbol': sym, 'side': 'SELL', 'quantity': format_decimal_quantity(qty),
             'price': str(new_tp), 'stopPrice': str(new_sl),
             'stopLimitPrice': str(new_sl_l), 'stopLimitTimeInForce': 'GTC',
         }
         if residuals.handle_unprotectable_spot_residual(
             sym,
             str(sym).replace('USDT', ''),
-            qty_total,
+            float(qty),
             price,
             filters,
             out_fn=out_fn,
             oco_payload=oco_params,
         ):
             return
-        if qty * price < 5.0:
+        if qty * decimal_value(price) < decimal_value(filters.get('min_notional', 5.0)):
             utils.send_alert(f'🚨 {sym}: no pude recolocar OCO (qty insuficiente). Revisión manual requerida.')
             return
         oco = binance.spot_signed('POST', '/api/v3/order/oco', oco_params)
         pos['oco_order_list_id'] = str(oco.get('orderListId', ''))
         pos['oco_order_ids'] = [str(o['orderId']) for o in oco.get('orders', [])]
-        pos['quantity'] = qty
+        pos['quantity'] = float(qty)
         out_fn(f'✅ OCO recolocado para {sym} tras fallo de parcial')
     except _ue.HTTPError as e:
         residuals.log_spot_oco_payload_notional(
@@ -336,108 +344,27 @@ def check_partial_long(pos, state, binance, out_fn, analytics, recolocar_oco_lon
     if price < mid:
         return
 
-    oco_id = pos.get('oco_order_list_id', '')
-    qty_half = utils.round_step(pos['quantity'] * 0.5,
-                                binance.get_spot_filters(sym).get('step_size', 0.001))
-    qty_rest = utils.round_step(pos['quantity'] * 0.5,
-                                binance.get_spot_filters(sym).get('step_size', 0.001))
-
-    if qty_half * price < 5.0:
-        return
-
-    import urllib.error as _ue
     try:
-        oco_cancelled = False
-        if oco_id:
-            try:
-                binance.spot_signed('DELETE', '/api/v3/orderList', {'symbol': sym, 'orderListId': int(oco_id)})
-                oco_cancelled = True
-            except _ue.HTTPError as e:
-                err = utils._binance_error_msg(e)
-                if '-2011' in err or '-1013' in err:
-                    pos['partial_taken'] = True
-                    out_fn(f'⚠️ Parcial LONG {sym}: OCO ya ejecutado ({err}), marcando partial_taken')
-                    return
-                else:
-                    out_fn(f'⚠️ Parcial LONG {sym}: error al cancelar OCO ({err}), abortando parcial')
-                    return
-
-        try:
-            acct = binance.get_spot_account()
-            base_asset = sym.replace('USDT', '')
-            free_base = next((float(b['free']) for b in acct.get('balances', []) if b['asset'] == base_asset), 0)
-            step = binance.get_spot_filters(sym).get('step_size', 0.001)
-            qty_half_real = utils.round_step(min(qty_half, free_base * 0.5), step)
-            qty_rest_real = utils.round_step(free_base - qty_half_real, step)
-            if qty_half_real * price < 5.0 or qty_rest_real * price < 5.0:
-                out_fn(f'⚠️ Parcial LONG {sym}: qty insuficiente (free={free_base:.4f}), abortando')
-                if oco_cancelled:
-                    recolocar_oco_long_fn(pos, sym, free_base, step, price, tp, entry)
-                return
-        except Exception as e:
-            out_fn(f'⚠️ Parcial LONG {sym}: no pude verificar balance ({e}), abortando')
+        result = partial_spot_long.attempt_partial_long_spot(binance, pos, price)
+        if not result.get('confirmed_execution'):
+            status = result.get('status', 'UNKNOWN')
+            out_fn(f'WARNING: Parcial LONG {sym} no ejecutado ({status})')
+            if pos.get('recovery_pending'):
+                utils.send_alert(f'🚨 Parcial LONG {sym}: {status}. Posición conservada para recovery.')
             return
 
-        try:
-            binance.spot_signed('POST', '/api/v3/order', {
-                'symbol': sym, 'side': 'SELL', 'type': 'MARKET', 'quantity': str(qty_half_real)
-            })
-        except _ue.HTTPError as e:
-            err = utils._binance_error_msg(e)
-            classification = classify_partial_failure_after_exchange_check(
-                pos,
-                state,
-                binance,
-                e,
-                side='LONG',
-                attempted_quantity=qty_half_real,
-                order_type='MARKET',
-            )
-            _record_partial_failure_classification(classification)
-            out_fn(f"WARNING: {classification['message']} Error: {err}")
-            if classification.get('risk_alert'):
-                utils.send_alert(f"{classification['message']} Error: {err}")
-            if oco_cancelled:
-                recolocar_oco_long_fn(pos, sym, qty_half_real + qty_rest_real, step, price, tp, entry)
-            return
-
-        pnl_partial = (price - entry) * qty_half_real
-        tick = binance.get_spot_filters(sym).get('tick_size', 0.0001)
-
-        new_sl = utils.round_tick(entry * 1.003, tick)
-        new_sl_limit = utils.round_tick(new_sl * 0.999, tick)
-        new_tp = utils.round_tick(tp, tick)
-
-        try:
-            oco = binance.spot_signed('POST', '/api/v3/order/oco', {
-                'symbol': sym,
-                'side': 'SELL',
-                'quantity': str(qty_rest_real),
-                'price': str(new_tp),
-                'stopPrice': str(new_sl),
-                'stopLimitPrice': str(new_sl_limit),
-                'stopLimitTimeInForce': 'GTC',
-            })
-        except _ue.HTTPError as e:
-            err = utils._binance_error_msg(e)
-            utils.send_alert(f'🚨 Parcial LONG {sym}: vendido pero OCO fallido ({err}). Intervención requerida.')
-            out_fn(f'🚨 Parcial LONG {sym}: vendido 50% pero no pude colocar nuevo OCO ({err})')
-            pos['partial_taken'] = True
-            return
-
-        pos['quantity'] = qty_rest_real
-        pos['sl'] = new_sl
-        pos['oco_order_list_id'] = str(oco.get('orderListId', ''))
-        pos['oco_order_ids'] = [str(o['orderId']) for o in oco.get('orders', [])]
+        executed_qty = result['executed_quantity']
+        fill_price = result['fill_price']
+        pnl_partial = (fill_price - entry) * executed_qty
         pos['partial_taken'] = True
         pos['partial_pnl'] = round(pnl_partial, 4)
 
         msg = (
-            f'💰 PARCIAL LONG {sym}: vendí 50% @ ${price:.4f}\n'
-            f'PnL parcial: +${pnl_partial:.4f} | SL movido a breakeven ${new_sl:.4f}'
+            f'💰 PARCIAL LONG {sym}: vendí {executed_qty:g} @ ${fill_price:.4f}\n'
+            f'PnL parcial: +${pnl_partial:.4f}'
         )
         out_fn(msg)
-        utils.send_alert(utils.format_trade_close_alert(pos, price, 'PARTIAL_TP', pnl_partial))
+        utils.send_alert(utils.format_trade_close_alert(pos, fill_price, 'PARTIAL_TP', pnl_partial))
         state['total_pnl_usdt'] = round(state.get('total_pnl_usdt', 0) + pnl_partial, 4)
         state['daily_pnl_usdt'] = round(state.get('daily_pnl_usdt', 0) + pnl_partial, 4)
         try:
@@ -447,7 +374,7 @@ def check_partial_long(pos, state, binance, out_fn, analytics, recolocar_oco_lon
                 side='LONG',
                 entry_time=pos.get('entry_time'),
                 entry_price=entry,
-                exit_price=price,
+                exit_price=fill_price,
                 exit_reason='PARTIAL_TP',
                 pnl_usdt=pnl_partial,
                 bot_version=pos.get('bot_version'),

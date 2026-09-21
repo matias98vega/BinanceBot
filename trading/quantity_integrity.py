@@ -6,11 +6,28 @@ managed quantity is always derived from the confirmed executed quantity; it is
 never rounded as an independent fraction.
 """
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, InvalidOperation, ROUND_DOWN
 
 
 def decimal_value(value):
     return value if isinstance(value, Decimal) else Decimal(str(value))
+
+
+def format_decimal_quantity(value):
+    """Serialize an exchange quantity without exponent notation."""
+    try:
+        quantity = decimal_value(value)
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise ValueError("invalid decimal quantity") from exc
+    if not quantity.is_finite() or quantity < 0:
+        raise ValueError("quantity must be finite and non-negative")
+    text = format(quantity, "f")
+    text = text.rstrip("0").rstrip(".") if "." in text else text
+    if not text:
+        text = "0"
+    if "e" in text.lower():
+        raise ValueError("scientific notation is forbidden for exchange quantities")
+    return text
 
 
 def normalize_quantity_to_step(quantity, step_size, rounding="down"):

@@ -87,13 +87,6 @@ class ExitRecoveryProtectionTests(unittest.TestCase):
     def test_check_partial_long_sells_half_and_reprotects_rest(self):
         client = Mock()
         client.get_spot_price.return_value = 11.0
-        client.get_spot_filters.return_value = {'step_size': 0.1, 'tick_size': 0.01}
-        client.get_spot_account.return_value = {'balances': [{'asset': 'ETH', 'free': '10.0'}]}
-        client.spot_signed.side_effect = [
-            {},  # cancel OCO
-            {'executedQty': '5.0', 'cummulativeQuoteQty': '55.0'},  # partial sell
-            {'orderListId': 222, 'orders': [{'orderId': 333}]},  # new OCO
-        ]
         pos = {
             'id': 'long_ETHUSDT_1',
             'direction': 'long',
@@ -107,8 +100,16 @@ class ExitRecoveryProtectionTests(unittest.TestCase):
         }
         state = {'total_pnl_usdt': 0.0, 'daily_pnl_usdt': 0.0}
 
+        def confirmed_partial(_client, managed_pos, _price):
+            managed_pos.update(quantity=5.0, oco_order_list_id='222', oco_order_ids=['333'], sl=10.03)
+            return {
+                'status': 'PARTIAL_EXECUTED_PROTECTED', 'confirmed_execution': True,
+                'executed_quantity': 5.0, 'remaining_quantity': 5.0, 'fill_price': 11.0,
+            }
+
         with patch.object(bot, 'BINANCE', client), \
              patch.object(bot, 'ANALYTICS') as analytics, \
+             patch.object(position_lifecycle.partial_spot_long, 'attempt_partial_long_spot', side_effect=confirmed_partial), \
              patch('utils.send_alert'), \
              patch('utils.format_trade_close_alert', return_value='partial alert'):
             bot._check_partial_long(pos, state)
@@ -118,8 +119,7 @@ class ExitRecoveryProtectionTests(unittest.TestCase):
         self.assertEqual(pos['oco_order_list_id'], '222')
         self.assertEqual(state['total_pnl_usdt'], 5.0)
         analytics.log_trade_close.assert_called_once()
-        sell_params = client.spot_signed.call_args_list[1].args[2]
-        self.assertEqual(sell_params['quantity'], '5.0')
+        client.spot_signed.assert_not_called()
 
     def test_manage_long_stale_exit_closes_market(self):
         client = Mock()
