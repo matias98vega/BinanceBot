@@ -98,6 +98,19 @@ class CapabilityHistoryTests(unittest.TestCase):
         self.assertEqual('preventive-spot-close-confirmation-v1', capability['predecessor'])
         self.assertEqual('140eb12631fc3b5381b4b44b7989f75e5b4ef3ba', capability['introduced_by_commit'])
 
+    def test_canonical_spot_quantity_serialization_references_behavior_commit(self):
+        capability = next(
+            item for item in capability_history.CAPABILITIES
+            if item['id'] == 'spot-quantity-serialization-v1'
+        )
+        self.assertEqual('IMPLEMENTED', capability['status'])
+        self.assertTrue(capability['behavioral'])
+        self.assertTrue(capability['affects_execution'])
+        self.assertTrue(capability['affects_trade_management'])
+        self.assertEqual(('v1.7-partial-spot-quantity-safety',), capability['bot_versions'])
+        self.assertEqual('partial-spot-quantity-safety-v1', capability['predecessor'])
+        self.assertEqual('eeadd0a2ccdb064f34df202acf67a7b64a37895b', capability['introduced_by_commit'])
+
     def _write_release_metadata(self, directory, *, tamper=False):
         release_commit = '9cb86796645b913c844e1170729a745f482fbb98'
         commits = sorted({str(item.get('introduced_by_commit') or '') for item in capability_history.CAPABILITIES})

@@ -51,7 +51,7 @@ Compare by opening version and report period, sample size, win rate, PnL, expect
 - v1.4: Spot Long requires exchange status `TRADING` and deterministic 4xx order failures do not retry.
 - v1.5: preventive Futures SHORT closes require attributable exchange evidence.
 - v1.6: preventive Spot LONG closes require attributable exchange evidence.
-- v1.7: partial Spot LONG quantities use fixed decimals and OCO recovery is capped to managed inventory.
+- v1.7: all productive Spot LONG order quantities use fixed decimals; partial and OCO recovery remain capped to managed inventory.
 
 Validate read-only with `.venv/bin/python trading/check_version_consistency.py [--json|--explain|--strict]`.
 

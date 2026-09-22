@@ -218,18 +218,19 @@ VERSION_HISTORY = [
     },
     {
         'version': 'v1.7-partial-spot-quantity-safety',
-        'label': 'Managed Spot partial quantity safety',
+        'label': 'Canonical Spot quantity safety',
         'started_at': '2026-09-21T19:55:00Z',
         'ended_at': None,
         'capabilities': [
             'Partial LONG Spot quantities use exact Decimal normalization and fixed-point serialization',
+            'Entry BUY, OCO, MARKET SELL, Guardian and preventive Spot payloads use the same fixed-point formatter',
             'Canonical OCO validation completes before cancellation and recovery is capped to managed quantity',
             'Ambiguous SELL outcomes use deterministic order lookup and retain recoverable local state',
             'Recovery-pending Spot LONGs defer lifecycle, Guardian and preventive closes until origin-specific reconciliation',
         ],
         'known_bugs': [],
         'limitations': [
-            'Applies only to future partial LONG Spot management; historical trades are immutable',
+            'Applies only to future Spot LONG execution and management; historical trades are immutable',
             'Does not change partial percentage, TP/SL policy, strategy, sizing, Guardian or preventive thresholds',
         ],
         'fixes': [
