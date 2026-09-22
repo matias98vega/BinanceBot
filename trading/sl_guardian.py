@@ -7,6 +7,7 @@ Ultra liviano: no hace análisis, no abre posiciones.
 import sys, os, time, json
 sys.path.insert(0, os.path.dirname(__file__))
 import utils, config, decision_timeline, binance_client
+from spot_recovery_lock import is_spot_long_recovery_pending
 from analytics import AnalyticsLogger
 
 ANALYTICS = AnalyticsLogger()
@@ -54,6 +55,16 @@ def _run():
 
         try:
             if direction == 'long':
+                if is_spot_long_recovery_pending(pos):
+                    msg = f'🚨 GUARDIAN LONG {sym}: recovery pendiente; SELL diferido hasta reconciliar orden'
+                    print(msg)
+                    critical_alerts.append(msg)
+                    decision_timeline.record_guardian_event(
+                        'guardian_recovery_deferred', sym, 'LONG', msg,
+                        level='CRITICAL', related_trade_id=pos.get('id'),
+                        details={'recovery_status': (pos.get('partial_spot_recovery') or {}).get('status')},
+                    )
+                    continue
                 # Long spot: el OCO se encarga, pero si por algún motivo no hay OCO → chequear
                 oco_id = pos.get('oco_order_list_id', '')
                 if oco_id:

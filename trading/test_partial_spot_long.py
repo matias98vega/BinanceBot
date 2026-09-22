@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import io
+import json
 import os
 import sys
 import unittest
@@ -45,6 +46,9 @@ class OfflinePartialClient:
     def get_spot_filters(self, symbol):
         return dict(self.filters)
 
+    def get_spot_price(self, symbol):
+        return getattr(self, 'price', 110000.0)
+
     def get_spot_account(self):
         free = self.total if self.cancelled else self.extra
         locked = Decimal('0') if self.cancelled else self.managed
@@ -76,6 +80,7 @@ class OfflinePartialClient:
         self.last_order = {
             'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'MARKET', 'status': 'FILLED',
             'orderId': 500, 'clientOrderId': params['newClientOrderId'],
+            'origQty': params['quantity'],
             'executedQty': str(self.executed),
             'cummulativeQuoteQty': str(self.executed * Decimal('100000')),
         }
@@ -114,6 +119,139 @@ def _position(quantity=0.00016):
 
 
 class PartialSpotLongSafetyTests(unittest.TestCase):
+    def _ambiguous_position(self, client=None):
+        client = client or OfflinePartialClient()
+        client.sell_mode = 'timeout_unknown'
+        pos = _position()
+        result = partial_spot_long.attempt_partial_long_spot(client, pos, 110000)
+        self.assertEqual(result['status'], 'AMBIGUOUS_SELL')
+        self.assertTrue(pos['recovery_pending'])
+        return client, pos
+
+    def _rejected_order(self, client):
+        client.last_order = {
+            'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'MARKET',
+            'status': 'REJECTED', 'orderId': 501,
+            'clientOrderId': client.order_calls[0]['newClientOrderId'],
+            'origQty': client.order_calls[0]['quantity'],
+            'executedQty': '0', 'cummulativeQuoteQty': '0',
+        }
+
+    def test_r7_filled_requery_restores_managed_residual_and_unlocks(self):
+        client, pos = self._ambiguous_position()
+        client._fill(client.order_calls[0])
+        result = partial_spot_long.reconcile_pending_partial_long_spot(client, pos)
+        self.assertEqual(result['status'], 'CONFIRMED_PARTIAL_PROTECTED')
+        self.assertTrue(result['confirmed_execution'])
+        self.assertEqual(pos['quantity'], 0.00008)
+        self.assertFalse(pos['recovery_pending'])
+        self.assertEqual(client.oco_calls[-1]['quantity'], '0.00008')
+
+    def test_r8_partial_status_preserves_exact_residual_and_lock(self):
+        client, pos = self._ambiguous_position()
+        client.executed = Decimal('0.00003')
+        client._fill(client.order_calls[0])
+        client.last_order['status'] = 'PARTIALLY_FILLED'
+        client.spot_open_orders = lambda params: [deepcopy(client.last_order)]
+        result = partial_spot_long.reconcile_pending_partial_long_spot(client, pos)
+        self.assertEqual(result['status'], 'ORDER_STILL_PARTIALLY_FILLED')
+        self.assertEqual(pos['quantity'], 0.00013)
+        self.assertTrue(pos['recovery_pending'])
+        self.assertFalse(client.oco_calls)
+
+    def test_r9_rejected_zero_execution_restores_snapshot_then_unlocks(self):
+        client, pos = self._ambiguous_position()
+        self._rejected_order(client)
+        result = partial_spot_long.reconcile_pending_partial_long_spot(client, pos)
+        self.assertEqual(result['status'], 'REJECTED_ZERO_EXECUTION_PROTECTED')
+        self.assertFalse(pos['recovery_pending'])
+        self.assertEqual(pos['quantity'], 0.00016)
+        self.assertEqual(client.oco_calls[-1]['quantity'], '0.00016')
+        self.assertEqual(client.total, Decimal('0.00018783'))
+
+    def test_zero_execution_cannot_unlock_with_smaller_oco_quantity(self):
+        client, pos = self._ambiguous_position()
+        self._rejected_order(client)
+        client.filters['max_qty'] = '0.00015'
+        result = partial_spot_long.reconcile_pending_partial_long_spot(client, pos)
+        self.assertEqual(result['status'], 'OCO_NOT_EXACT')
+        self.assertTrue(pos['recovery_pending'])
+        self.assertFalse(client.oco_calls)
+
+    def test_filled_cannot_unlock_with_smaller_oco_quantity(self):
+        client, pos = self._ambiguous_position()
+        client._fill(client.order_calls[0])
+        client.filters['max_qty'] = '0.00007'
+        result = partial_spot_long.reconcile_pending_partial_long_spot(client, pos)
+        self.assertEqual(result['status'], 'OCO_NOT_EXACT')
+        self.assertTrue(pos['recovery_pending'])
+        self.assertFalse(client.oco_calls)
+
+    def test_r10_query_failure_keeps_lock(self):
+        client, pos = self._ambiguous_position()
+        result = partial_spot_long.reconcile_pending_partial_long_spot(client, pos)
+        self.assertEqual(result['status'], 'REQUERY_FAILED')
+        self.assertTrue(pos['recovery_pending'])
+        self.assertFalse(client.oco_calls)
+
+    def test_order_quantity_mismatch_cannot_unlock(self):
+        client, pos = self._ambiguous_position()
+        client._fill(client.order_calls[0])
+        client.last_order['origQty'] = '0.00009'
+        result = partial_spot_long.reconcile_pending_partial_long_spot(client, pos)
+        self.assertEqual(result['status'], 'ORDER_EVIDENCE_MISMATCH')
+        self.assertTrue(pos['recovery_pending'])
+        self.assertFalse(client.oco_calls)
+
+    def test_r11_oco_restore_failure_keeps_lock(self):
+        client, pos = self._ambiguous_position()
+        self._rejected_order(client)
+        client.oco_error = 'offline restore failed'
+        result = partial_spot_long.reconcile_pending_partial_long_spot(client, pos)
+        self.assertEqual(result['status'], 'OCO_RESTORE_FAILED')
+        self.assertTrue(pos['recovery_pending'])
+
+    def test_r12_r13_extra_inventory_never_enters_recovery_oco(self):
+        client, pos = self._ambiguous_position()
+        self._rejected_order(client)
+        partial_spot_long.reconcile_pending_partial_long_spot(client, pos)
+        self.assertEqual(client.oco_calls[-1]['quantity'], '0.00016')
+        self.assertNotEqual(client.oco_calls[-1]['quantity'], '0.00018783')
+
+    def test_r17_real_filter_price_transition_to_dust(self):
+        client, pos = self._ambiguous_position()
+        client._fill(client.order_calls[0])
+        client.price = 60000.0
+        with patch.object(partial_spot_long.residuals, 'handle_unprotectable_spot_residual', return_value=True) as handler:
+            result = partial_spot_long.reconcile_pending_partial_long_spot(client, pos)
+        self.assertEqual(result['status'], 'DUST_RESIDUAL_PENDING')
+        self.assertEqual(pos['quantity'], 0.00008)
+        self.assertTrue(pos['recovery_pending'])
+        self.assertEqual(handler.call_args.args[2], 0.00008)
+        self.assertFalse(client.oco_calls)
+
+    def test_r22_recovery_metadata_is_json_persistable(self):
+        _, pos = self._ambiguous_position()
+        persisted = json.loads(json.dumps({'positions': [pos]}))
+        metadata = persisted['positions'][0]['partial_spot_recovery']
+        self.assertEqual(metadata['attempted_quantity'], '0.00008')
+        self.assertEqual(metadata['managed_before'], '0.00016')
+        self.assertEqual(metadata['excess_before'], '0.00002783')
+        self.assertTrue(metadata['started_at'])
+        self.assertEqual(metadata['oco_snapshot']['protected_quantity'], '0.00016')
+
+    def test_balance_race_from_external_inventory_stays_locked(self):
+        client, pos = self._ambiguous_position()
+        client._fill(client.order_calls[0])
+        client.extra += Decimal('0.00001')
+        client.total += Decimal('0.00001')
+        result = partial_spot_long.reconcile_pending_partial_long_spot(client, pos)
+        self.assertEqual(result['status'], 'BALANCE_OR_ORDER_MISMATCH')
+        self.assertTrue(pos['recovery_pending'])
+        self.assertEqual(pos['quantity'], 0.00016)
+        self.assertEqual(len(client.order_calls), 1)
+        self.assertFalse(client.oco_calls)
+
     def test_p1_p2_managed_half_payload_is_fixed_decimal(self):
         client, pos = OfflinePartialClient(), _position()
         result = partial_spot_long.attempt_partial_long_spot(client, pos, 100000)

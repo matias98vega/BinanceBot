@@ -12,6 +12,7 @@ import residuals
 import shorts
 import utils
 import partial_spot_long
+from spot_recovery_lock import is_spot_long_recovery_pending
 from quantity_integrity import (
     compute_partial_and_remaining,
     decimal_value,
@@ -328,7 +329,7 @@ def handle_close(state, pos, action, price_close, pnl, btc_ctx, binance, out_fn,
 
 
 def check_partial_long(pos, state, binance, out_fn, analytics, recolocar_oco_long_fn):
-    if pos.get('partial_taken'):
+    if pos.get('partial_taken') or is_spot_long_recovery_pending(pos):
         return
 
     entry = pos['entry_price']
@@ -353,37 +354,47 @@ def check_partial_long(pos, state, binance, out_fn, analytics, recolocar_oco_lon
                 utils.send_alert(f'🚨 Parcial LONG {sym}: {status}. Posición conservada para recovery.')
             return
 
-        executed_qty = result['executed_quantity']
-        fill_price = result['fill_price']
-        pnl_partial = (fill_price - entry) * executed_qty
-        pos['partial_taken'] = True
-        pos['partial_pnl'] = round(pnl_partial, 4)
-
-        msg = (
-            f'💰 PARCIAL LONG {sym}: vendí {executed_qty:g} @ ${fill_price:.4f}\n'
-            f'PnL parcial: +${pnl_partial:.4f}'
-        )
-        out_fn(msg)
-        utils.send_alert(utils.format_trade_close_alert(pos, fill_price, 'PARTIAL_TP', pnl_partial))
-        state['total_pnl_usdt'] = round(state.get('total_pnl_usdt', 0) + pnl_partial, 4)
-        state['daily_pnl_usdt'] = round(state.get('daily_pnl_usdt', 0) + pnl_partial, 4)
-        try:
-            analytics.log_trade_close(
-                trade_id=f'{pos.get("id")}:partial',
-                symbol=sym,
-                side='LONG',
-                entry_time=pos.get('entry_time'),
-                entry_price=entry,
-                exit_price=fill_price,
-                exit_reason='PARTIAL_TP',
-                pnl_usdt=pnl_partial,
-                bot_version=pos.get('bot_version'),
-            )
-        except Exception:
-            pass
+        finalize_confirmed_partial_long(pos, state, result, out_fn, analytics)
 
     except Exception as e:
         out_fn(f'⚠️ Parcial LONG {sym} error inesperado: {e}')
+
+
+def finalize_confirmed_partial_long(pos, state, result, out_fn, analytics):
+    """Account once for an exchange-confirmed partial, including later recovery."""
+    if pos.get('partial_taken') or not result.get('confirmed_execution'):
+        return
+    entry = pos['entry_price']
+    sym = pos['symbol']
+
+    executed_qty = result['executed_quantity']
+    fill_price = result['fill_price']
+    pnl_partial = (fill_price - entry) * executed_qty
+    pos['partial_taken'] = True
+    pos['partial_pnl'] = round(pnl_partial, 4)
+
+    msg = (
+        f'💰 PARCIAL LONG {sym}: vendí {executed_qty:g} @ ${fill_price:.4f}\n'
+        f'PnL parcial: +${pnl_partial:.4f}'
+    )
+    out_fn(msg)
+    utils.send_alert(utils.format_trade_close_alert(pos, fill_price, 'PARTIAL_TP', pnl_partial))
+    state['total_pnl_usdt'] = round(state.get('total_pnl_usdt', 0) + pnl_partial, 4)
+    state['daily_pnl_usdt'] = round(state.get('daily_pnl_usdt', 0) + pnl_partial, 4)
+    try:
+        analytics.log_trade_close(
+            trade_id=f'{pos.get("id")}:partial',
+            symbol=sym,
+            side='LONG',
+            entry_time=pos.get('entry_time'),
+            entry_price=entry,
+            exit_price=fill_price,
+            exit_reason='PARTIAL_TP',
+            pnl_usdt=pnl_partial,
+            bot_version=pos.get('bot_version'),
+        )
+    except Exception:
+        pass
 
 
 def check_partial_short(pos, state, binance, out_fn, analytics):

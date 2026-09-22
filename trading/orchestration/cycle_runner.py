@@ -14,11 +14,14 @@ import feature_registry
 import longs
 import market
 import operational_state
+import partial_spot_long
+from orchestration import position_lifecycle
 import pre_entry_gate_observability
 import preventive_futures_close
 import preventive_spot_close
 import rebalance
 import shorts
+from spot_recovery_lock import is_spot_long_recovery_pending
 import utils
 
 
@@ -83,6 +86,25 @@ class CycleRunner:
         self.check_partial_long = check_partial_long_fn
         self.check_partial_short = check_partial_short_fn
         self.handle_close = handle_close_fn
+
+    def _reconcile_pending_spot_long(self, state, pos, cycle_id):
+        result = partial_spot_long.reconcile_pending_partial_long_spot(self.binance, pos)
+        if result.get('confirmed_execution'):
+            position_lifecycle.finalize_confirmed_partial_long(pos, state, result, self.out, self.analytics)
+        status = result.get('status', 'RECOVERY_UNKNOWN')
+        self.out(f'🚨 {pos["symbol"]}: lifecycle Spot LONG diferido por recovery ({status})')
+        try:
+            decision_timeline.record_event(
+                'spot_long_recovery_deferred',
+                f'{pos["symbol"]} lifecycle deferred pending partial SELL reconciliation',
+                level='CRITICAL' if is_spot_long_recovery_pending(pos) else 'WARNING',
+                category='PROTECTION', symbol=pos['symbol'], direction='LONG',
+                related_trade_id=pos.get('id'), cycle_id=cycle_id,
+                details={'status': status, 'recovery_pending': is_spot_long_recovery_pending(pos)},
+            )
+        except Exception:
+            pass
+        return result
 
     def _append_preventive_trade_log(self, state, pos, pnl):
         now = time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())
@@ -288,11 +310,18 @@ class CycleRunner:
         close_shorts, close_longs, close_reason = market.check_btc_momentum_close(btc_ctx)
         sync_preventive_telegram_alert(close_shorts, close_longs, close_reason)
         preventive_deferred_positions = set()
+        recovery_deferred_positions = set()
+        for pos in active_positions:
+            if is_spot_long_recovery_pending(pos):
+                self._reconcile_pending_spot_long(state, pos, cycle_id)
+                recovery_deferred_positions.add(id(pos))
         if close_shorts or close_longs:
             self.out(f'ðŸš¨ {close_reason}')
 
             # Cerrar posiciones afectadas
             for pos in active_positions[:]:
+                if id(pos) in recovery_deferred_positions:
+                    continue
                 direction = pos['direction']
                 sym = pos['symbol']
 
@@ -319,13 +348,17 @@ class CycleRunner:
             direction = pos['direction']
             sym       = pos['symbol']
 
-            if id(pos) in preventive_deferred_positions:
+            if id(pos) in preventive_deferred_positions or id(pos) in recovery_deferred_positions:
                 positions_to_keep.append(pos)
                 continue
 
             if direction == 'long':
                 # Chequear take profit parcial antes de la gestiÃ³n normal
                 self.check_partial_long(pos, state)
+                if is_spot_long_recovery_pending(pos):
+                    self.out(f'🚨 {sym}: partial ambiguo; lifecycle normal diferido')
+                    positions_to_keep.append(pos)
+                    continue
                 action, price_close, pnl = longs.manage_long(pos, state)
             else:
                 self.check_partial_short(pos, state)
@@ -753,7 +786,8 @@ class CycleRunner:
             )
 
         # â”€â”€ Limpieza semanal de polvo â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        self.maybe_clean_dust(state)
+        if not any(is_spot_long_recovery_pending(pos) for pos in state.get('positions', [])):
+            self.maybe_clean_dust(state)
 
         utils.save_state(state)
 

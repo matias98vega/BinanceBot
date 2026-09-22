@@ -8,6 +8,7 @@ import config
 import decision_timeline
 import longs
 import residuals
+from spot_recovery_lock import is_spot_long_recovery_pending
 
 
 FINAL_CLOSE_STATUSES = {
@@ -321,6 +322,8 @@ def attempt_preventive_long_spot_close(client, pos, residual_handler=None):
     cancelled. It never writes trade analytics, PnL, state, or history and never
     asks the caller to delete local state unless ``confirmed_close`` is true.
     """
+    if is_spot_long_recovery_pending(pos):
+        return _result('DEFERRED_RECOVERY_PENDING', pos)
     residual_handler = residual_handler or residuals.handle_unprotectable_spot_residual
     direction = str((pos or {}).get('direction') or '').lower()
     symbol = str((pos or {}).get('symbol') or '').upper()

@@ -2,12 +2,14 @@
 """Fail-closed exchange flow for a managed Spot LONG partial close."""
 
 import hashlib
+import time
 from decimal import Decimal, InvalidOperation
 from urllib.error import HTTPError
 
 import config
 import residuals
 import utils
+from spot_recovery_lock import is_spot_long_recovery_pending
 from quantity_integrity import (
     compute_partial_and_remaining,
     decimal_value,
@@ -207,6 +209,7 @@ def _accept_oco(pos, response, quantity):
     pos['oco_order_ids'] = order_ids
     pos['recovery_pending'] = False
     pos.pop('protection_warning', None)
+    pos.pop('partial_spot_recovery', None)
 
 
 def _mark_unprotected(pos, quantity, status, error):
@@ -236,7 +239,7 @@ def _restore_snapshot(client, pos, snapshot, quantity, filters, price):
     return {'restored': True, 'quantity': float(normalized), 'payload': payload}
 
 
-def _fill_evidence(order, client_order_id, requested):
+def _fill_evidence(order, client_order_id, requested, symbol=None):
     order = order if isinstance(order, dict) else {}
     executed = _decimal(order.get('executedQty')) or Decimal('0')
     quote = _decimal(order.get('cummulativeQuoteQty') or order.get('cumQuoteQty')) or Decimal('0')
@@ -253,7 +256,7 @@ def _fill_evidence(order, client_order_id, requested):
     fill_price = quote / executed if quote > 0 and executed > 0 else None
     attributable = bool(
         returned_id == client_order_id
-        and str(order.get('symbol') or '').upper()
+        and str(order.get('symbol') or '').upper() == str(symbol or '').upper()
         and str(order.get('side') or '').upper() == 'SELL'
         and str(order.get('type') or '').upper() == 'MARKET'
         and status in {'FILLED', 'EXPIRED'}
@@ -274,7 +277,7 @@ def _client_order_id(pos, symbol):
 
 def attempt_partial_long_spot(client, pos, price):
     """Attempt exactly one managed partial SELL and restore only managed protection."""
-    if pos.get('recovery_pending'):
+    if is_spot_long_recovery_pending(pos):
         return _result('RECOVERY_PENDING_REQUIRES_RECONCILIATION')
     symbol = str(pos.get('symbol') or '').upper()
     managed = _decimal(pos.get('quantity'))
@@ -343,6 +346,23 @@ def attempt_partial_long_spot(client, pos, price):
             pos['oco_order_ids'] = []
         except Exception as exc:
             return _result('CANCEL_OCO_FAILED', error=str(exc))
+    pos['partial_spot_recovery'] = {
+        'kind': 'partial_long_spot_v1',
+        'status': 'OCO_CANCELLED_BEFORE_SELL' if snapshot else 'UNPROTECTED_BEFORE_SELL',
+        'started_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+        'client_order_id': client_order_id,
+        'order_id': None,
+        'attempted_quantity': format_decimal_quantity(partial),
+        'managed_before': format_decimal_quantity(managed),
+        'excess_before': format_decimal_quantity(excess_inventory),
+        'total_before': format_decimal_quantity(before['total']),
+        'oco_snapshot': {
+            key: format_decimal_quantity(value) if isinstance(value, Decimal) else value
+            for key, value in (snapshot or {}).items()
+        } if snapshot else None,
+        'success_oco_payload': dict(success_oco_payload),
+        'executed_known': '0',
+    }
     try:
         released = _balance(client.get_spot_account(), asset)
     except Exception as exc:
@@ -376,7 +396,10 @@ def attempt_partial_long_spot(client, pos, price):
             evidence_order.update(refreshed)
     except Exception as exc:
         lookup_error = str(exc)
-    evidence = _fill_evidence(evidence_order, client_order_id, partial)
+    evidence = _fill_evidence(evidence_order, client_order_id, partial, symbol)
+    recovery = pos['partial_spot_recovery']
+    recovery['order_id'] = evidence['order_id']
+    recovery['executed_known'] = format_decimal_quantity(evidence['executed'])
     try:
         after = _balance(client.get_spot_account(), asset)
     except Exception as exc:
@@ -396,6 +419,7 @@ def attempt_partial_long_spot(client, pos, price):
             return _result('SELL_FAILED_RECOVERY_FAILED', post_error=post_error, restore=restore,
                            sell_payload=sell_payload)
         _mark_unprotected(pos, provable_remaining, 'AMBIGUOUS_SELL', post_error or lookup_error or 'missing fill evidence')
+        recovery['status'] = 'AMBIGUOUS_SELL'
         return _result('AMBIGUOUS_SELL', post_error=post_error, lookup_error=lookup_error,
                        provable_remaining=float(provable_remaining), sell_payload=sell_payload)
 
@@ -451,4 +475,131 @@ def attempt_partial_long_spot(client, pos, price):
         'restore': restore,
         'residual_recorded': residual_recorded,
         'excess_inventory': float(excess_inventory),
+    }
+
+
+def reconcile_pending_partial_long_spot(client, pos):
+    """Resolve only a recorded partial SELL, never submit another SELL."""
+    if not is_spot_long_recovery_pending(pos):
+        return _result('NO_RECOVERY_LOCK')
+    recovery = pos.get('partial_spot_recovery')
+    if not isinstance(recovery, dict) or recovery.get('kind') != 'partial_long_spot_v1':
+        return _result('RECOVERY_EVIDENCE_MISSING')
+    symbol = str(pos.get('symbol') or '').upper()
+    asset = _asset(symbol)
+    managed = _decimal(recovery.get('managed_before'))
+    requested = _decimal(recovery.get('attempted_quantity'))
+    excess = _decimal(recovery.get('excess_before'))
+    total_before = _decimal(recovery.get('total_before'))
+    client_order_id = recovery.get('client_order_id')
+    if (not asset or not client_order_id or managed is None or managed <= 0
+            or requested is None or requested <= 0 or requested > managed
+            or excess is None or excess < 0 or total_before != managed + excess):
+        return _result('RECOVERY_EVIDENCE_INVALID')
+
+    params = {'symbol': symbol, 'origClientOrderId': client_order_id}
+    try:
+        order = _get_order(client, params)
+        filters = client.get_spot_filters(symbol)
+        price = _decimal(client.get_spot_price(symbol))
+        balance = _balance(client.get_spot_account(), asset)
+        open_orders = _open_orders(client, symbol)
+        market_step, _, _, _ = _filters(filters, market=True)
+        if price is None or price <= 0 or not isinstance(order, dict):
+            raise ValueError('incomplete fresh exchange evidence')
+    except Exception as exc:
+        recovery['status'] = 'REQUERY_FAILED'
+        pos['protection_warning'] = f'REQUERY_FAILED: {exc}'
+        return _result('REQUERY_FAILED', error=str(exc))
+
+    status = str(order.get('status') or '').upper()
+    executed = _decimal(order.get('executedQty'))
+    original = _decimal(order.get('origQty'))
+    if (order.get('clientOrderId') != client_order_id
+            or str(order.get('symbol') or '').upper() != symbol
+            or str(order.get('side') or '').upper() != 'SELL'
+            or str(order.get('type') or '').upper() != 'MARKET'
+            or original != requested
+            or executed is None or executed < 0 or executed > requested
+            or (recovery.get('order_id') not in (None, '')
+                and str(order.get('orderId')) != str(recovery['order_id']))):
+        recovery['status'] = 'ORDER_EVIDENCE_MISMATCH'
+        return _result('ORDER_EVIDENCE_MISMATCH')
+    recovery['order_id'] = order.get('orderId')
+    recovery['executed_known'] = format_decimal_quantity(executed)
+    if executed % market_step != 0:
+        recovery['status'] = 'EXECUTION_STEP_MISMATCH'
+        return _result('EXECUTION_STEP_MISMATCH')
+    remaining = remaining_after_execution(managed, executed, market_step)
+    if balance['total'] != total_before - executed:
+        recovery['status'] = 'BALANCE_OR_ORDER_MISMATCH'
+        return _result('BALANCE_OR_ORDER_MISMATCH')
+
+    if status == 'PARTIALLY_FILLED':
+        pos['quantity'] = float(remaining)
+        recovery['status'] = 'ORDER_STILL_PARTIALLY_FILLED'
+        return _result('ORDER_STILL_PARTIALLY_FILLED', remaining_quantity=float(remaining))
+
+    if balance['free'] < remaining or open_orders:
+        recovery['status'] = 'BALANCE_OR_ORDER_MISMATCH'
+        return _result('BALANCE_OR_ORDER_MISMATCH')
+
+    if status in {'REJECTED', 'CANCELED', 'EXPIRED'} and executed == 0:
+        snapshot = recovery.get('oco_snapshot')
+        if not isinstance(snapshot, dict):
+            recovery['status'] = 'CANONICAL_OCO_SNAPSHOT_MISSING'
+            return _result('CANONICAL_OCO_SNAPSHOT_MISSING')
+        exact, _ = _normalize(managed, filters, price, market=False)
+        if exact != managed:
+            recovery['status'] = 'OCO_NOT_EXACT'
+            return _result('OCO_NOT_EXACT')
+        restore = _restore_snapshot(client, pos, snapshot, managed, filters, price)
+        if not restore.get('restored'):
+            recovery['status'] = 'OCO_RESTORE_FAILED'
+            return _result('OCO_RESTORE_FAILED', restore=restore)
+        return _result('REJECTED_ZERO_EXECUTION_PROTECTED', restore=restore)
+
+    evidence = _fill_evidence(order, client_order_id, requested, symbol)
+    if status not in {'FILLED', 'EXPIRED'} or not evidence['attributable']:
+        recovery['status'] = 'ORDER_EXECUTION_UNRESOLVED'
+        return _result('ORDER_EXECUTION_UNRESOLVED')
+
+    operable, details = _normalize(remaining, filters, price, market=False)
+    if operable <= 0:
+        try:
+            residuals.handle_unprotectable_spot_residual(
+                symbol, asset, float(remaining), float(price), filters,
+                reason=details.get('reason') or 'partial_spot_residual',
+            )
+        except Exception:
+            pass
+        recovery['status'] = 'DUST_RESIDUAL_PENDING'
+        pos['quantity'] = float(remaining)
+        return _result('DUST_RESIDUAL_PENDING', remaining_quantity=float(remaining))
+    if operable != remaining:
+        recovery['status'] = 'OCO_NOT_EXACT'
+        return _result('OCO_NOT_EXACT', remaining_quantity=float(remaining))
+    payload = recovery.get('success_oco_payload')
+    if not isinstance(payload, dict) or payload.get('symbol') != symbol or payload.get('side') != 'SELL':
+        recovery['status'] = 'OCO_PAYLOAD_MISSING'
+        return _result('OCO_PAYLOAD_MISSING')
+    payload = dict(payload, quantity=format_decimal_quantity(operable))
+    if not residuals.validate_spot_oco_payload_notional(payload, filters).get('should_send_oco'):
+        recovery['status'] = 'OCO_NOT_OPERABLE'
+        return _result('OCO_NOT_OPERABLE')
+    try:
+        response = _create_oco(client, payload)
+        _accept_oco(pos, response, operable)
+    except Exception as exc:
+        recovery['status'] = 'OCO_RESTORE_FAILED'
+        pos['protection_warning'] = f'OCO_RESTORE_FAILED: {exc}'
+        return _result('OCO_RESTORE_FAILED', error=str(exc))
+    pos['sl'] = float(_decimal(payload['stopPrice']))
+    return {
+        'status': 'CONFIRMED_PARTIAL_PROTECTED',
+        'confirmed_execution': not pos.get('partial_taken'),
+        'executed_quantity': float(executed),
+        'remaining_quantity': float(remaining),
+        'fill_price': float(evidence['fill_price']),
+        'order_id': order.get('orderId'),
     }

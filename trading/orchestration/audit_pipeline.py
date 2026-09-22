@@ -8,6 +8,7 @@ import config
 import decision_timeline
 import residuals
 import utils
+from spot_recovery_lock import is_spot_long_recovery_pending
 
 
 SPOT_RECONCILIATION_SOURCE = 'automatic_spot_position_reconciliation'
@@ -82,6 +83,13 @@ def reconcile_stale_spot_positions(state, binance, out_fn=lambda _message: None,
     results = []
     for position in list(state.get('positions', [])):
         if str(position.get('direction') or '').lower() != 'long':
+            continue
+        if is_spot_long_recovery_pending(position):
+            results.append({
+                'classification': 'DEFERRED_RECOVERY_PENDING', 'reconcile': False,
+                'symbol': position.get('symbol'),
+                'trade_id': position.get('id') or position.get('trade_id'),
+            })
             continue
         symbol = str(position.get('symbol') or '').upper()
         try:

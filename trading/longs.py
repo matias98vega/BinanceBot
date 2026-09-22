@@ -6,6 +6,7 @@ Abre, monitorea, toma parcial, trailing stop, cierra.
 import sys, os, time, math
 sys.path.insert(0, os.path.dirname(__file__))
 import utils, config, capital_manager, decision_timeline, binance_client, residuals, pre_entry_safety_gate
+from spot_recovery_lock import is_spot_long_recovery_pending
 
 BINANCE = binance_client.get_default_client()
 
@@ -378,6 +379,8 @@ def manage_long(pos, state):
     Retorna (acción, mensaje):
       acción: 'hold' | 'closed_tp' | 'closed_sl' | 'closed_manual' | 'updated'
     """
+    if is_spot_long_recovery_pending(pos):
+        return 'deferred_recovery_pending', None, 0
     sym   = pos['symbol']
     entry = pos['entry_price']
     qty   = pos['quantity']
@@ -520,6 +523,8 @@ def _market_sell(symbol, qty, price=None, filters=None):
 
 def _recolocar_oco(pos, state):
     """Intenta recolocar OCO si está vacío."""
+    if is_spot_long_recovery_pending(pos):
+        return 'deferred_recovery_pending', None, 0
     sym   = pos['symbol']
     sl    = pos['sl']
     tp    = pos['tp']
