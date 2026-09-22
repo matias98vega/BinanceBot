@@ -11,6 +11,7 @@ import decision_timeline
 import futures_reconciliation
 import futures_residuals
 import feature_registry
+import entry_spot_recovery
 import longs
 import market
 import operational_state
@@ -21,7 +22,7 @@ import preventive_futures_close
 import preventive_spot_close
 import rebalance
 import shorts
-from spot_recovery_lock import is_spot_long_recovery_pending
+from spot_recovery_lock import is_spot_long_recovery_pending, spot_long_recovery_kind
 import utils
 
 
@@ -88,11 +89,17 @@ class CycleRunner:
         self.handle_close = handle_close_fn
 
     def _reconcile_pending_spot_long(self, state, pos, cycle_id):
-        result = partial_spot_long.reconcile_pending_partial_long_spot(self.binance, pos)
+        kind = spot_long_recovery_kind(pos)
+        if kind == 'PARTIAL_EXIT':
+            result = partial_spot_long.reconcile_pending_partial_long_spot(self.binance, pos)
+        elif kind in {'ENTRY_PROTECTION', 'ENTRY_EMERGENCY_EXIT'}:
+            result = entry_spot_recovery.reconcile_pending_entry_spot_long(self.binance, pos)
+        else:
+            result = {'status': f'UNKNOWN_RECOVERY_TYPE:{kind}', 'confirmed_execution': False}
         if result.get('confirmed_execution'):
             position_lifecycle.finalize_confirmed_partial_long(pos, state, result, self.out, self.analytics)
         status = result.get('status', 'RECOVERY_UNKNOWN')
-        self.out(f'🚨 {pos["symbol"]}: lifecycle Spot LONG diferido por recovery ({status})')
+        self.out(f'🚨 {pos["symbol"]}: lifecycle Spot LONG diferido por recovery ({kind}: {status})')
         try:
             decision_timeline.record_event(
                 'spot_long_recovery_deferred',
@@ -100,7 +107,8 @@ class CycleRunner:
                 level='CRITICAL' if is_spot_long_recovery_pending(pos) else 'WARNING',
                 category='PROTECTION', symbol=pos['symbol'], direction='LONG',
                 related_trade_id=pos.get('id'), cycle_id=cycle_id,
-                details={'status': status, 'recovery_pending': is_spot_long_recovery_pending(pos)},
+                details={'kind': kind, 'status': status,
+                         'recovery_pending': is_spot_long_recovery_pending(pos)},
             )
         except Exception:
             pass
@@ -494,7 +502,7 @@ class CycleRunner:
                     self.safe_log_open(pos, best_long, btc_ctx, spot_total_capital)
                     self.out(msg)
                     if pos.get('protection_warning'):
-                        utils.send_alert(f'⚠️ {pos["symbol"]}: {pos["protection_warning"]}. Recovery automatico pendiente.')
+                        utils.send_alert(f'⚠️ {pos["symbol"]}: {pos["protection_warning"]}. Reconciliación de protección pendiente.')
                     utils.send_alert(utils.format_trade_open_alert(pos, best_long, btc_ctx.get('trend')))
                 else:
                     self.out(f'âš ï¸ LONG no abierto: {msg}')

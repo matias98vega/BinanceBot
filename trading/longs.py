@@ -6,6 +6,7 @@ Abre, monitorea, toma parcial, trailing stop, cierra.
 import sys, os, time, math
 sys.path.insert(0, os.path.dirname(__file__))
 import utils, config, capital_manager, decision_timeline, binance_client, residuals, pre_entry_safety_gate
+import entry_spot_recovery
 from spot_recovery_lock import is_spot_long_recovery_pending
 
 BINANCE = binance_client.get_default_client()
@@ -226,6 +227,7 @@ def open_long(candidate, state, max_longs=None, pre_entry_gate_result=None):
             sym, actual_price, 0.0, real_sl, real_tp, candidate['atr'],
             f'Balance real no vendible/protegible despues de compra (balance={real_asset_balance:.8f})'
         )
+        entry_spot_recovery.prepare_entry_recovery(BINANCE, pos, buy, 0)
         return pos, (
             f'LONG {sym} comprado pero balance real insuficiente para OCO '
             f'(balance={real_asset_balance:.8f}). Revisión manual requerida.'
@@ -277,71 +279,27 @@ def open_long(candidate, state, max_longs=None, pre_entry_gate_result=None):
 
     # Si OCO falló, vender en mercado (emergencia)
     if not oco_id:
-        sell_err = None
-        try:
-            sold_quote, _ = _market_sell(sym, qty_for_oco, price=actual_price, filters=filters)
-            if sold_quote > 0:
-                return None, f'OCO fallo ({oco_err}), posicion cerrada en emergencia'
-            sell_err = 'balance real insuficiente para sell emergencia'
-            raise RuntimeError(sell_err)
-        except Exception as e2:
-            sell_err = sell_err or e2
-            sell_params = {
-                'symbol':   sym,
-                'side':     'SELL',
-                'type':     'MARKET',
-                'quantity': str(qty_for_oco),
-            }
-            if hasattr(e2, 'code'):
-                details = utils.log_binance_http_error('spot emergency sell', sym, 'SELL', 'MARKET', sell_params, e2)
-                sell_err = (
-                    f'HTTP {details.get("status")} code={details.get("code")} msg={details.get("msg")}'
-                    if details.get('code') is not None or details.get('msg') else str(e2)
-                )
-            qty_recovery, real_asset_balance = _adjust_spot_qty(sym, qty_for_oco, actual_price, filters)
-            if qty_recovery <= 0:
-                pos = _recovery_pending_position(
-                    sym, actual_price, 0.0, real_sl, real_tp, candidate['atr'],
-                    f'OCO inicial fallo ({oco_err}); no queda balance vendible (balance={real_asset_balance:.8f})'
-                )
-                decision_timeline.record_protection_event(
-                    'recovery_pending', sym, 'LONG',
-                    f'LONG {sym} unprotected: OCO failed and no sellable balance',
-                    level='CRITICAL', details={'oco_error': str(oco_err), 'balance': real_asset_balance},
-                    related_trade_id=pos.get('id'),
-                )
-                return pos, (
-                    f'OCO fallo ({oco_err}) y no queda balance vendible '
-                    f'(balance={real_asset_balance:.8f}); limpiando sin posicion local.'
-                )
-            qty_for_oco = qty_recovery
-            pos = {
-                'id':                f'long_{sym}_{int(time.time())}_UNPROTECTED',
-                'direction':         'long',
-                'symbol':            sym,
-                'entry_price':       actual_price,
-                'quantity':          qty_for_oco,
-                'sl':                real_sl,
-                'tp':                real_tp,
-                'atr':               candidate['atr'],
-                'oco_order_list_id': '',
-                'oco_order_ids':     [],
-                'entry_time':        int(time.time()),
-                'partial_taken':     False,
-                'trail_peak':        actual_price,
-                'recovery_pending':  True,
-                'protection_warning': f'OCO inicial fallo ({oco_err}); sell emergencia fallo ({sell_err})',
-            }
-            decision_timeline.record_protection_event(
-                'recovery_pending', sym, 'LONG',
-                f'LONG {sym} opened without OCO; recovery pending',
-                level='CRITICAL', details={'oco_error': str(oco_err), 'sell_error': str(sell_err)},
-                related_trade_id=pos.get('id'),
-            )
-            return pos, (
-                f'⚠️ LONG {sym} abierto sin OCO inicial; sell emergencia fallo. '
-                f'Recovery automatico intentara recolocar OCO con balance real. Motivo: {oco_err}'
-            )
+        pos = _recovery_pending_position(
+            sym, actual_price, qty_for_oco, real_sl, real_tp, candidate['atr'],
+            f'OCO inicial fallo ({oco_err}); salida de emergencia requiere evidencia de orden',
+        )
+        prepared = entry_spot_recovery.prepare_entry_recovery(BINANCE, pos, buy, qty_for_oco)
+        result = (entry_spot_recovery.submit_entry_emergency_sell(BINANCE, pos)
+                  if prepared['status'] == 'READY_FOR_EMERGENCY_SELL' else prepared)
+        if result.get('confirmed_flat') and result.get('remaining_quantity') == 0:
+            return None, f'OCO fallo ({oco_err}); SELL de emergencia confirmado plano por orden y balance'
+        decision_timeline.record_protection_event(
+            'recovery_pending', sym, 'LONG',
+            f'LONG {sym} sin OCO inicial; salida de emergencia {result["status"]}',
+            level='CRITICAL',
+            details={'recovery_status': result['status'],
+                     'entry_recovery_kind': pos['entry_spot_recovery']['kind']},
+            related_trade_id=pos.get('id'),
+        )
+        return pos, (
+            f'⚠️ LONG {sym} sin OCO inicial; recovery {result["status"]}. '
+            'No repetir SELL ni gestionar la posición hasta reconciliar evidencia.'
+        )
 
     pos = {
         'id':                f'long_{sym}_{int(time.time())}',

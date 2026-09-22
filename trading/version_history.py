@@ -225,11 +225,12 @@ VERSION_HISTORY = [
             'Partial LONG Spot quantities use exact Decimal normalization and fixed-point serialization',
             'Canonical OCO validation completes before cancellation and recovery is capped to managed quantity',
             'Ambiguous SELL outcomes use deterministic order lookup and retain recoverable local state',
+            'Recovery-pending Spot LONGs defer lifecycle, Guardian and preventive closes until origin-specific reconciliation',
         ],
         'known_bugs': [],
         'limitations': [
             'Applies only to future partial LONG Spot management; historical trades are immutable',
-            'Does not change partial percentage, TP/SL policy, strategy, sizing, Guardian or preventive exits',
+            'Does not change partial percentage, TP/SL policy, strategy, sizing, Guardian or preventive thresholds',
         ],
         'fixes': [
             'Small Spot quantities are never sent in scientific notation',

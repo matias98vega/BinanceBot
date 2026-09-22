@@ -72,7 +72,7 @@ CAPABILITIES = (
                 ('v1.7-partial-spot-quantity-safety',),
                 predecessor='preventive-spot-close-confirmation-v1',
                 affects_execution=True, affects_trade_management=True, affects_observability=True,
-                notes='Partial LONG Spot uses fixed-point quantities, canonical pre-cancel OCO evidence and managed-only recovery; strategy, sizing, SHORT, Guardian and preventive behavior are unchanged.'),
+                notes='Partial LONG Spot uses fixed-point quantities, canonical pre-cancel OCO evidence and managed-only recovery. Recovery-pending Spot LONG lifecycle is deferred in the cycle, Guardian and preventive close until its origin-specific evidence is reconciled; strategy, sizing, SHORT and exit thresholds are unchanged.'),
     _capability('version-metrics-v1', 'Trade metrics by opening version', 'DEPLOYED', '2026-07-20T19:00:34Z',
                 '4566c32', affects_observability=True),
     _capability('accounting-v2', 'Capital ledger schema v2 and bootstrap accounting', 'DEPLOYED',
