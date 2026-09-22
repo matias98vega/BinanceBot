@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from quantity_integrity import (
     compute_partial_and_remaining,
+    format_decimal_quantity,
     normalize_quantity_to_step,
     remaining_after_execution,
 )
@@ -49,6 +50,32 @@ class QuantityIntegrityTests(unittest.TestCase):
 
     def test_normalization_is_decimal_and_down_only(self):
         self.assertEqual(Decimal("0.03"), normalize_quantity_to_step("0.039999", "0.01"))
+
+    def test_real_btc_incident_values_use_fixed_decimal(self):
+        self.assertEqual("0.00008", format_decimal_quantity(0.00008))
+        self.assertEqual("0.00009", format_decimal_quantity(9e-05))
+
+    def test_tiny_step_integer_and_invalid_values(self):
+        self.assertEqual("0.00000001", format_decimal_quantity(Decimal("1e-8")))
+        self.assertEqual("5", format_decimal_quantity(Decimal("5.000")))
+        with self.assertRaises(ValueError):
+            format_decimal_quantity(Decimal("-0.1"))
+
+    def test_productive_spot_payloads_have_no_direct_float_stringification(self):
+        files = (
+            "longs.py", "auto_loop.py", "preventive_spot_close.py",
+            "entry_spot_recovery.py", "partial_spot_long.py",
+            os.path.join("orchestration", "audit_pipeline.py"),
+        )
+        forbidden = ("'quantity': str(", "'quantity': f\"{", "'quantity': f'{")
+        violations = []
+        for relative in files:
+            with open(os.path.join(os.path.dirname(__file__), relative), encoding="utf-8") as handle:
+                source = handle.read()
+            for token in forbidden:
+                if token in source:
+                    violations.append(f"{relative}: {token}")
+        self.assertEqual([], violations)
 
 
 if __name__ == "__main__":

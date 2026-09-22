@@ -28,6 +28,7 @@ class OfflineEntryClient:
         self.price = 100000.0
         self.sell_mode = sell_mode
         self.sell_calls = []
+        self.buy_calls = []
         self.oco_calls = []
         self.buy_order = None
         self.sell_order = None
@@ -101,6 +102,7 @@ class OfflineEntryClient:
         if method != 'POST':
             raise AssertionError('unexpected exchange operation')
         if path == '/api/v3/order' and params['side'] == 'BUY':
+            self.buy_calls.append(dict(params))
             self.total += self.managed
             self.buy_order = {
                 'symbol': 'BTCUSDT', 'side': 'BUY', 'type': 'MARKET',
@@ -157,6 +159,19 @@ class EntrySpotRecoveryTests(unittest.TestCase):
              patch('decision_timeline.record_protection_event'):
             pos, message = longs.open_long(candidate, {'positions': []}, max_longs=1)
         return client, pos, message
+
+    def test_incident_btc_entry_uses_fixed_decimal_quantity(self):
+        client, _, _ = self.open_entry()
+        self.assertEqual('0.00016', client.buy_calls[0]['quantity'])
+        self.assertNotIn('e', client.buy_calls[0]['quantity'].lower())
+
+    def test_entry_and_oco_reuse_same_fixed_quantity(self):
+        client, _, _ = self.open_entry()
+        self.assertEqual(client.buy_calls[0]['quantity'], client.oco_calls[0]['quantity'])
+
+    def test_entry_and_emergency_sell_reuse_same_fixed_quantity(self):
+        client, _, _ = self.open_entry()
+        self.assertEqual(client.buy_calls[0]['quantity'], client.sell_calls[0]['quantity'])
 
     def run_cycle(self, client, state, *, allow_manage=False):
         saved = []

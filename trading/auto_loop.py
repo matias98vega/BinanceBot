@@ -10,6 +10,8 @@ SAFETY RULES:
   4. Nunca crashear por ValueError en oco_order_list_id vacío
 """
 import json, urllib.request, urllib.parse, urllib.error, hmac, hashlib, time, math, os, sys
+sys.path.insert(0, os.path.dirname(__file__))
+from quantity_integrity import format_decimal_quantity, normalize_quantity_to_step
 
 # ── Config ──────────────────────────────────────────────────────────────────
 STATE_FILE = '/root/.openclaw/workspace/trading/state.json'
@@ -317,13 +319,8 @@ def round_price(price, tick):
 def place_oco(symbol, qty, tp, sl):
     step, _ = get_step_size(symbol)
     tick = get_tick_size(symbol)
-    qty_floored = floor_qty(qty, step)
-    if step >= 0.1:
-        qty_str = f"{qty_floored:.1f}"
-    elif step >= 0.01:
-        qty_str = f"{qty_floored:.2f}"
-    else:
-        qty_str = f"{qty_floored:.4f}"
+    qty_floored = float(normalize_quantity_to_step(qty, step))
+    qty_str = format_decimal_quantity(qty_floored)
     tp_r     = round_price(tp, tick)
     sl_r     = round_price(sl, tick)
     # sl_limit debe calcularse desde sl_r ya redondeado; usar 2 ticks de margen para evitar igualdad por floating point
@@ -391,7 +388,8 @@ def market_sell_all(symbol):
         return None, f"Balance {balance} < minQty {min_qty}"
     try:
         d = signed_request('POST', '/api/v3/order', {
-            'symbol': symbol, 'side': 'SELL', 'type': 'MARKET', 'quantity': f"{qty}"
+            'symbol': symbol, 'side': 'SELL', 'type': 'MARKET',
+            'quantity': format_decimal_quantity(qty),
         })
         return d, None
     except Exception as ex:
@@ -434,7 +432,8 @@ def take_partial_profit(state, current_price, output):
 
     try:
         signed_request('POST', '/api/v3/order', {
-            'symbol': sym, 'side': 'SELL', 'type': 'MARKET', 'quantity': f"{qty_half}"
+            'symbol': sym, 'side': 'SELL', 'type': 'MARKET',
+            'quantity': format_decimal_quantity(qty_half),
         })
     except Exception as ex:
         # Fallo la venta parcial — restaurar OCO original
@@ -547,7 +546,8 @@ def place_market_buy(symbol, usdt_amount):
     if qty < min_qty:
         return None, 0
     d = signed_request('POST', '/api/v3/order', {
-        'symbol': symbol, 'side': 'BUY', 'type': 'MARKET', 'quantity': f"{qty}"
+        'symbol': symbol, 'side': 'BUY', 'type': 'MARKET',
+        'quantity': format_decimal_quantity(qty),
     })
     return d, qty
 

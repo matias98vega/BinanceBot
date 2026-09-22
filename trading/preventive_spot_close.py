@@ -8,6 +8,7 @@ import config
 import decision_timeline
 import longs
 import residuals
+from quantity_integrity import format_decimal_quantity
 from spot_recovery_lock import is_spot_long_recovery_pending
 
 
@@ -41,11 +42,6 @@ def _json_safe(value):
 def _asset_from_symbol(symbol):
     text = str(symbol or '').upper()
     return text[:-4] if text.endswith('USDT') else ''
-
-
-def _format_decimal(value):
-    text = format(value, 'f')
-    return text.rstrip('0').rstrip('.') if '.' in text else text
 
 
 def _record(status, pos, details=None, level='INFO'):
@@ -416,7 +412,7 @@ def attempt_preventive_long_spot_close(client, pos, residual_handler=None):
         'symbol': symbol,
         'side': 'SELL',
         'type': 'MARKET',
-        'quantity': _format_decimal(managed_quantity),
+        'quantity': format_decimal_quantity(managed_quantity),
         'newClientOrderId': client_order_id,
     }
     order = None

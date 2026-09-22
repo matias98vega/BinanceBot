@@ -8,6 +8,7 @@ import config
 import decision_timeline
 import residuals
 import utils
+from quantity_integrity import format_decimal_quantity
 from spot_recovery_lock import is_spot_long_recovery_pending
 
 
@@ -229,7 +230,7 @@ def audit_orphans(state, binance, out_fn, safe_log_open_fn):
                 oco_params = {
                     'symbol': sym,
                     'side': 'SELL',
-                    'quantity': str(qty),
+                    'quantity': format_decimal_quantity(qty),
                     'price': str(tp),
                     'stopPrice': str(sl),
                     'stopLimitPrice': str(sl_limit),

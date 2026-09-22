@@ -7,6 +7,7 @@ Ultra liviano: no hace análisis, no abre posiciones.
 import sys, os, time, json
 sys.path.insert(0, os.path.dirname(__file__))
 import utils, config, decision_timeline, binance_client
+from quantity_integrity import format_decimal_quantity
 from spot_recovery_lock import is_spot_long_recovery_pending
 from analytics import AnalyticsLogger
 
@@ -280,7 +281,8 @@ def _close_spot_market(symbol, qty, price_now):
         )
         return ('already_closed' if free_balance <= 0 else 'not_sellable'), 0.0
     params = {
-        'symbol': symbol, 'side': 'SELL', 'type': 'MARKET', 'quantity': str(qty_sell)
+        'symbol': symbol, 'side': 'SELL', 'type': 'MARKET',
+        'quantity': format_decimal_quantity(qty_sell),
     }
     try:
         BINANCE.spot_signed('POST', '/api/v3/order', params)

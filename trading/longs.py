@@ -7,6 +7,7 @@ import sys, os, time, math
 sys.path.insert(0, os.path.dirname(__file__))
 import utils, config, capital_manager, decision_timeline, binance_client, residuals, pre_entry_safety_gate
 import entry_spot_recovery
+from quantity_integrity import format_decimal_quantity, normalize_quantity_to_step
 from spot_recovery_lock import is_spot_long_recovery_pending
 
 BINANCE = binance_client.get_default_client()
@@ -39,7 +40,7 @@ def _build_oco_params(sym, qty, tp, sl, tick):
     return {
         'symbol':               sym,
         'side':                 'SELL',
-        'quantity':             str(qty),
+        'quantity':             format_decimal_quantity(qty),
         'price':                str(tp),
         'stopPrice':            str(sl),
         'stopLimitPrice':       str(sl_limit),
@@ -151,7 +152,9 @@ def open_long(candidate, state, max_longs=None, pre_entry_gate_result=None):
         return None, f'SPOT_SYMBOL_NOT_TRADING: {sym} status={spot_status or "UNKNOWN"}'
 
     price = BINANCE.get_spot_price(sym)
-    qty   = utils.round_step(capital / price, step)
+    qty_decimal = normalize_quantity_to_step(capital / price, step)
+    qty = float(qty_decimal)
+    qty_payload = format_decimal_quantity(qty_decimal)
 
     if qty < min_qty:
         return None, f'Cantidad mínima no alcanzada: {qty} < {min_qty}'
@@ -190,7 +193,7 @@ def open_long(candidate, state, max_longs=None, pre_entry_gate_result=None):
             'symbol':   sym,
             'side':     'BUY',
             'type':     'MARKET',
-            'quantity': str(qty),
+            'quantity': qty_payload,
         }
         try:
             decision_timeline.record_order_event('order_sent', sym, 'LONG', f'BUY MARKET {sym}', details=params)
@@ -418,7 +421,7 @@ def manage_long(pos, state):
                 oco = BINANCE.spot_signed('POST', '/api/v3/order/oco', {
                     'symbol':               sym,
                     'side':                 'SELL',
-                    'quantity':             str(qty),
+                    'quantity':             format_decimal_quantity(qty),
                     'price':                str(new_tp),
                     'stopPrice':            str(new_sl),
                     'stopLimitPrice':       str(new_sl_limit),
@@ -458,7 +461,7 @@ def _market_sell(symbol, qty, price=None, filters=None):
         'symbol':   symbol,
         'side':     'SELL',
         'type':     'MARKET',
-        'quantity': str(qty_to_sell),
+        'quantity': format_decimal_quantity(qty_to_sell),
     }
     try:
         order = BINANCE.spot_signed('POST', '/api/v3/order', params)
@@ -520,7 +523,7 @@ def _recolocar_oco(pos, state):
         oco_params = {
             'symbol':               sym,
             'side':                 'SELL',
-            'quantity':             str(qty),
+            'quantity':             format_decimal_quantity(qty),
             'price':                str(tp_r),
             'stopPrice':            str(sl_r),
             'stopLimitPrice':       str(sl_limit_r),

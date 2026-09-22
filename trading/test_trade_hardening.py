@@ -149,6 +149,15 @@ class TradeHardeningTests(unittest.TestCase):
         self.assertEqual(fill_price, 1.0)
 
     @patch('utils.get_spot_filters', return_value={
+        'step_size': 0.00001, 'min_qty': 0.00001, 'min_notional': 1.0, 'tick_size': 0.01
+    })
+    @patch('utils.get_asset_spot', return_value=0.00008)
+    @patch('utils.spot_signed', return_value={'executedQty': '0.00008', 'cummulativeQuoteQty': '8'})
+    def test_emergency_market_sell_tiny_btc_uses_fixed_decimal(self, spot_signed, *_):
+        longs._market_sell('BTCUSDT', 0.00008, price=100000.0)
+        self.assertEqual('0.00008', spot_signed.call_args.args[2]['quantity'])
+
+    @patch('utils.get_spot_filters', return_value={
         'step_size': 0.1, 'min_qty': 0.1, 'min_notional': 1.0
     })
     @patch('utils.get_asset_spot', return_value=0.0)
