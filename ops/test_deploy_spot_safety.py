@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import io
+import os
 import shutil
 import subprocess
+import tarfile
 from pathlib import Path
 
 from deploy_spot_safety import (
@@ -144,34 +147,38 @@ def _write_runtime(root, *, alert_variant=False):
 
 
 def _materialize_commit_runtime(root, commit):
-    paths = dict.fromkeys((
-        *SPOT_CRITICAL_FILES,
-        *FINAL_SPOT_CRITICAL_FILES,
-        "trading/orchestration/cycle_runner.py",
-        "trading/utils.py",
-        PREVENTIVE_SPOT_CLOSE_PATH,
-        "VERSION",
-    ))
-    for relative in paths:
-        result = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "show", f"{commit}:{relative}"],
-            check=False,
-            capture_output=True,
-        )
-        if result.returncode != 0:
-            if relative in FINAL_SPOT_CRITICAL_FILES and commit != V17_FINAL_COMMIT:
-                continue
-            raise AssertionError(
-                f"cannot materialize {commit}:{relative}: "
-                f"{result.stderr.decode('utf-8', errors='replace')}"
-            )
-        target = root / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(result.stdout)
+    result = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "archive", "--format=tar", commit],
+        check=True, capture_output=True,
+    )
+    root.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(fileobj=io.BytesIO(result.stdout), mode="r:") as archive:
+        members = archive.getmembers()
+        if any(
+            member.name.startswith("/") or ".." in Path(member.name).parts
+            or member.issym() or member.islnk()
+            for member in members
+        ):
+            raise AssertionError(f"unsafe archive member in {commit}")
+        archive.extractall(root)
 
 
 def _copy_runtime(source, target):
-    shutil.copytree(source, target)
+    shutil.copytree(source, target, copy_function=os.link)
+    # Complete-tree fixture without multiplying every immutable blob. Only
+    # paths mutated by a regression are detached from the shared inode.
+    mutable = set(SPOT_CRITICAL_FILES) | set(FINAL_SPOT_CRITICAL_FILES) | {
+        PREVENTIVE_SPOT_CLOSE_PATH, "trading/orchestration/cycle_runner.py",
+        "trading/utils.py", "trading/version_history.py",
+        "trading/capability_history.py", "trading/check_version_consistency.py",
+        "VERSION",
+    }
+    for relative in mutable:
+        path = target / relative
+        if path.is_file():
+            detached = path.with_name(path.name + ".fixture-detached")
+            shutil.copyfile(path, detached)
+            detached.replace(path)
     return target
 
 
@@ -225,10 +232,13 @@ def _run_v17_gate_contracts(temp_root, real_current):
     _replace_once(
         formatting / "trading/longs.py",
         "import entry_spot_recovery\n",
-        "import    entry_spot_recovery  # audited formatting\n",
+        "import    entry_spot_recovery\n",
     )
-    with (formatting / "trading/partial_spot_long.py").open("a", encoding="utf-8") as handle:
-        handle.write("\n# formatting-only comment\n")
+    _replace_once(
+        formatting / "trading/partial_spot_long.py",
+        "def _decimal(value):",
+        "def _decimal(value):  # comment inside audited function",
+    )
     if not check_spot_runtime_compatibility(real_current, formatting)["compatible"]:
         raise AssertionError("G17-P8 AST-normalized formatting changed compatibility")
     print("[PASS] G17-P8 comments and formatting preserve AST contracts")
@@ -312,6 +322,85 @@ def _run_v17_gate_contracts(temp_root, real_current):
         ):
             raise AssertionError(f"G17-N{number} did not fail closed: {outcome}")
         print(f"[PASS] G17-N{number} {action} {relative} is incompatible")
+
+    _run_v17_remediation_regressions(temp_root, real_current, final)
+
+
+def _run_v17_remediation_regressions(temp_root, current, final):
+    def mutate(number, relative, before, after, *, contract=None):
+        candidate = _copy_runtime(final, temp_root / f"g17-r{number}")
+        _replace_once(candidate / relative, before, after)
+        result = check_spot_runtime_compatibility(current, candidate)
+        if result["compatible"] or relative not in result["changed_critical_paths"]:
+            raise AssertionError(f"G17-R{number} failed to block {relative}: {result}")
+        if contract and result["contracts"].get(contract) is not False:
+            raise AssertionError(f"G17-R{number} did not fail {contract}: {result}")
+        print(f"[PASS] G17-R{number} {relative} blocks" + (f" contract {contract}" if contract else ""))
+
+    mutate(1, "trading/version_history.py", "return BOT_VERSION", "return 'v0-unsafe'")
+    mutate(2, "trading/version_history.py", "record[key] = value", "record[key] = None")
+
+    candidate = _copy_runtime(final, temp_root / "g17-r3")
+    relative = "trading/unrecognized_order_sender.py"
+    (candidate / relative).write_text("def send_order(client):\n    return client.create_order({})\n", encoding="utf-8")
+    _expect_incompatible("G17-R3", current, candidate, relative)
+    print("[PASS] G17-R3 new ordinary Python is incompatible")
+
+    candidate = _copy_runtime(final, temp_root / "g17-r4")
+    relative = "trading/testing/order_sender.py"
+    (candidate / relative).write_text("def send_order(client):\n    return client.create_order({})\n", encoding="utf-8")
+    _expect_incompatible("G17-R4", current, candidate, relative)
+    print("[PASS] G17-R4 productive Python under testing is incompatible")
+
+    candidate = _copy_runtime(final, temp_root / "g17-r5")
+    relative = "trading/test_order_sender.py"
+    (candidate / relative).write_text("import unittest\nclass TestOrders(unittest.TestCase):\n    def test_none(self):\n        pass\n", encoding="utf-8")
+    with (candidate / "trading/longs.py").open("a", encoding="utf-8") as handle:
+        handle.write("\nimport test_order_sender\n")
+    _expect_incompatible("G17-R5", current, candidate, relative)
+    print("[PASS] G17-R5 runtime-reachable test-named Python is incompatible")
+
+    mutate(6, "trading/orchestration/cycle_runner.py", "import preventive_spot_close\n", "", contract="A_preventive_spot")
+    mutate(7, "trading/preventive_spot_close.py", "'confirmed_close': status in FINAL_CLOSE_STATUSES,", "'confirmed_close': True,", contract="A_preventive_spot")
+
+    components = (
+        ("A_preventive_spot", "trading/preventive_spot_close.py", "def attempt_preventive_long_spot_close(", "def disabled_preventive_long_spot_close("),
+        ("B_canonical_quantity", "trading/quantity_integrity.py", "def format_decimal_quantity(", "def disabled_decimal_quantity("),
+        ("C_partial_safety", "trading/partial_spot_long.py", "def reconcile_pending_partial_long_spot(", "def disabled_pending_partial_long_spot("),
+        ("D_lifecycle_lock", "trading/spot_recovery_lock.py", "def is_spot_long_recovery_pending(", "def disabled_spot_long_recovery_pending("),
+        ("E_entry_recovery", "trading/entry_spot_recovery.py", "def submit_entry_emergency_sell(", "def disabled_entry_emergency_sell("),
+    )
+    for number, (contract, relative, before, after) in enumerate(components, start=8):
+        mutate(number, relative, before, after, contract=contract)
+
+    candidate = _copy_runtime(final, temp_root / "g17-r13")
+    path = candidate / "trading/version_history.py"
+    _replace_once(
+        path,
+        "os.environ.get('BOT_VERSION')",
+        "os.environ.get( 'BOT_VERSION' )",
+    )
+    if not check_spot_runtime_compatibility(current, candidate)["compatible"]:
+        raise AssertionError("G17-R13 comment-only AST normalization was rejected")
+    print("[PASS] G17-R13 comments pass only in AST-normalized Python nodes")
+
+    mutate(14, "trading/orchestration/cycle_runner.py", "state = utils.load_state()", "state = utils.load_state()\n        state['unaudited'] = True")
+    mutate(15, "trading/capability_history.py", "CAPABILITIES = (", "CAPABILITIES = []\nUNEXPECTED = (")
+    mutate(16, "trading/check_version_consistency.py", "def validate(", "def disabled_validate(")
+
+    candidate = _copy_runtime(final, temp_root / "g17-r17")
+    relative = "trading/market.py"
+    with (candidate / relative).open("a", encoding="utf-8") as handle:
+        handle.write("\n# outside any audited AST node\n")
+    _expect_incompatible("G17-R17", current, candidate, relative)
+    print("[PASS] G17-R17 comment outside audited nodes blocks")
+
+    candidate = _copy_runtime(final, temp_root / "g17-r18")
+    relative = "trading/partial_spot_long.py"
+    with (candidate / relative).open("a", encoding="utf-8") as handle:
+        handle.write("\n# outside the audited function nodes\n")
+    _expect_incompatible("G17-R18", current, candidate, relative)
+    print("[PASS] G17-R18 comment outside nodes of audited module blocks")
 
 
 def _expect(number, label, case, expected, status=None):
