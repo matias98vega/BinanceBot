@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 
 from deploy_spot_safety import (
+    FINAL_SPOT_CRITICAL_FILES,
     PREVENTIVE_SPOT_CLOSE_PATH,
     SPOT_CRITICAL_FILES,
     check_spot_runtime_compatibility,
@@ -19,6 +20,8 @@ from deploy_spot_safety import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PRODUCTION_COMMIT = "44fe2268deae2dd8c2d0ec05888ca0c1d82d5133"
 CANDIDATE_COMMIT = "2fb2f5a7dd5afa5735ebb0492b0daab770f566ad"
+V16_GATE_COMMIT = "2b210e7"
+V17_FINAL_COMMIT = "a242acb9b747b15cecdcd3fb6b52c1e761451b50"
 
 
 def _position(symbol="ETHUSDT", quantity="1", order_list_id=101, trade_id=None):
@@ -141,12 +144,14 @@ def _write_runtime(root, *, alert_variant=False):
 
 
 def _materialize_commit_runtime(root, commit):
-    paths = (
+    paths = dict.fromkeys((
         *SPOT_CRITICAL_FILES,
+        *FINAL_SPOT_CRITICAL_FILES,
         "trading/orchestration/cycle_runner.py",
         "trading/utils.py",
         PREVENTIVE_SPOT_CLOSE_PATH,
-    )
+        "VERSION",
+    ))
     for relative in paths:
         result = subprocess.run(
             ["git", "-C", str(REPO_ROOT), "show", f"{commit}:{relative}"],
@@ -154,7 +159,7 @@ def _materialize_commit_runtime(root, commit):
             capture_output=True,
         )
         if result.returncode != 0:
-            if relative == PREVENTIVE_SPOT_CLOSE_PATH:
+            if relative in FINAL_SPOT_CRITICAL_FILES and commit != V17_FINAL_COMMIT:
                 continue
             raise AssertionError(
                 f"cannot materialize {commit}:{relative}: "
@@ -181,6 +186,132 @@ def _expect_incompatible(label, current, candidate, expected_path=None):
         raise AssertionError(f"{label} unexpectedly compatible: {result}")
     if expected_path and expected_path not in result["changed_critical_paths"]:
         raise AssertionError(f"{label} missing changed path {expected_path}: {result}")
+
+
+def _replace_once(path, before, after):
+    source = path.read_text(encoding="utf-8")
+    if source.count(before) != 1:
+        raise AssertionError(f"mutation marker not unique in {path}: {before!r}")
+    path.write_text(source.replace(before, after, 1), encoding="utf-8")
+
+
+def _run_v17_gate_contracts(temp_root, real_current):
+    v16 = temp_root / "g17-v16"
+    final = temp_root / "g17-final"
+    _materialize_commit_runtime(v16, V16_GATE_COMMIT)
+    _materialize_commit_runtime(final, V17_FINAL_COMMIT)
+
+    v16_result = check_spot_runtime_compatibility(real_current, v16)
+    if not v16_result["compatible"]:
+        raise AssertionError(f"G17-P1 v1.6 regression: {v16_result}")
+    print("[PASS] G17-P1 direct v1.5 to audited v1.6 remains compatible")
+
+    result = check_spot_runtime_compatibility(real_current, final)
+    if (not result["compatible"] or result["changed_critical_paths"] or result["errors"]
+            or result.get("audited_transitions") != [
+                "v1.6_preventive_spot", "v1.7_spot_quantity_and_recovery",
+            ]):
+        raise AssertionError(f"G17-P2 final direct transition: {result}")
+    print("[PASS] G17-P2 direct v1.5 to final v1.7 is compatible")
+    for number, contract in enumerate((
+        "A_preventive_spot", "B_canonical_quantity", "C_partial_safety",
+        "E_entry_recovery", "D_lifecycle_lock",
+    ), start=3):
+        if result["contracts"].get(contract) is not True:
+            raise AssertionError(f"G17-P{number} missing {contract}: {result}")
+        print(f"[PASS] G17-P{number} {contract} is structurally certified")
+
+    formatting = _copy_runtime(final, temp_root / "g17-formatting")
+    _replace_once(
+        formatting / "trading/longs.py",
+        "import entry_spot_recovery\n",
+        "import    entry_spot_recovery  # audited formatting\n",
+    )
+    with (formatting / "trading/partial_spot_long.py").open("a", encoding="utf-8") as handle:
+        handle.write("\n# formatting-only comment\n")
+    if not check_spot_runtime_compatibility(real_current, formatting)["compatible"]:
+        raise AssertionError("G17-P8 AST-normalized formatting changed compatibility")
+    print("[PASS] G17-P8 comments and formatting preserve AST contracts")
+
+    equivalent = _copy_runtime(final, temp_root / "g17-equivalent-tree")
+    if (equivalent / ".git").exists():
+        raise AssertionError("G17-P9 fixture unexpectedly includes Git history")
+    if not check_spot_runtime_compatibility(real_current, equivalent)["compatible"]:
+        raise AssertionError("G17-P9 equivalent final tree was rejected")
+    print("[PASS] G17-P9 equivalent final tree is independent of commit ordering")
+
+    changes = (
+        (1, "trading/longs.py", "qty_payload = format_decimal_quantity(qty_decimal)",
+         "qty_payload = str(qty_decimal)"),
+        (2, "trading/longs.py", "qty_payload = format_decimal_quantity(qty_decimal)",
+         "qty_payload = str(float(qty_decimal))"),
+        (3, "trading/quantity_integrity.py", 'text = format(quantity, "f")',
+         'text = str(quantity)'),
+        (4, "trading/partial_spot_long.py", "if snapshot_error:",
+         "if False and snapshot_error:"),
+        (5, "trading/partial_spot_long.py", "excess_inventory = before['total'] - managed",
+         "managed = before['total']\n    excess_inventory = before['total'] - managed"),
+        (6, "trading/orchestration/cycle_runner.py",
+         "if is_spot_long_recovery_pending(pos):\n                self._reconcile_pending_spot_long",
+         "if False and is_spot_long_recovery_pending(pos):\n                self._reconcile_pending_spot_long"),
+        (7, "trading/longs.py",
+         "if is_spot_long_recovery_pending(pos):\n        return 'deferred_recovery_pending', None, 0\n    sym   = pos['symbol']\n    entry = pos['entry_price']",
+         "if False and is_spot_long_recovery_pending(pos):\n        return 'deferred_recovery_pending', None, 0\n    sym   = pos['symbol']\n    entry = pos['entry_price']"),
+        (8, "trading/preventive_spot_close.py", "if is_spot_long_recovery_pending(pos):",
+         "if False and is_spot_long_recovery_pending(pos):"),
+        (9, "trading/sl_guardian.py", "if is_spot_long_recovery_pending(pos):",
+         "if False and is_spot_long_recovery_pending(pos):"),
+        (11, "trading/orchestration/cycle_runner.py",
+         "entry_spot_recovery.reconcile_pending_entry_spot_long(self.binance, pos)",
+         "partial_spot_long.reconcile_pending_partial_long_spot(self.binance, pos)"),
+        (12, "trading/orchestration/cycle_runner.py",
+         "result = {'status': f'UNKNOWN_RECOVERY_TYPE:{kind}', 'confirmed_execution': False}",
+         "result = entry_spot_recovery.reconcile_pending_entry_spot_long(self.binance, pos)"),
+        (13, "trading/orchestration/audit_pipeline.py",
+         "if is_spot_long_recovery_pending(position):",
+         "if False and is_spot_long_recovery_pending(position):"),
+        (14, "trading/partial_spot_long.py", "order = _create_order(client, sell_payload)",
+         "order = _create_order(client, sell_payload)\n        _create_order(client, sell_payload)"),
+        (15, "trading/orchestration/cycle_runner.py", "import preventive_spot_close\n", ""),
+        (16, "trading/preventive_spot_close.py",
+         "'confirmed_close': status in FINAL_CLOSE_STATUSES,",
+         "'confirmed_close': True,"),
+        (17, "trading/orchestration/cycle_runner.py", "state = utils.load_state()",
+         "state = utils.load_state()\n        state['strategy_score_override'] = 1"),
+        (18, "trading/quantity_integrity.py", "rounding=ROUND_DOWN) * step_size",
+         "rounding=__import__('decimal').ROUND_UP) * step_size"),
+        (22, "trading/auto_loop.py",
+         "'symbol': symbol, 'side': 'SELL', 'type': 'MARKET',\n            'quantity': format_decimal_quantity(qty),",
+         "'symbol': symbol, 'side': 'SELL', 'type': 'MARKET',\n            'quantity': str(float(qty)),"),
+    )
+    for number, relative, before, after in changes:
+        candidate = _copy_runtime(final, temp_root / f"g17-n{number}")
+        _replace_once(candidate / relative, before, after)
+        _expect_incompatible(f"G17-N{number}", real_current, candidate, relative)
+        print(f"[PASS] G17-N{number} changed {relative} is incompatible")
+
+    special = {
+        10: ("trading/entry_spot_recovery.py", "remove"),
+        19: ("trading/partial_spot_long.py", "parse"),
+        20: ("trading/quantity_integrity.py", "remove"),
+        21: ("trading/orchestration/unaudited_spot_builder.py", "add"),
+    }
+    for number, (relative, action) in special.items():
+        candidate = _copy_runtime(final, temp_root / f"g17-n{number}")
+        path = candidate / relative
+        if action == "remove":
+            path.unlink()
+        elif action == "parse":
+            path.write_text("def invalid(:\n", encoding="utf-8")
+        else:
+            path.write_text("def send_spot_order():\n    return True\n", encoding="utf-8")
+        outcome = check_spot_runtime_compatibility(real_current, candidate)
+        if outcome["compatible"] or not (
+            relative in outcome["changed_critical_paths"]
+            or any(relative in error for error in outcome["errors"])
+        ):
+            raise AssertionError(f"G17-N{number} did not fail closed: {outcome}")
+        print(f"[PASS] G17-N{number} {action} {relative} is incompatible")
 
 
 def _expect(number, label, case, expected, status=None):
@@ -431,6 +562,8 @@ def run(temp_root):
         if result["safe"]:
             raise AssertionError(f"C10 unsafe Futures evidence passed: {result}")
     print("[PASS] C10 Futures position/order/reconciliation policy remains restrictive")
+
+    _run_v17_gate_contracts(temp_root, real_current)
 
 
 def main():

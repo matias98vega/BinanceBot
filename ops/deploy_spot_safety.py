@@ -45,6 +45,63 @@ SPOT_CRITICAL_FILES = (
 
 PREVENTIVE_SPOT_CLOSE_PATH = "trading/preventive_spot_close.py"
 
+# These are AST fingerprints of the audited v1.5 source and the final v1.7
+# runtime, not commit hashes or a blanket exemption for changed files. A
+# different commit sequence with the same Python structure remains eligible.
+_AUDITED_V15_AST = {
+    "trading/auto_loop.py": "38d9e18b1ba1f2ed705ff905e6d6caa735995eb4aa62af3df2a9712d2184abd9",
+    "trading/longs.py": "805da032f8366f8152e7f0ce41ffeeeb1aac1cb6f51645a58544f81947d6cf72",
+    "trading/quantity_integrity.py": "52357ef3fa58649cce0cdabf1898dde83c9f46748909804ee2394f47c9a77bcb",
+    "trading/sl_guardian.py": "35f9e904cd42946badecbe25094dbaeea69d260495e75871c5a10883b0c636ab",
+    "trading/orchestration/cycle_runner.py": "dfe8a1fb55cf61298e832231a1ed24a808b0f2d1d5b7f424393e717f984fa8bb",
+    "trading/orchestration/position_lifecycle.py": "675acebfa9060fda23ddd545903b6556ffef77acd7f09f45c7f0708fa6b5dd92",
+    "trading/orchestration/audit_pipeline.py": "bf3e222e7d60e6cb6687ae2bc6782c401d16061a6f1b8639a1a81ce94e340f3e",
+}
+_AUDITED_V17_AST = {
+    "trading/auto_loop.py": "7f2d50162458e748e60876f202c06bef23692778837774944c3686055a32e27d",
+    "trading/longs.py": "62a0b8f59e63c2594a1c62e3504691e984d863fc2e206ad9436f4270930cb004",
+    "trading/quantity_integrity.py": "5d3f59ff131e287cbcbe09d62bbebd22947a402a3424c056a447cac3927a7cb2",
+    "trading/partial_spot_long.py": "755a65ba0521a941c1e2e014b3918608ca442faff83e97100f19c62170a50dd2",
+    "trading/spot_recovery_lock.py": "397e85c36b0aa3375b5ae71055c46823c05dd78dd0df1dcb3e48c1c2defe1ea9",
+    "trading/entry_spot_recovery.py": "06f273d128e974bb438cd870f0897ab9698df1d33c7b1ae80e5c8ec9a53db1dc",
+    "trading/preventive_spot_close.py": "3eef61b218f178459cb2d2b09d74b5e7b0c7c48b1b6c054b73b5dd0bb6f9be1f",
+    "trading/sl_guardian.py": "1544362a913516a5f30d8617ac0e834261f0d0a33f028da6ab661d52c9c4eeec",
+    "trading/orchestration/cycle_runner.py": "a3be9abe887f92787747be0fd368650c82e5c8a916a81a4e5a90814174db68a0",
+    "trading/orchestration/position_lifecycle.py": "c32827649f80e29c858b88184ad601019737757ded0b797156b0a4daabb1a3e4",
+    "trading/orchestration/audit_pipeline.py": "e31546584cf1a9676963fd39983ce5b68a5b96b35456e4bbc541262274e42139",
+}
+FINAL_SPOT_CRITICAL_FILES = tuple(_AUDITED_V17_AST)
+_V17_NEW_PATHS = frozenset(_AUDITED_V17_AST) - frozenset(_AUDITED_V15_AST)
+_PASSIVE_PYTHON_PATHS = frozenset({
+    "trading/capability_history.py", "trading/check_version_consistency.py",
+    "trading/version_history.py",
+})
+_V17_CONTRACT_PATHS = {
+    "A_preventive_spot": (
+        "trading/preventive_spot_close.py", "trading/orchestration/cycle_runner.py",
+        "trading/orchestration/position_lifecycle.py",
+    ),
+    "B_canonical_quantity": (
+        "trading/quantity_integrity.py", "trading/auto_loop.py", "trading/longs.py",
+        "trading/partial_spot_long.py", "trading/entry_spot_recovery.py",
+        "trading/preventive_spot_close.py", "trading/sl_guardian.py",
+    ),
+    "C_partial_safety": (
+        "trading/partial_spot_long.py", "trading/quantity_integrity.py",
+        "trading/orchestration/position_lifecycle.py",
+    ),
+    "D_lifecycle_lock": (
+        "trading/spot_recovery_lock.py", "trading/orchestration/cycle_runner.py",
+        "trading/longs.py", "trading/preventive_spot_close.py",
+        "trading/sl_guardian.py", "trading/orchestration/audit_pipeline.py",
+        "trading/orchestration/position_lifecycle.py",
+    ),
+    "E_entry_recovery": (
+        "trading/entry_spot_recovery.py", "trading/spot_recovery_lock.py",
+        "trading/longs.py", "trading/orchestration/cycle_runner.py",
+    ),
+}
+
 # Structural fingerprints for the one audited migration from the legacy inline
 # preventive LONG Spot block to the fail-closed helper. Comments and formatting
 # are ignored by AST normalization; every semantic change remains incompatible.
@@ -544,12 +601,137 @@ def _normalized_ast(path, profile):
     return ast.dump(normalized, annotate_fields=True, include_attributes=False)
 
 
+def _module_ast_fingerprint(path):
+    return hashlib.sha256(_normalized_module_ast(path).encode("utf-8")).hexdigest()
+
+
+def _runtime_python_paths(root):
+    trading = root / "trading"
+    if not trading.is_dir():
+        raise SafetyEvidenceError("missing trading runtime directory")
+    return {
+        path.relative_to(root).as_posix()
+        for path in trading.rglob("*.py")
+        if not path.name.startswith("test_")
+        and "testing" not in path.relative_to(trading).parts
+        and path.relative_to(root).as_posix() not in _PASSIVE_PYTHON_PATHS
+    }
+
+
+def _check_unrecognized_runtime_paths(current_root, candidate_root, audited, changed, errors):
+    """A new or changed productive Python path needs an explicit audited contract."""
+    try:
+        paths = _runtime_python_paths(current_root) | _runtime_python_paths(candidate_root)
+    except SafetyEvidenceError as exc:
+        errors.append(f"runtime_inventory:{exc}")
+        return
+    for relative in sorted(paths - set(audited)):
+        current = current_root / relative
+        candidate = candidate_root / relative
+        if not current.is_file() or not candidate.is_file():
+            changed.append(relative)
+            continue
+        try:
+            if _module_ast_fingerprint(current) != _module_ast_fingerprint(candidate):
+                changed.append(relative)
+        except (OSError, SyntaxError, UnicodeError) as exc:
+            errors.append(f"parse:{relative}:{type(exc).__name__}")
+
+
+def _final_v17_compatibility(current_root, candidate_root):
+    changed = []
+    errors = []
+    verified_paths = set()
+    current_version = current_root / "VERSION"
+    candidate_version = candidate_root / "VERSION"
+    try:
+        if current_version.read_text(encoding="utf-8").strip() != "v1.5-preventive-futures-close-fix":
+            errors.append("unexpected_source_version")
+        if candidate_version.read_text(encoding="utf-8").strip() != "v1.7-partial-spot-quantity-safety":
+            errors.append("unexpected_candidate_version")
+    except (OSError, UnicodeError) as exc:
+        errors.append(f"version_evidence:{type(exc).__name__}")
+
+    for relative, expected in _AUDITED_V15_AST.items():
+        source = current_root / relative
+        if not source.is_file():
+            errors.append(f"missing:{relative}:current")
+            continue
+        try:
+            if _module_ast_fingerprint(source) != expected:
+                errors.append(f"unexpected_baseline:{relative}")
+        except (OSError, SyntaxError, UnicodeError) as exc:
+            errors.append(f"parse:{relative}:current:{type(exc).__name__}")
+    for relative in sorted(_V17_NEW_PATHS):
+        if (current_root / relative).exists():
+            errors.append(f"unexpected_baseline_path:{relative}")
+    for relative, expected in _AUDITED_V17_AST.items():
+        target = candidate_root / relative
+        if not target.is_file():
+            errors.append(f"missing:{relative}:candidate")
+            continue
+        try:
+            if _module_ast_fingerprint(target) == expected:
+                verified_paths.add(relative)
+            else:
+                changed.append(relative)
+        except (OSError, SyntaxError, UnicodeError) as exc:
+            errors.append(f"parse:{relative}:candidate:{type(exc).__name__}")
+
+    # Files not part of the audited migration keep their existing strict bytes.
+    for relative in SPOT_CRITICAL_FILES:
+        if relative in _AUDITED_V17_AST:
+            continue
+        source = current_root / relative
+        target = candidate_root / relative
+        if not source.is_file() or not target.is_file():
+            errors.append(f"missing:{relative}")
+        elif _sha256(source) != _sha256(target):
+            changed.append(relative)
+    _check_unrecognized_runtime_paths(
+        current_root, candidate_root,
+        set(_AUDITED_V17_AST) | set(SPOT_CRITICAL_FILES), changed, errors,
+    )
+    contracts = {
+        name: all(path in verified_paths for path in paths)
+        for name, paths in _V17_CONTRACT_PATHS.items()
+    }
+    if not all(contracts.values()):
+        errors.append("incomplete_v17_contract")
+    compatible = not changed and not errors
+    return {
+        "compatible": compatible,
+        "status": "SPOT_RUNTIME_COMPATIBLE" if compatible else "SPOT_RUNTIME_INCOMPATIBLE",
+        "changed_critical_paths": sorted(set(changed)),
+        "errors": errors,
+        "contracts": contracts,
+        "audited_transitions": ["v1.6_preventive_spot", "v1.7_spot_quantity_and_recovery"] if compatible else [],
+    }
+
+
 def check_spot_runtime_compatibility(current_root, candidate_root):
     """Fail closed when open-Spot lifecycle/runtime contracts differ."""
     current_root = Path(current_root)
     candidate_root = Path(candidate_root)
+    version_path = candidate_root / "VERSION"
+    try:
+        candidate_version = version_path.read_text(encoding="utf-8").strip() if version_path.is_file() else ""
+    except (OSError, UnicodeError) as exc:
+        return {
+            "compatible": False, "status": "SPOT_RUNTIME_INCOMPATIBLE",
+            "changed_critical_paths": [], "errors": [f"version_evidence:{type(exc).__name__}"],
+        }
+    final_only = _V17_NEW_PATHS - {PREVENTIVE_SPOT_CLOSE_PATH}
+    if candidate_version == "v1.7-partial-spot-quantity-safety" or any(
+        (candidate_root / relative).exists() for relative in final_only
+    ):
+        return _final_v17_compatibility(current_root, candidate_root)
     changed = []
     errors = []
+    if candidate_version and candidate_version not in {
+        "v1.5-preventive-futures-close-fix", "v1.6-preventive-spot-close-fix",
+    }:
+        errors.append("unexpected_candidate_version")
     for relative in SPOT_CRITICAL_FILES:
         current = current_root / relative
         candidate = candidate_root / relative
@@ -573,10 +755,17 @@ def check_spot_runtime_compatibility(current_root, candidate_root):
         except (OSError, SafetyEvidenceError, SyntaxError, UnicodeError) as exc:
             errors.append(f"parse:{relative}:{type(exc).__name__}")
     _check_preventive_spot_helper(current_root, candidate_root, changed, errors)
+    _check_unrecognized_runtime_paths(
+        current_root, candidate_root,
+        set(SPOT_CRITICAL_FILES) | {
+            "trading/orchestration/cycle_runner.py", "trading/utils.py",
+            PREVENTIVE_SPOT_CLOSE_PATH,
+        }, changed, errors,
+    )
     return {
         "compatible": not changed and not errors,
         "status": "SPOT_RUNTIME_COMPATIBLE" if not changed and not errors else "SPOT_RUNTIME_INCOMPATIBLE",
-        "changed_critical_paths": sorted(changed),
+        "changed_critical_paths": sorted(set(changed)),
         "errors": errors,
     }
 

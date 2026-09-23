@@ -270,10 +270,10 @@ test_spot_safety_contracts() {
   output="$(
     PYTHONDONTWRITEBYTECODE=1 "${WORKTREE}/.venv/bin/python" \
       "${SCRIPT_DIR}/test_deploy_spot_safety.py" --temp-root "${area}/python"
-  )" || fail 'S1-S22/C-prev1-C-prev2/C1-C10 Python Spot safety fixtures failed'
+  )" || fail 'S1-S22/C-prev1-C-prev2/C1-C10/G17-P1-P9/G17-N1-N22 Python Spot safety fixtures failed'
   printf '%s\n' "$output"
   python_pass_count="$(grep -c '^\[PASS\] ' <<< "$output")"
-  [[ "$python_pass_count" -eq 34 ]] || fail "unexpected Spot Python assertion count: ${python_pass_count}"
+  [[ "$python_pass_count" -eq 65 ]] || fail "unexpected Spot Python assertion count: ${python_pass_count}"
   PASS_COUNT=$((PASS_COUNT + python_pass_count))
 
   candidate="${area}/isolated-candidate"
@@ -304,5 +304,5 @@ test_static_safety_contracts
 test_state_isolation_contract
 test_spot_safety_contracts
 
-[[ "$PASS_COUNT" -eq 67 ]] || fail "unexpected assertion count: ${PASS_COUNT}"
-printf '[RESULT] OFFLINE_DEPLOY_HARNESS_PASS D1-D15 T1-T12 S1-S25 C-prev1-C-prev2 C1-C10\n'
+[[ "$PASS_COUNT" -eq 98 ]] || fail "unexpected assertion count: ${PASS_COUNT}"
+printf '[RESULT] OFFLINE_DEPLOY_HARNESS_PASS D1-D15 T1-T12 S1-S25 C-prev1-C-prev2 C1-C10 G17-P1-P9 G17-N1-N22\n'
