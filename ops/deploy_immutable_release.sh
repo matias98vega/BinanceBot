@@ -640,8 +640,35 @@ print('POST_CUTOVER_SAFETY=PASS')
 PY
 }
 
+completed_oneshot_snapshot() {
+  # One property snapshot avoids mixing a new start with the previous result.
+  # rc=2 means not finished yet; rc=1 means missing/invalid or failed evidence.
+  local unit="$1" snapshot key value active="" sub="" result="" status="" start="" finished=""
+  snapshot="$(systemctl show "$unit" -p ActiveState -p SubState -p Result \
+    -p ExecMainStatus -p ExecMainStartTimestampMonotonic -p ExecMainExitTimestampMonotonic)" || return 1
+  while IFS='=' read -r key value; do
+    case "$key" in
+      ActiveState) active="$value" ;;
+      SubState) sub="$value" ;;
+      Result) result="$value" ;;
+      ExecMainStatus) status="$value" ;;
+      ExecMainStartTimestampMonotonic) start="$value" ;;
+      ExecMainExitTimestampMonotonic) finished="$value" ;;
+    esac
+  done <<< "$snapshot"
+  case "$active" in
+    activating|active|deactivating|reloading) return 2 ;;
+    inactive) [[ "$sub" == dead ]] || return 1 ;;
+    *) return 1 ;;
+  esac
+  [[ "$start" =~ ^[0-9]+$ && "$finished" =~ ^[0-9]+$ ]] || return 1
+  (( 10#$start > 0 && 10#$finished >= 10#$start )) || return 2
+  [[ "$result" == success && "$status" == 0 ]] || return 1
+  printf '%s\n' "$start"
+}
+
 observe_natural_cycles() {
-  local main_before guardian_before deadline start_mark result exec_status cycle_count=0
+  local main_before guardian_before deadline start_mark rc cycle_count=0
   declare -A observed_starts=()
   main_before="$(systemctl show binancebot.service -p ExecMainStartTimestampMonotonic --value)"
   guardian_before="$(systemctl show binancebot-guardian.service -p ExecMainStartTimestampMonotonic --value)"
@@ -649,21 +676,30 @@ observe_natural_cycles() {
   deadline=$((SECONDS + POST_CUTOVER_TIMEOUT_SECONDS))
   while (( cycle_count < POST_CUTOVER_CYCLES && SECONDS < deadline )); do
     sleep 5
-    start_mark="$(systemctl show binancebot.service -p ExecMainStartTimestampMonotonic --value)"
+    if start_mark="$(completed_oneshot_snapshot binancebot.service)"; then
+      :
+    else
+      rc=$?
+      (( rc == 2 )) && continue
+      return 1
+    fi
     [[ -n "$start_mark" && -z "${observed_starts[$start_mark]:-}" ]] || continue
-    systemctl is-active --quiet binancebot.service && continue
     observed_starts["$start_mark"]=1
-    result="$(systemctl show binancebot.service -p Result --value)"
-    exec_status="$(systemctl show binancebot.service -p ExecMainStatus --value)"
-    [[ "$result" == "success" && "$exec_status" == "0" ]] || return 1
     cycle_count=$((cycle_count + 1))
     info "NATURAL_CYCLE_${cycle_count}=success"
     run_post_cutover_safety_gate || return 1
   done
   (( cycle_count == POST_CUTOVER_CYCLES )) || return 1
-  [[ "$(systemctl show binancebot-guardian.service -p ExecMainStartTimestampMonotonic --value)" != "$guardian_before" ]] || return 1
-  [[ "$(systemctl show binancebot-guardian.service -p Result --value)" == "success" ]] || return 1
-  [[ "$(systemctl show binancebot-guardian.service -p ExecMainStatus --value)" == "0" ]] || return 1
+  while (( SECONDS < deadline )); do
+    if start_mark="$(completed_oneshot_snapshot binancebot-guardian.service)"; then
+      [[ "$start_mark" != "$guardian_before" ]] && return 0
+    else
+      rc=$?
+      (( rc == 2 )) || return 1
+    fi
+    sleep 5
+  done
+  return 1
 }
 
 validate_post_cutover() {

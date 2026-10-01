@@ -341,6 +341,13 @@ test_final_preflight_contracts() {
     systemctl() {
       [[ "$1" == show ]] || return 1
       case "$4" in
+        ActiveState)
+          local count
+          count="$(cat "${area}/starts" 2>/dev/null || printf 0)"
+          count=$((count + 1))
+          printf '%s\n' "$count" > "${area}/starts"
+          printf 'ActiveState=inactive\nSubState=dead\nResult=success\nExecMainStatus=0\nExecMainStartTimestampMonotonic=%s\nExecMainExitTimestampMonotonic=%s\n' "$count" "$count"
+          ;;
         ExecMainStartTimestampMonotonic)
           local count
           count="$(cat "${area}/starts" 2>/dev/null || printf 0)"
@@ -376,6 +383,73 @@ test_final_preflight_contracts() {
   [[ "$(cat "${area}/post-rollback-actions")" == $'restored\nresumed' && \
      "$(cat "${area}/post-rollback.state")" == COMPLETED ]] || fail 'F6 post failure did not restore runtime'
   pass 'F6 post observation failure invokes existing rollback and restores runtime'
+  (
+    local_snapshot=""
+    systemctl() { printf '%s\n' "$local_snapshot"; }
+    assert_snapshot_rc() {
+      local expected="$1" output rc
+      output="$(completed_oneshot_snapshot fixture.service)" && rc=0 || rc=$?
+      [[ "$rc" == "$expected" ]] || exit 1
+      if [[ "$rc" == 0 ]]; then [[ "$output" == 100 ]] || exit 1;
+      else [[ -z "$output" ]] || exit 1; fi
+    }
+    for state in activating active deactivating reloading; do
+      local_snapshot="$(printf 'ActiveState=%s\nSubState=start\nResult=success\nExecMainStatus=0\nExecMainStartTimestampMonotonic=100\nExecMainExitTimestampMonotonic=90\n' "$state")"
+      assert_snapshot_rc 2
+    done
+    local_snapshot=$'ActiveState=inactive\nSubState=dead\nResult=success\nExecMainStatus=0\nExecMainStartTimestampMonotonic=100\nExecMainExitTimestampMonotonic=90'
+    assert_snapshot_rc 2
+    local_snapshot="${local_snapshot%90}100"
+    assert_snapshot_rc 0
+    local_snapshot="${local_snapshot/ExecMainStatus=0/ExecMainStatus=1}"
+    assert_snapshot_rc 1
+    local_snapshot="${local_snapshot/ActiveState=inactive/ActiveState=failed}"
+    assert_snapshot_rc 1
+    local_snapshot=$'ActiveState=inactive\nSubState=dead\nResult=success\nExecMainStatus=0'
+    assert_snapshot_rc 1
+    local_snapshot=$'ActiveState=inactive\nSubState=dead\nResult=success\nExecMainStatus=0\nExecMainStartTimestampMonotonic=invalid\nExecMainExitTimestampMonotonic=100'
+    assert_snapshot_rc 1
+    systemctl() { return 1; }
+    assert_snapshot_rc 1
+  ) || fail 'F7 incomplete or failed oneshot snapshot was accepted'
+  pass 'F7 transitional states and stale completion wait; failed/missing evidence blocks'
+  (
+    tick=0
+    sleep() { tick=$((tick + 1)); (( tick <= 10 )) || exit 1; }
+    systemctl() {
+      [[ "$1" == show ]] || return 1
+      if [[ "$4" == ExecMainStartTimestampMonotonic ]]; then printf '1\n'; return; fi
+      [[ "$4" == ActiveState ]] || return 1
+      local state=inactive sub=dead start=10 finished=10
+      if [[ "$2" == binancebot-guardian.service ]]; then
+        start=50; finished=51
+        if (( tick < 9 )); then state=activating; sub=start; finished=1; fi
+      else
+        case "$tick" in
+          1|2) state=activating; sub=start; finished=1 ;;
+          3|4) : ;;
+          5) start=20; state=activating; sub=start; finished=10 ;;
+          6) start=20; finished=21 ;;
+          7) start=30; state=activating; sub=start; finished=21 ;;
+          8) start=30; finished=31 ;;
+          *) exit 1 ;;
+        esac
+      fi
+      printf 'ActiveState=%s\nSubState=%s\nResult=success\nExecMainStatus=0\nExecMainStartTimestampMonotonic=%s\nExecMainExitTimestampMonotonic=%s\n' "$state" "$sub" "$start" "$finished"
+    }
+    run_post_cutover_safety_gate() { printf '%s\n' "$tick" >> "${area}/finished-checks"; }
+    observe_natural_cycles
+    [[ "$(cat "${area}/finished-checks")" == $'3\n6\n8' && "$tick" == 9 ]]
+  ) > "${area}/oneshot-race-output" 2>&1 || fail 'F8 activation race or duplicate cycle reached post gate'
+  pass 'F8 activating oneshots are not counted; three unique completions and Guardian are awaited'
+  (
+    systemctl() { printf '1\n'; }
+    completed_oneshot_snapshot() { return 2; }
+    sleep() { SECONDS=$((SECONDS + POST_CUTOVER_TIMEOUT_SECONDS + 1)); }
+    run_post_cutover_safety_gate() { exit 99; }
+    if observe_natural_cycles; then exit 1; fi
+  ) || fail 'F9 busy observation timeout returned success'
+  pass 'F9 never-completing oneshot times out without accepting a cycle'
   PYTHONDONTWRITEBYTECODE=1 "${WORKTREE}/.venv/bin/python" \
     "${SCRIPT_DIR}/test_deploy_paused_preflight.py" || fail 'paused preflight adversarial tests failed'
   pass 'PZ paused preflight offline adversarial tests'
@@ -389,5 +463,5 @@ test_state_isolation_contract
 test_spot_safety_contracts
 test_final_preflight_contracts
 
-[[ "$PASS_COUNT" -eq 123 ]] || fail "unexpected assertion count: ${PASS_COUNT}"
-printf '[RESULT] OFFLINE_DEPLOY_HARNESS_PASS D1-D15 T1-T12 S1-S25 C-prev1-C-prev2 C1-C10 G17-P1-P9 G17-N1-N22 G17-R1-R18 F1-F6 PZ\n'
+[[ "$PASS_COUNT" -eq 126 ]] || fail "unexpected assertion count: ${PASS_COUNT}"
+printf '[RESULT] OFFLINE_DEPLOY_HARNESS_PASS D1-D15 T1-T12 S1-S25 C-prev1-C-prev2 C1-C10 G17-P1-P9 G17-N1-N22 G17-R1-R18 F1-F9 PZ\n'

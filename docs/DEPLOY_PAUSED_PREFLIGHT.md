@@ -40,6 +40,15 @@ stale or contradictory evidence, wrong version/mode, pause changes or exposure
 on that fallback route fail verification and enter rollback. No manual cycle
 is run and no reconciliation is written to state or history.
 
+For bot and Guardian `Type=oneshot` services, verification reads lifecycle and
+execution timestamps in one `systemctl show` snapshot. An `activating`, `active`,
+`deactivating` or `reloading` invocation is still pending, even if its result
+fields retain a previous success. Only `inactive/dead` with a nonzero start,
+matching-or-later exit timestamp and successful exit is completed. Each start
+is counted once; pending invocations retain the bounded observation timeout.
+Unknown/missing evidence or a failed unit blocks verification and rollback
+remains enabled. Guardian must also complete a new invocation before success.
+
 Mutable state links are reused. Deployment does not clear the pause, daily PnL
 or consecutive SL counters. The runtime's existing UTC daily-reset rules still
 apply during subsequent natural cycles; this preflight does not extend a pause.
