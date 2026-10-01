@@ -1180,16 +1180,22 @@ _RISK_PAUSE_FIELDS = (
 )
 
 
-def _risk_pause_fingerprint(state, observed_date):
+def _risk_pause_fingerprint(state, observed_at):
     """Identify the existing risk pause without modifying its fields."""
     if not isinstance(state, dict) or not (
-        state.get("status") == "paused"
+        state.get("status") in {"paused", "active"}
         and state.get("pause_reason") == "daily_stop_loss_limit"
-        and state.get("pnl_date") == observed_date
+        and state.get("pnl_date") == observed_at.date().isoformat()
     ):
         return None
     try:
-        if _decimal(state.get("pause_until"), "pause expiry") <= 0:
+        expiry = _decimal(state.get("pause_until"), "pause expiry")
+        if expiry <= 0:
+            return None
+        # The UTC reset can set status=active while the timed breaker still
+        # returns before reconciliation. Match that existing runtime branch;
+        # an active bot with an expired breaker must never use this fallback.
+        if state.get("status") == "active" and expiry <= int(observed_at.timestamp()):
             return None
         _decimal(state.get("daily_pnl_usdt"), "daily PnL")
         if _decimal(state.get("daily_start_capital"), "daily capital") < 0:
@@ -1242,14 +1248,13 @@ def observe_pre_cutover_safety(
             local_fresh and 0 <= monotonic() - started <= 30
             and observed_at.date() == ended_at.date()
         )
-        observed_date = ended_at.date().isoformat()
-        pause_fingerprint = _risk_pause_fingerprint(state, observed_date)
+        pause_fingerprint = _risk_pause_fingerprint(state, ended_at)
         result = evaluate_pre_cutover_safety(
             local_state=state, bot_state=bot_state, exchange_positions=risk,
             futures_orders=futures_orders, spot_orders=spot_orders,
             spot_account=account, spot_filters=filters,
             current_root=current_root, candidate_root=candidate_root,
-            paused_zero_exposure_date=observed_date if fresh and stable else None,
+            paused_zero_exposure_at=ended_at if fresh and stable else None,
         )
         result["checks"].update(
             local_state_stable=stable, observation_fresh=fresh,
@@ -1262,6 +1267,14 @@ def observe_pre_cutover_safety(
             or expected_pause_fingerprint is not None else None
         )
         result["observation_errors"] = []
+        reconciliation = (((bot_state.get("positions") or {}).get("short") or {}).get("reconciliation"))
+        result["runtime_observation"] = {
+            "version": bot_state.get("bot_version"),
+            "gate_mode": (bot_state.get("pre_entry_safety_summary") or {}).get("mode"),
+            "persisted_aligned": isinstance(reconciliation, dict)
+                and reconciliation.get("aligned") is True
+                and reconciliation.get("status") == "ALINEADO",
+        }
         return result
     except Exception as exc:
         return {
@@ -1276,6 +1289,36 @@ def observe_pre_cutover_safety(
         }
 
 
+def observe_post_cutover_safety(*, expected_version, **observation_args):
+    """Validate a natural cycle, including a genuinely flat risk-paused cycle.
+
+    Normal aligned cycles may manage positions as before. Only the empty-summary
+    pause route requires the full zero-exposure GET checks, never a fabricated
+    persisted reconciliation. Version and AUDIT_ONLY checks always apply.
+    """
+    result = observe_pre_cutover_safety(**observation_args)
+    runtime = result.get("runtime_observation", {})
+    observed = result["checks"]
+    checks = {
+        "runtime_version": bool(expected_version) and runtime.get("version") == expected_version,
+        "gate_mode": runtime.get("gate_mode") == "AUDIT_ONLY",
+        "local_state_stable": observed.get("local_state_stable") is True,
+        "observation_fresh": observed.get("observation_fresh") is True,
+        "risk_pause_preserved": observed.get("risk_pause_preserved") is True,
+        "order_fetch_known": observed.get("order_fetch_known") is True,
+        "spot_observation_known": observed.get("spot_observation_known") is True,
+        "futures_position_response_known": observed.get("futures_position_response_known") is True,
+        "cycle_reconciliation": (
+            runtime.get("persisted_aligned") is True
+            if result["reconciliation_source"] == "BOT_STATE"
+            else result["reconciliation_source"] == "FRESH_GET_PAUSED_ZERO_EXPOSURE" and result["safe"]
+        ),
+    }
+    result["post_checks"] = checks
+    result["safe"] = not result["observation_errors"] and all(checks.values())
+    return result
+
+
 def evaluate_pre_cutover_safety(
     *,
     local_state,
@@ -1288,7 +1331,7 @@ def evaluate_pre_cutover_safety(
     current_root=None,
     candidate_root=None,
     protection_tolerance=DEFAULT_PROTECTION_TOLERANCE,
-    paused_zero_exposure_date=None,
+    paused_zero_exposure_at=None,
 ):
     """Combine strict Futures checks with managed/protected Spot classification."""
     positions = local_state.get("positions") if isinstance(local_state, dict) else None
@@ -1325,8 +1368,8 @@ def evaluate_pre_cutover_safety(
     # evidence. Nonempty/contradictory summaries and missing schema still block.
     if (
         reconciliation == {} and isinstance(reconciliation, dict)
-        and paused_zero_exposure_date is not None
-        and _risk_pause_fingerprint(local_state, paused_zero_exposure_date) is not None
+        and paused_zero_exposure_at is not None
+        and _risk_pause_fingerprint(local_state, paused_zero_exposure_at) is not None
         and positions == [] and futures_known and exchange_futures_clear
         and orders_known and futures_orders == [] and spot_orders == []
         and spot["positions_safe"] and spot["orders_safe"]
@@ -1374,6 +1417,7 @@ def evaluate_pre_cutover_safety(
         "spot_orders_deploy_safe": spot["orders_safe"],
         "spot_runtime_compatible": compatibility["compatible"],
         "exchange_futures_positions": futures_known and exchange_futures_clear,
+        "futures_position_response_known": futures_known,
         "managed_futures": count_checks["managed"],
         "orphan_futures": count_checks["orphan"],
         "unmanaged_futures": count_checks["unmanaged"],

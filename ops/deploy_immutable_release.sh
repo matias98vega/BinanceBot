@@ -602,6 +602,44 @@ activate_checked_release() {
   CURRENT_SWITCHED=1
 }
 
+run_post_cutover_safety_gate() {
+  CURRENT_RUNTIME="$CURRENT_BEFORE" \
+  CANDIDATE_RUNTIME="$RELEASE_FINAL" \
+  WORKTREE_RUNTIME="$WORKTREE" \
+  EXPECTED_RISK_PAUSE_FINGERPRINT="$RISK_PAUSE_FINGERPRINT" \
+  EXPECTED_RUNTIME_VERSION="$CANDIDATE_VERSION" \
+  PYTHONDONTWRITEBYTECODE=1 \
+  PYTHONPATH="${RELEASE_FINAL}/trading:${RELEASE_FINAL}/ops" \
+    "${VENV_FINAL}/bin/python" - <<'PY'
+import os
+from pathlib import Path
+
+import binance_client
+from deploy_spot_safety import observe_post_cutover_safety
+
+try:
+    root = Path(os.environ['WORKTREE_RUNTIME'])
+    result = observe_post_cutover_safety(
+        client=binance_client.get_default_client(),
+        state_path=root / 'trading/state.json', bot_state_path=root / 'trading/bot_state.json',
+        current_root=os.environ['CURRENT_RUNTIME'], candidate_root=os.environ['CANDIDATE_RUNTIME'],
+        expected_version=os.environ['EXPECTED_RUNTIME_VERSION'],
+        expected_pause_fingerprint=os.environ['EXPECTED_RISK_PAUSE_FINGERPRINT'] or None,
+    )
+except Exception as exc:
+    print('POST_CUTOVER_READ_ERROR=' + type(exc).__name__)
+    raise SystemExit('BLOCKED_POST_CUTOVER_OBSERVATION') from None
+
+print('POST_CUTOVER_RECONCILIATION_SOURCE=' + result['reconciliation_source'])
+print('POST_CUTOVER_OBSERVATION_ERRORS=' + ','.join(result['observation_errors']))
+for name, passed in result['post_checks'].items():
+    print(f'POST_CUTOVER_{name.upper()}={str(passed).lower()}')
+if not result['safe']:
+    raise SystemExit('BLOCKED_POST_CUTOVER_OBSERVATION')
+print('POST_CUTOVER_SAFETY=PASS')
+PY
+}
+
 observe_natural_cycles() {
   local main_before guardian_before deadline start_mark result exec_status cycle_count=0
   declare -A observed_starts=()
@@ -620,20 +658,7 @@ observe_natural_cycles() {
     [[ "$result" == "success" && "$exec_status" == "0" ]] || return 1
     cycle_count=$((cycle_count + 1))
     info "NATURAL_CYCLE_${cycle_count}=success"
-    "${VENV_FINAL}/bin/python" - "$CANDIDATE_VERSION" <<'PY'
-import json
-import sys
-from pathlib import Path
-state = json.loads(Path('/home/binancebot/BinanceBot/trading/bot_state.json').read_text(encoding='utf-8-sig'))
-short = ((state.get('positions') or {}).get('short') or {})
-reconciliation = short.get('reconciliation') or {}
-if str(state.get('bot_version')) != sys.argv[1]:
-    raise SystemExit('BLOCKED_POST_CUTOVER_VERSION')
-if str((state.get('pre_entry_safety_summary') or {}).get('mode')) != 'AUDIT_ONLY':
-    raise SystemExit('BLOCKED_POST_CUTOVER_GATE_MODE')
-if str(reconciliation.get('status')) != 'ALINEADO':
-    raise SystemExit('BLOCKED_POST_CUTOVER_RECONCILIATION')
-PY
+    run_post_cutover_safety_gate || return 1
   done
   (( cycle_count == POST_CUTOVER_CYCLES )) || return 1
   [[ "$(systemctl show binancebot-guardian.service -p ExecMainStartTimestampMonotonic --value)" != "$guardian_before" ]] || return 1

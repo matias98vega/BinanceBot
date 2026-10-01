@@ -7,7 +7,10 @@ reconciliation and persist an empty `{}` summary in `bot_state.json`.
 This route requires all of the following:
 
 - The local position list is exactly empty, and the existing pause has a known
-  reason, today's UTC PnL date and valid risk counters.
+  reason, today's UTC PnL date and valid risk counters. Both runtime early-return
+  branches are recognized: `status=paused`, or `status=active` with a strictly
+  future `pause_until` (the UTC daily reset leaves the timed breaker intact).
+  An active bot with an expired, missing or invalid expiry is not eligible.
 - The local reconciliation field exists and is exactly `{}`. An existing
   contradictory summary is never replaced.
 - Complete authenticated GET responses show zero Futures exposure and no
@@ -27,6 +30,15 @@ collects fresh GET evidence again before switching `current`. When the first
 preflight used this route, the second must preserve the exact pause fields and
 daily counters. Failure enters the existing rollback path and restores services
 on the previous release.
+
+All three successful natural cycles are checked after activation. Runtime
+version and `AUDIT_ONLY` remain mandatory. Normal cycles require an explicitly
+aligned persisted reconciliation; their managed exposure is not reclassified as
+zero. A paused cycle with exactly `{}` instead requires the same fresh GET-only
+zero-exposure observation and unchanged cutover pause fingerprint. Unknown,
+stale or contradictory evidence, wrong version/mode, pause changes or exposure
+on that fallback route fail verification and enter rollback. No manual cycle
+is run and no reconciliation is written to state or history.
 
 Mutable state links are reused. Deployment does not clear the pause, daily PnL
 or consecutive SL counters. The runtime's existing UTC daily-reset rules still

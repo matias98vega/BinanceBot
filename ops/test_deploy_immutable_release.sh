@@ -292,7 +292,7 @@ test_spot_safety_contracts() {
   safety_body="${area}/safety-body.txt"
   sed -n '/^run_get_only_safety_gate()/,/^observe_natural_cycles()/p' "$DEPLOY_SCRIPT" > "$safety_body"
   grep -q 'spot_signed("GET"' "${SCRIPT_DIR}/deploy_spot_safety.py" || fail 'S25 GET-only Spot order observation missing'
-  ! grep -Eq '(^|[^A-Z])(POST|PUT|DELETE|PATCH)([^A-Z]|$)|create_order|cancel_order|transfer|rebalance' \
+  ! grep -Eq '(^|[^A-Z_])(POST|PUT|DELETE|PATCH)([^A-Z_]|$)|create_order|cancel_order|transfer|rebalance' \
     "$safety_body" "${SCRIPT_DIR}/deploy_spot_safety.py" || fail 'S25 Binance mutation detected'
   pass 'S25 deploy safety gate contains no Binance mutation'
 }
@@ -336,6 +336,46 @@ test_final_preflight_contracts() {
   activate_line="$(grep -n '^  activate_checked_release ||' "$DEPLOY_SCRIPT" | cut -d: -f1)"
   [[ "$stop_line" -lt "$activate_line" ]] || fail 'F4 final gate runs before quiescence'
   pass 'F4 activation rechecks GET evidence after stopping cycles'
+  (
+    sleep() { :; }
+    systemctl() {
+      [[ "$1" == show ]] || return 1
+      case "$4" in
+        ExecMainStartTimestampMonotonic)
+          local count
+          count="$(cat "${area}/starts" 2>/dev/null || printf 0)"
+          count=$((count + 1))
+          printf '%s\n' "$count" > "${area}/starts"
+          printf '%s\n' "$count"
+          ;;
+        Result) printf 'success\n' ;;
+        ExecMainStatus) printf '0\n' ;;
+        *) return 1 ;;
+      esac
+    }
+    run_post_cutover_safety_gate() { printf 'checked\n' >> "${area}/post-checks"; }
+    observe_natural_cycles
+    [[ "$(wc -l < "${area}/post-checks")" -eq 3 ]] || exit 1
+    run_post_cutover_safety_gate() { return 1; }
+    if observe_natural_cycles; then exit 1; fi
+  ) > "${area}/natural-output" 2>&1 || fail 'F5 natural cycles skip post gate or ignore its failure'
+  pass 'F5 three natural cycles each invoke post gate; failure aborts observation'
+  if (
+    CUTOVER_STARTED=1
+    ROLLBACK_LOCK_DIR="${area}/post-rollback.lock"
+    ROLLBACK_STATE_FILE="${area}/post-rollback.state"
+    CURRENT_BEFORE="${area}/old"
+    systemctl() { return 0; }
+    rollback_current() { printf 'restored\n' >> "${area}/post-rollback-actions"; }
+    start_initial_runtime() { printf 'resumed\n' >> "${area}/post-rollback-actions"; }
+    observe_natural_cycles() { return 1; }
+    observe_natural_cycles || die BLOCKED_POST_CUTOVER_CYCLE fixture
+  ) > "${area}/post-rollback-output" 2>&1; then
+    fail 'F6 failed post observation returned success'
+  fi
+  [[ "$(cat "${area}/post-rollback-actions")" == $'restored\nresumed' && \
+     "$(cat "${area}/post-rollback.state")" == COMPLETED ]] || fail 'F6 post failure did not restore runtime'
+  pass 'F6 post observation failure invokes existing rollback and restores runtime'
   PYTHONDONTWRITEBYTECODE=1 "${WORKTREE}/.venv/bin/python" \
     "${SCRIPT_DIR}/test_deploy_paused_preflight.py" || fail 'paused preflight adversarial tests failed'
   pass 'PZ paused preflight offline adversarial tests'
@@ -349,5 +389,5 @@ test_state_isolation_contract
 test_spot_safety_contracts
 test_final_preflight_contracts
 
-[[ "$PASS_COUNT" -eq 121 ]] || fail "unexpected assertion count: ${PASS_COUNT}"
-printf '[RESULT] OFFLINE_DEPLOY_HARNESS_PASS D1-D15 T1-T12 S1-S25 C-prev1-C-prev2 C1-C10 G17-P1-P9 G17-N1-N22 G17-R1-R18 F1-F4 PZ\n'
+[[ "$PASS_COUNT" -eq 123 ]] || fail "unexpected assertion count: ${PASS_COUNT}"
+printf '[RESULT] OFFLINE_DEPLOY_HARNESS_PASS D1-D15 T1-T12 S1-S25 C-prev1-C-prev2 C1-C10 G17-P1-P9 G17-N1-N22 G17-R1-R18 F1-F6 PZ\n'
