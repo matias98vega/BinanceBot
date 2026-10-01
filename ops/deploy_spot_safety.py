@@ -12,6 +12,8 @@ import copy
 import hashlib
 import json
 import re
+import time
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -1172,6 +1174,108 @@ def check_spot_runtime_compatibility(current_root, candidate_root):
     }
 
 
+_RISK_PAUSE_FIELDS = (
+    "status", "pause_reason", "pause_until", "pause_started_at", "pnl_date",
+    "daily_pnl_usdt", "daily_start_capital", "consec_sl",
+)
+
+
+def _risk_pause_fingerprint(state, observed_date):
+    """Identify the existing risk pause without modifying its fields."""
+    if not isinstance(state, dict) or not (
+        state.get("status") == "paused"
+        and state.get("pause_reason") == "daily_stop_loss_limit"
+        and state.get("pnl_date") == observed_date
+    ):
+        return None
+    try:
+        if _decimal(state.get("pause_until"), "pause expiry") <= 0:
+            return None
+        _decimal(state.get("daily_pnl_usdt"), "daily PnL")
+        if _decimal(state.get("daily_start_capital"), "daily capital") < 0:
+            return None
+        count = state.get("consec_sl")
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            return None
+        payload = {key: state.get(key) for key in _RISK_PAUSE_FIELDS}
+        return hashlib.sha256(json.dumps(payload, sort_keys=True, allow_nan=False).encode()).hexdigest()
+    except (SafetyEvidenceError, TypeError, ValueError):
+        return None
+
+
+def observe_pre_cutover_safety(
+    *, client, state_path, bot_state_path, current_root, candidate_root,
+    expected_pause_fingerprint=None, monotonic=time.monotonic,
+    utc_now=lambda: datetime.now(timezone.utc),
+):
+    """Collect fresh GET evidence; writes neither runtime nor historical files."""
+    started = monotonic()
+    observed_at = utc_now()
+    stage = "local_state"
+    try:
+        state_path, bot_state_path = Path(state_path), Path(bot_state_path)
+        state_bytes = state_path.read_bytes()
+        bot_bytes = bot_state_path.read_bytes()
+        state = json.loads(state_bytes.decode("utf-8-sig"))
+        bot_state = json.loads(bot_bytes.decode("utf-8-sig"))
+        local_fresh = all(
+            -5 <= observed_at.timestamp() - path.stat().st_mtime <= 300
+            for path in (state_path, bot_state_path)
+        )
+        positions = state.get("positions") if isinstance(state, dict) else None
+        symbols = sorted({
+            str(row.get("symbol") or "").strip().upper()
+            for row in positions or []
+            if isinstance(row, dict) and row.get("direction") == "long"
+            and str(row.get("symbol") or "").strip()
+        })
+        stage = "exchange_GET"
+        risk = client.futures_position_risk({})
+        futures_orders = client.futures_open_orders({})
+        spot_orders = client.spot_signed("GET", "/api/v3/openOrders", {})
+        account = client.spot_account()
+        filters = {symbol: client.get_spot_filters(symbol) for symbol in symbols}
+        stage = "observation_consistency"
+        stable = state_bytes == state_path.read_bytes() and bot_bytes == bot_state_path.read_bytes()
+        ended_at = utc_now()
+        fresh = (
+            local_fresh and 0 <= monotonic() - started <= 30
+            and observed_at.date() == ended_at.date()
+        )
+        observed_date = ended_at.date().isoformat()
+        pause_fingerprint = _risk_pause_fingerprint(state, observed_date)
+        result = evaluate_pre_cutover_safety(
+            local_state=state, bot_state=bot_state, exchange_positions=risk,
+            futures_orders=futures_orders, spot_orders=spot_orders,
+            spot_account=account, spot_filters=filters,
+            current_root=current_root, candidate_root=candidate_root,
+            paused_zero_exposure_date=observed_date if fresh and stable else None,
+        )
+        result["checks"].update(
+            local_state_stable=stable, observation_fresh=fresh,
+            risk_pause_preserved=(expected_pause_fingerprint is None
+                                  or pause_fingerprint == expected_pause_fingerprint),
+        )
+        result["safe"] = all(result["checks"].values())
+        result["pause_fingerprint"] = (
+            pause_fingerprint if result["reconciliation_source"] == "FRESH_GET_PAUSED_ZERO_EXPOSURE"
+            or expected_pause_fingerprint is not None else None
+        )
+        result["observation_errors"] = []
+        return result
+    except Exception as exc:
+        return {
+            "safe": False, "checks": {"read_only_observation": False},
+            "spot": {"records": []}, "pause_fingerprint": None,
+            "reconciliation_source": "UNAVAILABLE",
+            "observation_errors": [f"{stage}:{type(exc).__name__}"],
+            "compatibility": {
+                "compatible": False, "status": "SPOT_RUNTIME_INCOMPATIBLE",
+                "changed_critical_paths": [], "errors": ["observation_failed"],
+            },
+        }
+
+
 def evaluate_pre_cutover_safety(
     *,
     local_state,
@@ -1184,6 +1288,7 @@ def evaluate_pre_cutover_safety(
     current_root=None,
     candidate_root=None,
     protection_tolerance=DEFAULT_PROTECTION_TOLERANCE,
+    paused_zero_exposure_date=None,
 ):
     """Combine strict Futures checks with managed/protected Spot classification."""
     positions = local_state.get("positions") if isinstance(local_state, dict) else None
@@ -1215,6 +1320,22 @@ def evaluate_pre_cutover_safety(
             futures_known = False
     orders_known = isinstance(futures_orders, list) and isinstance(spot_orders, list)
     spot_observation_known = isinstance(spot_account, dict) and isinstance(spot_filters, dict)
+    reconciliation_source = "BOT_STATE"
+    # Only the known empty-summary pause path can use fresh zero-exposure
+    # evidence. Nonempty/contradictory summaries and missing schema still block.
+    if (
+        reconciliation == {} and isinstance(reconciliation, dict)
+        and paused_zero_exposure_date is not None
+        and _risk_pause_fingerprint(local_state, paused_zero_exposure_date) is not None
+        and positions == [] and futures_known and exchange_futures_clear
+        and orders_known and futures_orders == [] and spot_orders == []
+        and spot["positions_safe"] and spot["orders_safe"]
+    ):
+        reconciliation = {
+            "aligned": True, "status": "ALINEADO",
+            **{f"{name}_count": 0 for name in ("managed", "orphan", "unmanaged", "unprotected", "desynced")},
+        }
+        reconciliation_source = "FRESH_GET_PAUSED_ZERO_EXPOSURE"
     reconciliation = reconciliation if isinstance(reconciliation, dict) else {}
     futures_reconciliation_aligned = (
         reconciliation.get("aligned") is True and reconciliation.get("status") == "ALINEADO"
@@ -1269,4 +1390,5 @@ def evaluate_pre_cutover_safety(
         "spot": spot,
         "compatibility": compatibility,
         "local_spot_count": local_spot_count,
+        "reconciliation_source": reconciliation_source,
     }

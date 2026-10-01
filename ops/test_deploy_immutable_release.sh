@@ -168,7 +168,7 @@ test_static_safety_contracts() {
 
   safety_body="${area}/safety-body.txt"
   sed -n '/^run_get_only_safety_gate()/,/^observe_natural_cycles()/p' "$DEPLOY_SCRIPT" > "$safety_body"
-  grep -q "spot_signed('GET'" "$safety_body" || fail 'D15 GET-only Spot check missing'
+  grep -q 'spot_signed("GET"' "${SCRIPT_DIR}/deploy_spot_safety.py" || fail 'D15 GET-only Spot check missing'
   ! grep -Eq "['\"](POST|PUT|DELETE|PATCH)['\"]|create_order|cancel_order|transfer|rebalance" "$safety_body" || \
     fail 'D15 Binance mutation detected'
   pass 'D15 safety preflight is GET-only and contains no Binance mutation'
@@ -291,10 +291,54 @@ test_spot_safety_contracts() {
 
   safety_body="${area}/safety-body.txt"
   sed -n '/^run_get_only_safety_gate()/,/^observe_natural_cycles()/p' "$DEPLOY_SCRIPT" > "$safety_body"
-  grep -q "spot_signed('GET'" "$safety_body" || fail 'S25 GET-only Spot order observation missing'
+  grep -q 'spot_signed("GET"' "${SCRIPT_DIR}/deploy_spot_safety.py" || fail 'S25 GET-only Spot order observation missing'
   ! grep -Eq '(^|[^A-Z])(POST|PUT|DELETE|PATCH)([^A-Z]|$)|create_order|cancel_order|transfer|rebalance' \
     "$safety_body" "${SCRIPT_DIR}/deploy_spot_safety.py" || fail 'S25 Binance mutation detected'
   pass 'S25 deploy safety gate contains no Binance mutation'
+}
+
+test_final_preflight_contracts() {
+  local area stop_line activate_line
+  area="${HARNESS_ROOT}/final-preflight"
+  mkdir -p "${area}/old" "${area}/new"
+  ln -s "${area}/old" "${area}/current"
+  (
+    run_get_only_safety_gate() { return 1; }
+    if activate_checked_release "${area}/current" "${area}/new"; then
+      exit 1
+    fi
+    [[ "$(readlink -f "${area}/current")" == "${area}/old" ]]
+  ) || fail 'F1 failed final gate changed current'
+  pass 'F1 failed final gate prevents activation'
+  (
+    run_get_only_safety_gate() { return 0; }
+    activate_checked_release "${area}/current" "${area}/new" &&
+      [[ "$CURRENT_SWITCHED" == 1 && "$(readlink -f "${area}/current")" == "${area}/new" ]]
+  ) || fail 'F2 successful final gate did not activate'
+  pass 'F2 final gate success permits atomic activation'
+  if (
+    CUTOVER_STARTED=1
+    ROLLBACK_LOCK_DIR="${area}/rollback.lock"
+    ROLLBACK_STATE_FILE="${area}/rollback.state"
+    CURRENT_BEFORE="${area}/old"
+    systemctl() { return 0; }
+    rollback_current() { printf 'restored\n' >> "${area}/rollback-actions"; }
+    start_initial_runtime() { printf 'resumed\n' >> "${area}/rollback-actions"; }
+    run_get_only_safety_gate() { return 1; }
+    activate_checked_release "${area}/current" "${area}/new" || die BLOCKED_FINAL_PREFLIGHT fixture
+  ) > "${area}/rollback-output" 2>&1; then
+    fail 'F3 final failure returned success'
+  fi
+  [[ "$(cat "${area}/rollback-actions")" == $'restored\nresumed' ]] || fail 'F3 runtime was not restored'
+  [[ "$(cat "${area}/rollback.state")" == COMPLETED ]] || fail 'F3 rollback incomplete'
+  pass 'F3 final gate failure invokes rollback and restores previous services'
+  stop_line="$(grep -n '^  stop_runtime_for_cutover ||' "$DEPLOY_SCRIPT" | cut -d: -f1)"
+  activate_line="$(grep -n '^  activate_checked_release ||' "$DEPLOY_SCRIPT" | cut -d: -f1)"
+  [[ "$stop_line" -lt "$activate_line" ]] || fail 'F4 final gate runs before quiescence'
+  pass 'F4 activation rechecks GET evidence after stopping cycles'
+  PYTHONDONTWRITEBYTECODE=1 "${WORKTREE}/.venv/bin/python" \
+    "${SCRIPT_DIR}/test_deploy_paused_preflight.py" || fail 'paused preflight adversarial tests failed'
+  pass 'PZ paused preflight offline adversarial tests'
 }
 
 test_candidate_contracts
@@ -303,6 +347,7 @@ test_cutover_and_rollback
 test_static_safety_contracts
 test_state_isolation_contract
 test_spot_safety_contracts
+test_final_preflight_contracts
 
-[[ "$PASS_COUNT" -eq 116 ]] || fail "unexpected assertion count: ${PASS_COUNT}"
-printf '[RESULT] OFFLINE_DEPLOY_HARNESS_PASS D1-D15 T1-T12 S1-S25 C-prev1-C-prev2 C1-C10 G17-P1-P9 G17-N1-N22 G17-R1-R18\n'
+[[ "$PASS_COUNT" -eq 121 ]] || fail "unexpected assertion count: ${PASS_COUNT}"
+printf '[RESULT] OFFLINE_DEPLOY_HARNESS_PASS D1-D15 T1-T12 S1-S25 C-prev1-C-prev2 C1-C10 G17-P1-P9 G17-N1-N22 G17-R1-R18 F1-F4 PZ\n'

@@ -92,6 +92,7 @@ ROLLBACK_RUNNING=0
 ROLLBACK_LOCK_DIR=""
 ROLLBACK_STATE_FILE=""
 REUSE_RELEASE=0
+RISK_PAUSE_FINGERPRINT=""
 
 now_utc() {
   date -u +%Y-%m-%dT%H:%M:%SZ
@@ -524,9 +525,13 @@ run_candidate_data_validation() {
 }
 
 run_get_only_safety_gate() {
+  local output rc
+  output="$(
   CURRENT_RUNTIME="$CURRENT_BEFORE" \
   CANDIDATE_RUNTIME="$RELEASE_FINAL" \
   WORKTREE_RUNTIME="$WORKTREE" \
+  EXPECTED_RISK_PAUSE_FINGERPRINT="$RISK_PAUSE_FINGERPRINT" \
+  PYTHONDONTWRITEBYTECODE=1 \
   PYTHONPATH="${RELEASE_FINAL}/trading:${RELEASE_FINAL}/ops" \
     "${VENV_FINAL}/bin/python" - <<'PY'
 import json
@@ -534,41 +539,25 @@ import os
 from pathlib import Path
 
 import binance_client
-from deploy_spot_safety import evaluate_pre_cutover_safety
+from deploy_spot_safety import observe_pre_cutover_safety
 
 try:
     root = Path(os.environ['WORKTREE_RUNTIME'])
-    state = json.loads((root / 'trading/state.json').read_text(encoding='utf-8-sig'))
-    bot_state = json.loads((root / 'trading/bot_state.json').read_text(encoding='utf-8-sig'))
-    local_positions = state.get('positions') if isinstance(state, dict) else None
-    spot_symbols = sorted({
-        str(position.get('symbol') or '').strip().upper()
-        for position in local_positions or []
-        if isinstance(position, dict)
-        and str(position.get('direction') or '').strip().lower() == 'long'
-        and str(position.get('symbol') or '').strip()
-    })
     client = binance_client.get_default_client()
-    exchange_positions = client.futures_position_risk({})
-    futures_orders = client.futures_open_orders({})
-    spot_orders = client.spot_signed('GET', '/api/v3/openOrders', {})
-    spot_account = client.spot_account()
-    spot_filters = {symbol: client.get_spot_filters(symbol) for symbol in spot_symbols}
+    result = observe_pre_cutover_safety(
+        client=client, state_path=root / 'trading/state.json',
+        bot_state_path=root / 'trading/bot_state.json',
+        current_root=os.environ['CURRENT_RUNTIME'],
+        candidate_root=os.environ['CANDIDATE_RUNTIME'],
+        expected_pause_fingerprint=os.environ['EXPECTED_RISK_PAUSE_FINGERPRINT'] or None,
+    )
 except Exception as exc:
     print('SAFETY_READ_ERROR=' + type(exc).__name__)
     raise SystemExit('BLOCKED_PRE_CUTOVER') from None
 
-result = evaluate_pre_cutover_safety(
-    local_state=state,
-    bot_state=bot_state,
-    exchange_positions=exchange_positions,
-    futures_orders=futures_orders,
-    spot_orders=spot_orders,
-    spot_account=spot_account,
-    spot_filters=spot_filters,
-    current_root=os.environ['CURRENT_RUNTIME'],
-    candidate_root=os.environ['CANDIDATE_RUNTIME'],
-)
+print('FUTURES_RECONCILIATION_SOURCE=' + result['reconciliation_source'])
+print('RISK_PAUSE_FINGERPRINT=' + (result['pause_fingerprint'] or ''))
+print('OBSERVATION_ERRORS=' + ','.join(result['observation_errors']))
 for record in result['spot']['records']:
     print(
         'SPOT_DEPLOY_SAFETY '
@@ -596,6 +585,21 @@ if not result['safe']:
     raise SystemExit('BLOCKED_PRE_CUTOVER')
 print('PRE_CUTOVER_SAFETY=PASS')
 PY
+  )" && rc=0 || rc=$?
+  printf '%s\n' "$output"
+  (( rc == 0 )) || return "$rc"
+  if [[ -z "$RISK_PAUSE_FINGERPRINT" ]]; then
+    RISK_PAUSE_FINGERPRINT="$(sed -n 's/^RISK_PAUSE_FINGERPRINT=//p' <<< "$output")"
+  fi
+}
+
+activate_checked_release() {
+  # Called only after timers/cycles are stopped. Failure leaves current intact
+  # and the caller's cutover error path restores the previous runtime.
+  local current_link="${1:-$CURRENT_LINK}" release="${2:-$RELEASE_FINAL}"
+  run_get_only_safety_gate || return 1
+  atomic_switch_current "$current_link" "$release" || return 1
+  CURRENT_SWITCHED=1
 }
 
 observe_natural_cycles() {
@@ -818,8 +822,7 @@ main() {
   info "CUTOVER_PAUSE_UTC=${CUTOVER_PAUSE_UTC}"
 
   section "ACTIVATE" "Atomically switching current without rewriting drop-ins"
-  atomic_switch_current "$CURRENT_LINK" "$RELEASE_FINAL" || die "BLOCKED_CURRENT_INVALID" "atomic switch"
-  CURRENT_SWITCHED=1
+  activate_checked_release || die "BLOCKED_FINAL_PREFLIGHT" "final GET-only gate or atomic switch"
   validate_systemd_contract || die "BLOCKED_SYSTEMD_CONTRACT" "effective paths changed"
   start_initial_runtime || die "BLOCKED_POST_CUTOVER_SERVICE" "restore runtime"
 
